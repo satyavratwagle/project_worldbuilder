@@ -208,7 +208,7 @@ class Semantic():
         with torch.no_grad():
             logits = self.nli_model(**inputs).logits
         # Label index 1 is typically 'entailment' in cross-encoder models
-        probs = torch.softmax(logits, dim=1).squeeze()
+        probs = torch.softmax(logits, dim=-1).squeeze()
         return probs[0],probs[1],probs[2] # Contradiction, Entailment, Neutral
 
     def check_entailment(self,premise: str, hypothesis: str, context:str) -> bool:

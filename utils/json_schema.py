@@ -1,3 +1,5 @@
+from pydantic import create_model
+
 # If Character, Location, Faction, Artifact, Event, Era
 
 def create_character_schema():
@@ -84,4 +86,19 @@ def get_schema(label):
 		return create_dictionary_schema()
 	else:
 		print('No Matching Schema Found!')
+
+def get_pydantic_schema(schema_name,label):
+
+	print(label)
+
+	schema = get_schema(label)
+
+	field_definitions = {}
+	
+	for key, value in schema.items():
+		if(not(key=='overview') and not(key=='misc')):
+			val_type = type(value)
+			field_definitions[key] = val_type
+		
+	return create_model(schema_name, **{key: (list, ...) for key in field_definitions.keys()})
 

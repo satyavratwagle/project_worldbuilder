@@ -15,9 +15,14 @@ class JSONUtils():
 
     def __init__(self):
 
-        self.jsonstore_dir = '/Users/satyawagle/Projects/LangChain/llm_chatbot/data/json_store'
-        self.faiss_dataset_path = './data/FAISS_store/worldbuilding_dataset'
-        self.faiss_index_path = "./data/FAISS_store/worldbuilding_dataset.faiss"
+        with open('config.json', "r", encoding="utf-8") as f:
+            # Load the JSON data into a Python dictionary
+            config = json.load(f)
+        store_path= config['data_dir']
+
+        self.jsonstore_dir = f'{store_path}/json_store'
+        self.faiss_dataset_path = f'{store_path}/FAISS_store/worldbuilding_dataset'
+        self.faiss_index_path = f"{store_path}/FAISS_store/worldbuilding_dataset.faiss"
 
     def overwrite_faiss_dataset(self,new_dataset,cosine_index):
 

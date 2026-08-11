@@ -30,6 +30,8 @@ from sentence_transformers import SentenceTransformer
 from utils.semantic import Semantic
 from json_repair import repair_json
 from pathlib import Path
+from utils.io_utils import IO_Utils
+from utils.pydantic_schema import ReasonedResponse,SceneSummary
 
 def uppercase(text):
     return text[0].upper()+text[1:]
@@ -37,10 +39,6 @@ def uppercase(text):
 # Used by the response parser for tool
 class RAGQuerySchema(BaseModel):
     query: str = Field(description="The search query to lookup local markdown files or notes.")
-
-class ReasonedResponse(BaseModel):
-    scratchpad: str  # The step-by-step chain of thought
-    final_answer: str # The clean answer for the user
 
 helpers = [{"id":"Ideate", "icon":"lightbulb", "description":"Add ideas to knowledge base"},
                 {"id":"Analyze", "icon":"brain", "description":"Analyze uploaded text"},
@@ -53,6 +51,9 @@ with open('config.json', "r", encoding="utf-8") as f:
         # Load the JSON data into a Python dictionary
         config = json.load(f)
 store_path= config['data_dir']
+
+
+io_utils = IO_Utils()
 
 model_id = "meta-llama/Llama-3.2-3B-Instruct"
 
@@ -437,6 +438,54 @@ async def add_tag(action: cl.Action):
 # Tools
 #############
 
+
+async def get_gist(user_message):
+
+    file = user_message.elements[0]
+    text_rows = io_utils.load_text_rows(file.path)
+
+    summary = 'No context available.'
+    scenes  = []
+
+    RoleSchema = sch.get_pydantic_schema('RoleSchema','character')
+    print(type(RoleSchema))
+    print(type(SceneSummary))
+
+    for row in text_rows:
+        row_with_context = await add_entity_context(row)
+        prompt = prompts.get_gist_prompt(text=row_with_context,context=summary, subjects = named_entities[:-1]) # Ignore 'definitions'
+        print(prompt)
+        summary = await tokenize_and_generate(prompt,max_new_tokens=256,temperature=0.2,template=SceneSummary)
+        scene = SceneSummary.model_validate_json(summary)
+        scene = scene.model_dump()
+        print(scene)
+        print()
+        # Redesign the summary to feed back as context.
+        summary = dict()
+        for key in scene.keys():
+            summary[]
+
+        for role in scene.keys():
+
+            try:
+                print(role)
+                # Dynamically create Pydantic schema for role -> schema, keys
+                RoleSchema = sch.get_pydantic_schema('RoleSchema',role[:-1])
+
+                # Pass keys, role and entity to prompt creation function
+                role_subjects = list(RoleSchema.model_fields.keys())
+
+                # Pass pydantic schema to tokenize_and_generate
+                for entity in scene[role]:
+                    scene_extraction_prompt = prompts.isolate_scene_element(text=row_with_context,entity=entity,aspect=role,subjects=role_subjects)
+                    print(scene_extraction_prompt)
+                    isolated_element = await tokenize_and_generate(scene_extraction_prompt,max_new_tokens=256,temperature=0.6,template=RoleSchema)
+                    print(isolated_element)
+                    print()
+                    print()
+            except Exception as e:
+                print(e)
+
 async def extract_entities(user_message):
 
     tracked_entities = cl.user_session.get("entities_to_track")
@@ -613,9 +662,6 @@ async def add_entity_context(idea,entity_threshold=0.4):
     blurb_map = cl.user_session.get('blurb_map')
     alias_map = cl.user_session.get('alias_map')
 
-    print(blurb_map)
-    print(alias_map)
-
     '''entities = sem.entity_extraction(idea,entity_threshold=entity_threshold)
     print(entities)
     entity_context = dict()
@@ -628,7 +674,6 @@ async def add_entity_context(idea,entity_threshold=0.4):
 
     if(idea.endswith(punctuation_tuple)):
         idea = idea[:-1]
-    print(idea.split(' '))
 
     for og_word in idea.split(' '):
 
@@ -650,7 +695,6 @@ async def add_entity_context(idea,entity_threshold=0.4):
             idea = idea.replace(key,f"{key} ({entity_context[key]})")
 
     return idea
-
 
 
 #############
@@ -718,7 +762,7 @@ async def retrieve_context(user_input):
     return context_text,context_list
 
 @cl.step(name='Check Context Sufficiency')
-async def check_context_sufficiency(answer,context_dict):
+async def check_context_sufficiency(proposition,context_dict):
 
     # Check if Context can answer the Question
 
@@ -729,13 +773,18 @@ async def check_context_sufficiency(answer,context_dict):
     for key in context_dict.keys():
         context_list += context_dict[key]
 
+    #proposition = await add_entity_context(proposition)
+    print(proposition)
+
     if(len(context_list)>0):
 
         for i,context in enumerate(context_list):
             # Use only the textual part of the context for NLI to preserve tokens + not include tags etc.
             trimmed_context = [c for c in context.split(':') if len(c)>0]
-            print(trimmed_context[-1].strip())
-            contradiction,entailment_probs,neutral = sem.get_entailment_probs(trimmed_context[-1].strip(),answer)
+            trimmed_context = trimmed_context[-1].strip()
+            #trimmed_context = await add_entity_context(trimmed_context)
+            print(trimmed_context)
+            contradiction,entailment_probs,neutral = sem.get_entailment_probs(trimmed_context,proposition)
             print(contradiction,entailment_probs,neutral)
             print()
             #print(context,entailment_probs)
@@ -856,7 +905,7 @@ async def check_idea(user_input):
 
             filename = entity.lower()
             filename = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-            with open(f"{store_path}/{filename}.json", "w") as file:
+            with open(f"{store_path}/json_store/{filename}.json", "w") as file:
                 json.dump(data, file, indent=4)
 
             await cl.Message(content=f'Updated information about {uppercase(entity)}!').send()
@@ -1108,7 +1157,7 @@ async def save_idea_to_local_session(idea:str):
 
             filename = idea_name.lower()
             filename = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-            with open(f"{store_path}/{filename}.json", "w") as file:
+            with open(f"{store_path}/json_store/{filename}.json", "w") as file:
                 json.dump(data, file, indent=4)
 
             message = await cl.Message(content=f'Added idea : {idea}',actions=idea_actions).send()
@@ -1175,7 +1224,6 @@ async def on_settings_update(settings: dict):
 @cl.on_chat_start
 async def on_chat_start():
 
-    print('C')
     await create_knowledge_graph()
 
     cl.user_session.set("alias_map",json_utils.get_alias_map())
@@ -1187,7 +1235,7 @@ async def on_chat_start():
 
     await cl.context.emitter.set_commands(helpers)
 
-    await cl.Message(content="Hello! I am connected to your local vault. How can I help you today?",actions=persistent_actions).send()
+    await cl.Message(content="Hello! I'm your novel-writing assistant. How can I help you today?",actions=persistent_actions).send()
     
     task_list = cl.TaskList()
     cl.user_session.set("task_list",task_list)
@@ -1208,8 +1256,10 @@ async def on_message(user_message: cl.Message):
         if not user_message.elements:
             await cl.Message(content="No file attached").send()
         else:
-            async with cl.Step(name=f"Extract Entities") as step:
-                await extract_entities(user_message)
+            #async with cl.Step(name=f"Extract Entities") as step:
+            #    await extract_entities(user_message)
+            async with cl.Step(name=f"Adding Entity Context") as step:
+                await get_gist(user_message)
 
     elif(selected_mode=='Update'):
 
