@@ -24,7 +24,9 @@ def get_generation_prompt(role='system', history=None, user_input='', context_te
 	if(role=='system'):
 		prompt = {"role": "system", "content": (f"You are a helpful assistant. You must answer the user query using ONLY the local context."
 												"Always output your reasoning in verbose form in the 'scratchpad' field,"
-												"followed by a brief answer based on your reasoning in the 'answer' field.")}
+												"followed by a brief answer based on your reasoning in the 'answer' field."
+												"Do NOT include any conversational preamble or text. "
+												"Your response must start immediately with the character '{'.")}
 	elif(role=='user'):
 		prompt = {"role": "user", "content": f"User Query: {user_input}\n\nLocal Context :\n{context_text}"}
 
@@ -64,8 +66,11 @@ def get_gist_prompt(role='system', history=None, text='',context='No context ava
 												"You must ONLY use the context provided to specify the topics. "
 												f"\n\nContext:{context}\n\nScene:{text}"
 												)}'''
-		prompt = {"role":"system","content":(f'Analyze the following scene text and extract all required information accurately, strictly adhering to the schema definitions.'
-												f'\n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---')}
+		prompt = [{"role":"system","content":(f'Analyze the following scene text and extract all required information accurately, strictly adhering to the schema definitions.'
+												"Do NOT include any conversational preamble or text. "
+                								"Your response must start immediately with the character '{'."
+												)},
+					{"role":"user","content":(f'\n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---\n')}]
 	elif(role=='user'):
 		prompt = {"role": "user", "content": f"Relevant Entities: {relevant_entities}\nUser Query: {query}"}
 		print(prompt)
@@ -74,16 +79,20 @@ def get_gist_prompt(role='system', history=None, text='',context='No context ava
 		history.append(prompt)
 		return history
 	else:
-		return [prompt]
+		return prompt
 
 def isolate_scene_element(role='system', history=None, text='',entity='',aspect='',subjects=['overview']):
 
 	if(role=='system'):
-		prompt = {"role": "system", "content": (f"Your job is to provide a brief description of {entity}, which is a {aspect} in the context of the given scene. "
+		'''prompt = {"role": "system", "content": (f"Your job is to provide a brief description of {entity}, which is a {aspect} in the context of the given scene. "
 												f"Your response must contain ONLY information about {entity} in the context of the given scene."
 												f"You must respond with a description of {entity} in the specified response format. "
-												f"\n\nScene:{text}"
-												)}
+												f'\n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---')
+												}'''
+		prompt = [{"role":"system","content":(f'Analyze the following scene text and extract all required information accurately, strictly adhering to the schema definitions.'
+												"Do NOT include any conversational preamble or text. "
+                								"Your response must start immediately with the character '{'.")},
+				{"role":"user","content":(f'Extract information about {entity} from the following text, if {entity} is present in text.\n The information should include {', '.join(subjects)}.\n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---\n')}]
 	elif(role=='user'):
 		prompt = {"role": "user", "content": f"Relevant Entities: {relevant_entities}\nUser Query: {query}"}
 
@@ -91,7 +100,7 @@ def isolate_scene_element(role='system', history=None, text='',entity='',aspect=
 		history.append(prompt)
 		return history
 	else:
-		return [prompt]
+		return prompt
 
 def get_chain_of_thought_regex():
 	reasoning_structure_regex = (

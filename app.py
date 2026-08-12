@@ -34,6 +34,7 @@ from pathlib import Path
 from utils.io_utils import IO_Utils
 from utils.pydantic_schema import ReasonedResponse,SceneSummary
 
+
 def uppercase(text):
     return text[0].upper()+text[1:]
 
@@ -67,13 +68,7 @@ persistent_actions = [
 
 #@lru_cache(maxsize=32)
 def get_or_create_generator(model, schema_class):
-  """Caches the Outlines JSON generator so the FSM isn't recompiled
-
-  on every request, preventing token desync errors.
-  """
-  outline_model = outlines.from_transformers(model, tokenizer)
-
-  return outlines.Generator(outline_model,schema_class)
+  return outlines.Generator(model,schema_class)
 
 @cl.cache
 def load_extraction_model():
@@ -96,11 +91,10 @@ def load_models():
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     print("Wrapping model with Outlines (v0.3+ style)...")
     model = outlines.from_transformers(hf_model, tokenizer)
-    #english_regex = r"[\x20-\x7E\n]+"
     generator_model = outlines.Generator(model)
     #model = outlines.generate.regex(hf_modela, english_regex)
 
-    return model, tokenizer, generator_model,hf_model
+    return model, tokenizer, generator_model
 
 @cl.cache
 def load_embedding_models(): 
@@ -128,11 +122,13 @@ def load_semantic_consistency_models():
 
     return nli_model,nli_tokenizer
 
-generator_model, tokenizer, model, hf_model = load_models()
+outline_model, tokenizer, generator_model = load_models()
 embed_model, dataset = load_embedding_models()
 nli_model,nli_tokenizer = load_semantic_consistency_models()
 extraction_model  = load_extraction_model()
 
+print(tokenizer.decode([91710]))
+print(tokenizer.decode([90247]))
 
 sem = Semantic()
 
@@ -450,7 +446,7 @@ async def add_tag(action: cl.Action):
 # Tools
 #############
 
-
+@cl.step(name='Splitting Scenes')
 async def split_scenes(file):
 
     #file = user_message.elements[0]
@@ -489,6 +485,7 @@ async def split_scenes(file):
     
     return scenes
 
+@cl.step(name='Creating Gist')
 async def get_gist(user_message):
 
     file = user_message.elements[0]
@@ -496,46 +493,80 @@ async def get_gist(user_message):
     scenes = await split_scenes(file)
 
     summary = 'No context available.' 
+    tracked_entities = dict()
 
     for scene in scenes:
         #scene_with_context = await add_entity_context(scene)
         prompt = prompts.get_gist_prompt(text=scene,context=summary, subjects = named_entities[:-1]) # Ignore 'definitions'
-        print(prompt)
-        summary = await tokenize_and_generate(prompt,max_new_tokens=256,temperature=0.3,template=SceneSummary)
+        summary = await tokenize_and_generate(prompt,max_new_tokens=256,temperature=0.3,template=SceneSummary,use_chat_template=True)
         scene_summary = SceneSummary.model_validate_json(summary)
         scene_summary = scene_summary.model_dump()
-        print(scene_summary)
-        print()
 
-        await cl.Message(content=scene_summary).send()
+        print(scene_summary)
+
+        found_subjects = dict()
+        for key in scene_summary:
+            for subject in scene_summary[key]:
+                found_subjects[subject] = key
+
+        items_list = []
+        items_dict = dict()
+        for entity in found_subjects.keys():
+
+            label = found_subjects[entity]
+
+            items_list.append(
+                    {
+                        "id":entity,
+                        "label":entity,
+                        "description":label,
+                        "defaultChecked": False
+                    })
+
+            items_dict[entity.lower()] = label
+
+        props = {
+                "timeout": 6000,
+                "topText": "Found the following topics in the text!",
+                "Title": "Select topics to track!",
+                "items": items_list}
+
+        checklist_element = cl.CustomElement(
+            name="SelectToTrack",
+            props=props
+        )
+
+        # 3. Send the component attached to a chat message
+        selection_response = await cl.AskElementMessage(
+            content="Select topics.",
+            element=checklist_element
+        ).send()
+
+        print(selection_response)
+
+        if(selection_response['submitted']):
+            for key in selection_response:
+                if(selection_response[key] and not(key=='submitted')):
+                    tracked_entities[key] = (found_subjects[key],sch.get_schema(found_subjects[key]))
+        else:
+            pass
+
+        print(tracked_entities)
 
         # Redesign the summary to feed back as context.
-        summary = dict()
-        for key in scene_summary.keys():
-            summary[key] = ', '.join(scene_summary[key])
+        for entity in tracked_entities.keys():
 
-        '''for role in scene_summary.keys():
+            role = tracked_entities[entity][0]
+            schema = tracked_entities[entity][1]
 
-            try:
-                print(role)
-                # Dynamically create Pydantic schema for role -> schema, keys
-                if(role.endswith('s')): role = role[:-1]
-                RoleSchema = sch.get_pydantic_schema('RoleSchema',role)
+            RoleSchema = sch.get_pydantic_schema('RoleSchema',role,entity)
+            role_subjects = list(RoleSchema.model_fields.keys())
 
-                # Pass keys, role and entity to prompt creation function
-                role_subjects = list(RoleSchema.model_fields.keys())
-
-                # Pass pydantic schema to tokenize_and_generate
-                for entity in scene_summary[role]:
-                    scene_extraction_prompt = prompts.isolate_scene_element(text=scene,entity=entity,aspect=role,subjects=role_subjects)
-                    print(scene_extraction_prompt)
-                    isolated_element = await tokenize_and_generate(scene_extraction_prompt,max_new_tokens=256,temperature=0.6,template=RoleSchema)
-                    await cl.Message(content=isolated_element).send()
-                    print(isolated_element)
-                    print()
-                    print()
-            except Exception as e:
-                print(e)'''
+            scene_extraction_prompt = prompts.isolate_scene_element(text=scene,entity=entity,aspect=role,subjects=role_subjects)
+            isolated_element = await tokenize_and_generate(scene_extraction_prompt,max_new_tokens=256,temperature=0.4,template=RoleSchema,use_chat_template=True)
+            isolated_element = RoleSchema.model_validate_json(isolated_element)
+            isolated_element = isolated_element.model_dump()
+            await cl.Message(content=isolated_element).send()
 
 async def extract_entities(user_message):
 
@@ -752,16 +783,17 @@ async def add_entity_context(idea,entity_threshold=0.4):
 # Core Functions
 #############
 
-async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,template=None):
+async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,template=None, use_chat_template=True):
 
     synthesis_prompt = tokenizer.apply_chat_template(
-                                    chat_history,
-                                    tokenize=False,
-                                    add_generation_prompt=True
-                                    )
+                                chat_history,
+                                tokenize=False,
+                                add_generation_prompt=True
+                                )
+    print(synthesis_prompt)
 
     if(template):
-        generator = get_or_create_generator(hf_model, template)
+        generator = get_or_create_generator(outline_model, template)
         answer = await cl.make_async(generator)(
         synthesis_prompt,
         max_new_tokens=max_new_tokens, 
@@ -1309,9 +1341,9 @@ async def on_message(user_message: cl.Message):
         else:
             #async with cl.Step(name=f"Extract Entities") as step:
             #    await extract_entities(user_message)
-            async with cl.Step(name=f"Adding Entity Context") as step:
-                await get_gist(user_message)
-                #await split_scenes(user_message)
+            
+            await get_gist(user_message)
+            #await split_scenes(user_message)
 
     elif(selected_mode=='Update'):
 

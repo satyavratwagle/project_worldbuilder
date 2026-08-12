@@ -4,36 +4,44 @@ from pydantic import create_model, Field
 pydantic_descriptions = dict()
 
 # Character
-pydantic_descriptions['appearance'] = "The physical appearance of the character."
-pydantic_descriptions['personality'] = "The personality traits shown by the character."
-pydantic_descriptions['abilities'] = "Extraordinary abilities shown by the character."
-pydantic_descriptions['backstory'] = "Information about the character's past."
-pydantic_descriptions['relationships'] = "Nature of the relationships of the character with others."
+def get_pydantic_descriptions(role,topic,subject):
 
-# Location
-pydantic_descriptions['location'] = "Physical location in the world."
-pydantic_descriptions['architecture'] = "Description of the buildings at the location if any."
-pydantic_descriptions['geography'] = "Geographical layout of the location."
-pydantic_descriptions['demographics'] = "Description of the people living in the location if any."
-pydantic_descriptions['government'] = "Information about the rulers of the location if any."
-pydantic_descriptions['history'] = "Information about the history of the location."
+	# Character
+	if(role=='character'):
+		if(topic=='appearance'):return f"Description of the physical appearance of {subject}."
+		elif(topic=='personality'):return f"Description of the personality traits shown by {subject}."
+		elif(topic=='abilities'):return f"Description of extraordinary abilities shown by {subject}."
+		elif(topic=='backstory'):return f"Information about the past of {subject}."
+		elif(topic=='relationships'):return f"Nature of the relationships of {subject} with others."
 
-# Faction
-pydantic_descriptions['structure'] = "The organizational structure of the faction."
-pydantic_descriptions['ideology'] = "The ideology followed by members of the faction"
-pydantic_descriptions['influence'] = "The impact of the organization on the world."
-pydantic_descriptions['history'] = "Information about the history of the faction."
+	# Location
+	elif(role=='location'):
+		if(topic=='location'):return f"Description of the physical location of {subject} in the world."
+		elif(topic=='architecture'):return f"Description of the buildings within {subject} if any."
+		elif(topic=='geography'):return f"Description of the geographical layout of the area around {subject} if given."
+		elif(topic=='demographics'):return f"Description of the people living in {subject} if any."
+		elif(topic=='government'):return f"Information about the rulers of {subject} if any."
+		elif(topic=='history'):return f"Information about the history of {subject} if given."
 
-# Artifact
-pydantic_descriptions['rules'] = "Rules related to how the artifact operates."
-pydantic_descriptions['applications'] = "Specified areas of application of the artifact."
-pydantic_descriptions['variations'] = "Alternative versions of the artifact."
-pydantic_descriptions['mythos'] = "History and mythos related to the artifact."
+	# Faction
+	if(role=='faction'):
+		if(topic=='structure'):return f"Description of the organizational structure of {subject}."
+		elif(topic=='ideology'):return f"Description of the ideology followed by members of {subject}"
+		elif(topic=='influence'):return f"Description of the impact of {subject} on the world."
+		elif(topic=='history'):return f"Information about the history of {subject}."
 
-# Event
-pydantic_descriptions['background'] = "Past events, if any, that led up to the current event."
-pydantic_descriptions['process'] = "What is happening in the present."
-pydantic_descriptions['aftermath'] = "Future impact of the event, if specified."
+	# Artifact
+	if(role=='artifact'):
+		if(topic=='rules'):return f"Description of the rules related to how {subject} operates."
+		elif(topic=='applications'):return f"Description of the areas of application of {subject}."
+		elif(topic=='variations'):return f"Description of alternative versions of {subject}."
+		elif(topic=='mythos'):return f"History and mythos related to {subject}."
+
+	# Event
+	if(role=='event'):
+		if(topic=='background'):return f"Description of past events, if any, that led up to {subject},if specified."
+		elif(topic=='process'):return f"Description of {subject} in the present."
+		elif(topic=='aftermath'): return f"Description of future impact of {subject}, if specified."
 
 
 def create_character_schema():
@@ -121,17 +129,17 @@ def get_schema(label):
 	else:
 		print('No Matching Schema Found!')
 
-def get_pydantic_schema(schema_name,label):
+def get_pydantic_schema(schema_name,role,subject):
 
-	schema = get_schema(label)
+	schema = get_schema(role)
 
 	field_definitions = {}
 	
-	for key, value in schema.items():
+	for key, topic in schema.items():
 		if(not(key=='overview') and not(key=='misc')):
-			val_type = type(value)
+			val_type = type(topic)
 			try:
-				field_definitions[key] = (val_type,Field(description=pydantic_descriptions[key]))
+				field_definitions[key] = (str,Field(description=get_pydantic_descriptions(role,topic,subject)))
 			except:
 				pass
 		
