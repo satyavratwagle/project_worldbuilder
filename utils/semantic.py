@@ -166,9 +166,9 @@ class Semantic():
 
         return list(set(chosen_entities))
 
-    def named_entity_extraction(self,corpus_path,labels=['character','location','artifact','faction','event'],entity_threshold=0.7):
+    def named_entity_extraction(self,corpus ,labels=['character','location','artifact','faction','event'],entity_threshold=0.7):
 
-        corpus = pre.get_corpus(corpus_path)
+        #corpus = pre.get_corpus(corpus_path)
         chunks = pre.get_chunks(corpus,chunk_size=200)
 
         entities_dict = dict()

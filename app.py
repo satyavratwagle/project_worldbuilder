@@ -4,6 +4,7 @@ import asyncio
 import json
 import torch
 
+from functools import lru_cache
 import re
 import sys
 import os
@@ -58,10 +59,21 @@ io_utils = IO_Utils()
 model_id = "meta-llama/Llama-3.2-3B-Instruct"
 
 named_entities = ['character','location','artifact','faction','event','definition']
+
 #"Qwen/Qwen2.5-0.5B-Instruct" #
 punctuation_tuple = tuple(string.punctuation)
 persistent_actions = [
 ]
+
+#@lru_cache(maxsize=32)
+def get_or_create_generator(model, schema_class):
+  """Caches the Outlines JSON generator so the FSM isn't recompiled
+
+  on every request, preventing token desync errors.
+  """
+  outline_model = outlines.from_transformers(model, tokenizer)
+
+  return outlines.Generator(outline_model,schema_class)
 
 @cl.cache
 def load_extraction_model():
@@ -88,7 +100,7 @@ def load_models():
     generator_model = outlines.Generator(model)
     #model = outlines.generate.regex(hf_modela, english_regex)
 
-    return model, tokenizer, generator_model
+    return model, tokenizer, generator_model,hf_model
 
 @cl.cache
 def load_embedding_models(): 
@@ -116,7 +128,7 @@ def load_semantic_consistency_models():
 
     return nli_model,nli_tokenizer
 
-generator_model, tokenizer, model = load_models()
+generator_model, tokenizer, model, hf_model = load_models()
 embed_model, dataset = load_embedding_models()
 nli_model,nli_tokenizer = load_semantic_consistency_models()
 extraction_model  = load_extraction_model()
@@ -439,52 +451,91 @@ async def add_tag(action: cl.Action):
 #############
 
 
+async def split_scenes(file):
+
+    #file = user_message.elements[0]
+    sentences = io_utils.load_text_sentences(file.path)
+
+    scenes = []
+    curr_scene = []
+    window_size = 2
+    start_idx = 0
+    end_idx = 0
+
+    chunks = []
+    for idx in range(len(sentences)-window_size):
+        chunk = await add_entity_context(' '.join(sentences[idx:idx+window_size]))
+        chunks.append(chunk)
+
+    chunk_embeddings = sem.embed_text(chunks)
+
+    for idx in range(len(chunk_embeddings)-1):
+        cosine_sim = sem.get_cosine_similarity(chunk_embeddings[idx],chunk_embeddings[idx+1])
+        #print(s1)
+        #print(s2)
+        #print(cosine_sim)
+        #print()
+
+        end_idx = idx+window_size+1
+        if(cosine_sim<0.75):
+            scene = await add_entity_context(' '.join(sentences[start_idx:end_idx+1]))
+            scenes.append(scene)
+            start_idx = idx+window_size+1
+            
+    
+    end_idx = len(sentences)
+    scene = await add_entity_context(' '.join(sentences[start_idx:end_idx]))
+    scenes.append(scene)
+    
+    return scenes
+
 async def get_gist(user_message):
 
     file = user_message.elements[0]
-    text_rows = io_utils.load_text_rows(file.path)
+    #text_rows = io_utils.load_text_rows(file.path)
+    scenes = await split_scenes(file)
 
-    summary = 'No context available.'
-    scenes  = []
+    summary = 'No context available.' 
 
-    RoleSchema = sch.get_pydantic_schema('RoleSchema','character')
-    print(type(RoleSchema))
-    print(type(SceneSummary))
-
-    for row in text_rows:
-        row_with_context = await add_entity_context(row)
-        prompt = prompts.get_gist_prompt(text=row_with_context,context=summary, subjects = named_entities[:-1]) # Ignore 'definitions'
+    for scene in scenes:
+        #scene_with_context = await add_entity_context(scene)
+        prompt = prompts.get_gist_prompt(text=scene,context=summary, subjects = named_entities[:-1]) # Ignore 'definitions'
         print(prompt)
-        summary = await tokenize_and_generate(prompt,max_new_tokens=256,temperature=0.2,template=SceneSummary)
-        scene = SceneSummary.model_validate_json(summary)
-        scene = scene.model_dump()
-        print(scene)
+        summary = await tokenize_and_generate(prompt,max_new_tokens=256,temperature=0.3,template=SceneSummary)
+        scene_summary = SceneSummary.model_validate_json(summary)
+        scene_summary = scene_summary.model_dump()
+        print(scene_summary)
         print()
+
+        await cl.Message(content=scene_summary).send()
+
         # Redesign the summary to feed back as context.
         summary = dict()
-        for key in scene.keys():
-            summary[]
+        for key in scene_summary.keys():
+            summary[key] = ', '.join(scene_summary[key])
 
-        for role in scene.keys():
+        '''for role in scene_summary.keys():
 
             try:
                 print(role)
                 # Dynamically create Pydantic schema for role -> schema, keys
-                RoleSchema = sch.get_pydantic_schema('RoleSchema',role[:-1])
+                if(role.endswith('s')): role = role[:-1]
+                RoleSchema = sch.get_pydantic_schema('RoleSchema',role)
 
                 # Pass keys, role and entity to prompt creation function
                 role_subjects = list(RoleSchema.model_fields.keys())
 
                 # Pass pydantic schema to tokenize_and_generate
-                for entity in scene[role]:
-                    scene_extraction_prompt = prompts.isolate_scene_element(text=row_with_context,entity=entity,aspect=role,subjects=role_subjects)
+                for entity in scene_summary[role]:
+                    scene_extraction_prompt = prompts.isolate_scene_element(text=scene,entity=entity,aspect=role,subjects=role_subjects)
                     print(scene_extraction_prompt)
                     isolated_element = await tokenize_and_generate(scene_extraction_prompt,max_new_tokens=256,temperature=0.6,template=RoleSchema)
+                    await cl.Message(content=isolated_element).send()
                     print(isolated_element)
                     print()
                     print()
             except Exception as e:
-                print(e)
+                print(e)'''
 
 async def extract_entities(user_message):
 
@@ -710,9 +761,9 @@ async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,
                                     )
 
     if(template):
-        answer = await cl.make_async(generator_model)(
+        generator = get_or_create_generator(hf_model, template)
+        answer = await cl.make_async(generator)(
         synthesis_prompt,
-        template,
         max_new_tokens=max_new_tokens, 
         temperature=temperature
         )
@@ -1260,6 +1311,7 @@ async def on_message(user_message: cl.Message):
             #    await extract_entities(user_message)
             async with cl.Step(name=f"Adding Entity Context") as step:
                 await get_gist(user_message)
+                #await split_scenes(user_message)
 
     elif(selected_mode=='Update'):
 

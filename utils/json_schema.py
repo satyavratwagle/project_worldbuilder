@@ -1,6 +1,40 @@
-from pydantic import create_model
+from pydantic import create_model, Field
 
 # If Character, Location, Faction, Artifact, Event, Era
+pydantic_descriptions = dict()
+
+# Character
+pydantic_descriptions['appearance'] = "The physical appearance of the character."
+pydantic_descriptions['personality'] = "The personality traits shown by the character."
+pydantic_descriptions['abilities'] = "Extraordinary abilities shown by the character."
+pydantic_descriptions['backstory'] = "Information about the character's past."
+pydantic_descriptions['relationships'] = "Nature of the relationships of the character with others."
+
+# Location
+pydantic_descriptions['location'] = "Physical location in the world."
+pydantic_descriptions['architecture'] = "Description of the buildings at the location if any."
+pydantic_descriptions['geography'] = "Geographical layout of the location."
+pydantic_descriptions['demographics'] = "Description of the people living in the location if any."
+pydantic_descriptions['government'] = "Information about the rulers of the location if any."
+pydantic_descriptions['history'] = "Information about the history of the location."
+
+# Faction
+pydantic_descriptions['structure'] = "The organizational structure of the faction."
+pydantic_descriptions['ideology'] = "The ideology followed by members of the faction"
+pydantic_descriptions['influence'] = "The impact of the organization on the world."
+pydantic_descriptions['history'] = "Information about the history of the faction."
+
+# Artifact
+pydantic_descriptions['rules'] = "Rules related to how the artifact operates."
+pydantic_descriptions['applications'] = "Specified areas of application of the artifact."
+pydantic_descriptions['variations'] = "Alternative versions of the artifact."
+pydantic_descriptions['mythos'] = "History and mythos related to the artifact."
+
+# Event
+pydantic_descriptions['background'] = "Past events, if any, that led up to the current event."
+pydantic_descriptions['process'] = "What is happening in the present."
+pydantic_descriptions['aftermath'] = "Future impact of the event, if specified."
+
 
 def create_character_schema():
 	schema = dict()
@@ -89,8 +123,6 @@ def get_schema(label):
 
 def get_pydantic_schema(schema_name,label):
 
-	print(label)
-
 	schema = get_schema(label)
 
 	field_definitions = {}
@@ -98,7 +130,10 @@ def get_pydantic_schema(schema_name,label):
 	for key, value in schema.items():
 		if(not(key=='overview') and not(key=='misc')):
 			val_type = type(value)
-			field_definitions[key] = val_type
+			try:
+				field_definitions[key] = (val_type,Field(description=pydantic_descriptions[key]))
+			except:
+				pass
 		
-	return create_model(schema_name, **{key: (list, ...) for key in field_definitions.keys()})
+	return create_model(schema_name, **field_definitions)
 

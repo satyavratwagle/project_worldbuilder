@@ -56,13 +56,16 @@ def get_context_retrieval_prompt(role='system', history=None, query='',relevant_
 def get_gist_prompt(role='system', history=None, text='',context='No context available',subjects=['characters','location','events']):
 
 	if(role=='system'):
-		prompt = {"role": "system", "content": (f"Your job is to summarize the given scene in the given format. "
-												"The summary must specify the following subjects involved in the scene. "
-												f"\nSubjects : {', '.join(subjects[:-1])} and {subjects[-1]}.\n"
-												"If no subject is found, respond with 'None'. "
-												"You must ONLY use the context provided to summarize. "
+		'''prompt = {"role": "system", "content": (f"Your job is to specify the topics given in the response format that are involved in the scene. "
+												"Only include topics with significant presence in the scene. "
+												"If no topic is found, respond with 'None'. "
+												"Characters specified must be living beings. "
+												"Events specified must be significant. "
+												"You must ONLY use the context provided to specify the topics. "
 												f"\n\nContext:{context}\n\nScene:{text}"
-												)}
+												)}'''
+		prompt = {"role":"system","content":(f'Analyze the following scene text and extract all required information accurately, strictly adhering to the schema definitions.'
+												f'\n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---')}
 	elif(role=='user'):
 		prompt = {"role": "user", "content": f"Relevant Entities: {relevant_entities}\nUser Query: {query}"}
 		print(prompt)
@@ -76,9 +79,9 @@ def get_gist_prompt(role='system', history=None, text='',context='No context ava
 def isolate_scene_element(role='system', history=None, text='',entity='',aspect='',subjects=['overview']):
 
 	if(role=='system'):
-		prompt = {"role": "system", "content": (f"Your job is to elaborate upon {entity}, which is a {aspect} in the context of the given scene. "
+		prompt = {"role": "system", "content": (f"Your job is to provide a brief description of {entity}, which is a {aspect} in the context of the given scene. "
 												f"Your response must contain ONLY information about {entity} in the context of the given scene."
-												f"You must describe the following features of {entity} in the scene : {', '.join(subjects)}\n "
+												f"You must respond with a description of {entity} in the specified response format. "
 												f"\n\nScene:{text}"
 												)}
 	elif(role=='user'):
