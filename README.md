@@ -13,6 +13,9 @@ Experiments in using Language Models to assist in novel-writing.
 # Functionalities
 
 ## Query Answering
-- **Flow :** `Retrieve Context` -> `Use Local Context to Answer Question` -> `Check Context Sufficiency`
+- **Flow :** `Retrieve Context` -> `Use Local Context to Answer Question` -> `Check Context Sufficiency` (TBD)
+
+## Text Analysis
+- **Flow :** `Scene Detection` -> `Entity Extraction + Description` -> `Long-Term Dependency Extraction` (TBD)
 
 ## 
