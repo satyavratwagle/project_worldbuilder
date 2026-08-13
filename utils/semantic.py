@@ -187,7 +187,7 @@ class Semantic():
             print()
 
 
-        chosen_entities = []
+        chosen_entities = dict()
         for key in entities_dict.keys():
             if(key[0].isupper()):
 
@@ -197,7 +197,7 @@ class Semantic():
                     scores.append(score)
 
                 if(np.max(scores)>entity_threshold):
-                    chosen_entities.append([key,labels[np.argmax(scores)]])
+                    chosen_entities[key] = labels[np.argmax(scores)]
 
         return chosen_entities
 

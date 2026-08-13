@@ -34,6 +34,10 @@ from pathlib import Path
 from utils.io_utils import IO_Utils
 from utils.pydantic_schema import ReasonedResponse,SceneSummary
 
+from torchao.quantization import Int8WeightOnlyConfig, PerGroup
+import mlx_lm
+from mlx_lm import load, generate
+from mlx_lm.sample_utils import make_sampler
 
 def uppercase(text):
     return text[0].upper()+text[1:]
@@ -66,7 +70,7 @@ punctuation_tuple = tuple(string.punctuation)
 persistent_actions = [
 ]
 
-#@lru_cache(maxsize=32)
+@lru_cache(maxsize=32)
 def get_or_create_generator(model, schema_class):
   return outlines.Generator(model,schema_class)
 
@@ -80,17 +84,17 @@ def load_extraction_model():
 @cl.cache
 def load_models():    
 
-    '''hf_model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            ignore_mismatched_sizes=True,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            attn_implementation="eager",
-        )'''
-    hf_model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="mps")
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    #quant_config = Int8WeightOnlyConfig()
+    #quantization_config = TorchAoConfig(quant_type=quant_config)
+    #,quantization_config=quantization_config
+    #hf_model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="mps")
+    #tokenizer = AutoTokenizer.from_pretrained(model_id)
+    #model = outlines.from_transformers(hf_model, tokenizer)
+
+    mlx_model, tokenizer = mlx_lm.load(config['model_dir']+f'/llama-32-3b-instruct-quantized-4b')
     print("Wrapping model with Outlines (v0.3+ style)...")
-    model = outlines.from_transformers(hf_model, tokenizer)
+    model = outlines.from_mlxlm(mlx_model, tokenizer)
+    
     generator_model = outlines.Generator(model)
     #model = outlines.generate.regex(hf_modela, english_regex)
 
@@ -175,6 +179,7 @@ async def retrieve_graph_rag(query,threshold=0.4,k=10,hops=1):
     if(len(full_graph_context['indirect'])>0):
         full_context_text+=f"SUPPLEMENTARY INFORMATION:\n\n{"\n\n".join(full_graph_context['indirect'])}\n\n"
     if(len(full_graph_context['direct'])>0):
+        full_graph_context['direct'].reverse()
         full_context_text += f"DIRECT CONTEXT:\n\n{"\n\n".join(full_graph_context['direct'])}"
 
     if(len(full_context_text)==0):
@@ -441,6 +446,44 @@ async def add_tag(action: cl.Action):
 
     await cl.context.emitter.task_end()
         
+async def show_checklist(entities):
+
+    # Entities : Dict: entity:label (e.g "Alvar" : "character")
+
+    items_list = []
+    for key in entities.keys():
+
+        entity = key
+        label = entities[key]
+
+        items_list.append(
+                {
+                    "id":entity,
+                    "label":entity,
+                    "description":label,
+                    "defaultChecked": False
+                })
+
+    props = {
+            "timeout": 6000,
+            "topText": "Found the following topics in the text!",
+            "Title": "Select topics to track!",
+            "items": items_list}
+
+    checklist_element = cl.CustomElement(
+        name="SelectToTrack",
+        props=props
+    )
+
+    # 3. Send the component attached to a chat message
+    selection_response = await cl.AskElementMessage(
+        content="Select topics.",
+        element=checklist_element
+    ).send()
+
+    return selection_response
+
+
 
 #############
 # Tools
@@ -495,10 +538,12 @@ async def get_gist(user_message):
     summary = 'No context available.' 
     tracked_entities = dict()
 
+    scene_number = 1
     for scene in scenes:
         #scene_with_context = await add_entity_context(scene)
-        prompt = prompts.get_gist_prompt(text=scene,context=summary, subjects = named_entities[:-1]) # Ignore 'definitions'
-        summary = await tokenize_and_generate(prompt,max_new_tokens=256,temperature=0.3,template=SceneSummary,use_chat_template=True)
+        gist_prompt_history = prompts.get_gist_prompt(role='system') 
+        gist_prompt_history = prompts.get_gist_prompt(role='user',history=gist_prompt_history,text=scene,tracked_entities=list(tracked_entities.keys()))
+        summary = await tokenize_and_generate(gist_prompt_history,max_new_tokens=256,temperature=0.3,template=SceneSummary)
         scene_summary = SceneSummary.model_validate_json(summary)
         scene_summary = scene_summary.model_dump()
 
@@ -509,39 +554,7 @@ async def get_gist(user_message):
             for subject in scene_summary[key]:
                 found_subjects[subject] = key
 
-        items_list = []
-        items_dict = dict()
-        for entity in found_subjects.keys():
-
-            label = found_subjects[entity]
-
-            items_list.append(
-                    {
-                        "id":entity,
-                        "label":entity,
-                        "description":label,
-                        "defaultChecked": False
-                    })
-
-            items_dict[entity.lower()] = label
-
-        props = {
-                "timeout": 6000,
-                "topText": "Found the following topics in the text!",
-                "Title": "Select topics to track!",
-                "items": items_list}
-
-        checklist_element = cl.CustomElement(
-            name="SelectToTrack",
-            props=props
-        )
-
-        # 3. Send the component attached to a chat message
-        selection_response = await cl.AskElementMessage(
-            content="Select topics.",
-            element=checklist_element
-        ).send()
-
+        selection_response = await show_checklist(found_subjects)
         print(selection_response)
 
         if(selection_response['submitted']):
@@ -562,58 +575,28 @@ async def get_gist(user_message):
             RoleSchema = sch.get_pydantic_schema('RoleSchema',role,entity)
             role_subjects = list(RoleSchema.model_fields.keys())
 
-            scene_extraction_prompt = prompts.isolate_scene_element(text=scene,entity=entity,aspect=role,subjects=role_subjects)
-            isolated_element = await tokenize_and_generate(scene_extraction_prompt,max_new_tokens=256,temperature=0.4,template=RoleSchema,use_chat_template=True)
+            scene_extraction_prompt_history = prompts.isolate_scene_element(role='system')
+            scene_extraction_prompt_history = prompts.isolate_scene_element(role='user',history=scene_extraction_prompt_history,text=scene,entity=entity,subjects=role_subjects)
+            isolated_element = await tokenize_and_generate(scene_extraction_prompt_history,max_new_tokens=256,temperature=0.4,template=RoleSchema)
             isolated_element = RoleSchema.model_validate_json(isolated_element)
             isolated_element = isolated_element.model_dump()
             await cl.Message(content=isolated_element).send()
+
+        scene_number += 1
 
 async def extract_entities(user_message):
 
     tracked_entities = cl.user_session.get("entities_to_track")
     file = user_message.elements[0]
 
-    entities = sem.named_entity_extraction(file.path)
-
-    items_list = []
-    items_dict = dict()
-    for entity,label in entities:
-
-        items_list.append(
-                {
-                    "id":entity.lower(),
-                    "label":entity,
-                    "description":label,
-                    "defaultChecked": False
-                })
-
-        items_dict[entity.lower()] = label
-
-    print(items_dict)
-    props = {
-            "timeout": 6000,
-            "topText": "Found Named Entities in Text",
-            "Title": "Select Entities to Add Context",
-            "items": items_list}
-
-    checklist_element = cl.CustomElement(
-        name="SelectToTrack",
-        props=props
-    )
-
-    # 3. Send the component attached to a chat message
-    selection_response = await cl.AskElementMessage(
-        content="",
-        element=checklist_element
-    ).send()
-
+    selection_response = await show_checklist(entities)
     print(selection_response)
 
     for key in selection_response.keys():
-        if(not(key=='submitted') and selection_response[key]):
+        if(not(key.lower()=='submitted') and selection_response[key]):
 
-            entity = key
-            label = items_dict[key]
+            entity = key.lower()
+            label = entities[key]
 
             response = await cl.AskActionMessage(
                 content=f"What is {uppercase(entity)}?",
@@ -794,11 +777,28 @@ async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,
 
     if(template):
         generator = get_or_create_generator(outline_model, template)
+
+        sampler = make_sampler(temp=temperature)
         answer = await cl.make_async(generator)(
+                    synthesis_prompt,
+                    sampler=sampler,
+                    max_tokens=max_new_tokens,   # Set your max tokens here
+                )
+
+        # Fallback if outlines.Generator gives problems
+        '''answer = await cl.make_async(outline_model)(
+                    synthesis_prompt,
+                    output_type=template,
+                    sampler=sampler,
+                    max_tokens=max_new_tokens,   # Set your max tokens here
+                )'''
+
+        # Fallback to transformers if mlx-lm has issues
+        '''answer = await cl.make_async(generator)(
         synthesis_prompt,
         max_new_tokens=max_new_tokens, 
         temperature=temperature
-        )
+        )'''
     else:
         answer = await cl.make_async(generator_model)(
         synthesis_prompt,
@@ -807,7 +807,6 @@ async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,
         )
 
     return answer
-
 
 async def query_processing(user_input,entity_threshold=0.4):
 
@@ -1318,7 +1317,7 @@ async def on_chat_start():
 
     await cl.context.emitter.set_commands(helpers)
 
-    await cl.Message(content="Hello! I'm your novel-writing assistant. How can I help you today?",actions=persistent_actions).send()
+    await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?",actions=persistent_actions).send()
     
     task_list = cl.TaskList()
     cl.user_session.set("task_list",task_list)
@@ -1398,7 +1397,7 @@ async def on_message(user_message: cl.Message):
                 await cl.Message(content=response.final_answer,actions=actions).send()
 
             # Check if Base Context is Sufficient
-            best_context, max_prob = await check_context_sufficiency(response.scratchpad,context_list)
+            #best_context, max_prob = await check_context_sufficiency(response.scratchpad,context_list)
 
         
 @cl.on_chat_end

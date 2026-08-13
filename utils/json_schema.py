@@ -13,6 +13,8 @@ def get_pydantic_descriptions(role,topic,subject):
 		elif(topic=='abilities'):return f"Description of extraordinary abilities shown by {subject}."
 		elif(topic=='backstory'):return f"Information about the past of {subject}."
 		elif(topic=='relationships'):return f"Nature of the relationships of {subject} with others."
+		elif(topic=='actions'):return f"Describe actions taken by {subject} in the text."
+		elif(topic=='goals'):return f"Describe the goals of {subject} in the text."
 
 	# Location
 	elif(role=='location'):
@@ -131,6 +133,7 @@ def get_schema(label):
 
 def get_pydantic_schema(schema_name,role,subject):
 
+	print(role)
 	schema = get_schema(role)
 
 	field_definitions = {}
