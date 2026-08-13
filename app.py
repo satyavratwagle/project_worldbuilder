@@ -155,6 +155,19 @@ available_tools = [{
     }
 }]
 
+def create_json_dict(name,type):
+
+    json_dict = dict()
+    json_dict['name'] = name.lower()
+    json_dict['type'] = type.lower()
+    json_dict['data'] = sch.get_schema(type)
+    json_dict['tags'] = []
+    json_dict['related'] = sch.get_schema(type)
+    json_dict['aliases'] = []
+    json_dict['blurb'] = ""
+
+    return json_dict
+
 async def retrieve_graph_rag(query,threshold=0.4,k=10,hops=1):
 
     graph = cl.user_session.get("knowledge_graph")
@@ -483,6 +496,45 @@ async def show_checklist(entities):
 
     return selection_response
 
+async def show_card(json_dict,prefill=None,open_with='overview'):
+
+    # card_title - Name ("Alvar")
+    # crd_type - Idea type ("Character")
+    # open_with - topic to open on ("appearance")
+    # schema - dict() containing all sub_schema
+    # idea (optional) - dict() like schema : Stuff to prefill
+    if(not(prefill)):
+        prefill = sch.get_schema(json_dict['type'])
+
+    props = {
+            "timeout": 6000,
+            "initialTab":open_with,
+            "enableEdit": True,
+            "initEdit": True,
+            "topText": uppercase(json_dict['type']),
+            "Title": uppercase(json_dict['name']),
+            "fields": []}
+
+    for key in json_dict['data'].keys():
+        new_field = dict()
+        new_field['id'] = key
+        new_field['label'] = uppercase(key)
+        new_field['type'] = 'text'
+        new_field['value'] = prefill[key]
+        new_field['description'] = json_dict['data'][key]#' '.join(schema[key])
+        props['fields'].append(new_field)
+
+    element = cl.CustomElement(
+                    name="KnowledgeBase",
+                    display="inline",
+                    props=props
+                )
+
+    response = await cl.AskElementMessage(
+                content="Please describe your idea!",
+                element=element,
+                timeout=6000
+            ).send()
 
 
 #############
@@ -560,6 +612,8 @@ async def get_gist(user_message):
         if(selection_response['submitted']):
             for key in selection_response:
                 if(selection_response[key] and not(key=='submitted')):
+                    entity_json = create_json_dict(key,found_subjects[key])
+                    await show_card(entity_json)
                     tracked_entities[key] = (found_subjects[key],sch.get_schema(found_subjects[key]))
         else:
             pass
@@ -578,6 +632,7 @@ async def get_gist(user_message):
             scene_extraction_prompt_history = prompts.isolate_scene_element(role='system')
             scene_extraction_prompt_history = prompts.isolate_scene_element(role='user',history=scene_extraction_prompt_history,text=scene,entity=entity,subjects=role_subjects)
             isolated_element = await tokenize_and_generate(scene_extraction_prompt_history,max_new_tokens=256,temperature=0.4,template=RoleSchema)
+            print(isolated_element)
             isolated_element = RoleSchema.model_validate_json(isolated_element)
             isolated_element = isolated_element.model_dump()
             await cl.Message(content=isolated_element).send()
@@ -1319,12 +1374,12 @@ async def on_chat_start():
 
     await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?",actions=persistent_actions).send()
     
-    task_list = cl.TaskList()
-    cl.user_session.set("task_list",task_list)
-    task_list.status = "Idea History"
-    task_list.title = "Ideas."
+    #task_list = cl.TaskList()
+    #cl.user_session.set("task_list",task_list)
+    #task_list.status = "Idea History"
+    #task_list.title = "Ideas."
 
-    await task_list.send()
+    #await task_list.send()
 
 @cl.on_message
 async def on_message(user_message: cl.Message):

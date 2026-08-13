@@ -66,7 +66,7 @@ def get_gist_prompt(role='system', history=None, text='',tracked_entities=[]):
 												"You must ONLY use the context provided to specify the topics. "
 												f"\n\nContext:{context}\n\nScene:{text}"
 												)}'''
-		prompt = {"role":"system","content":(f'Analyze the following scene text and extract all required information accurately, strictly adhering to the schema definitions.'
+		prompt = {"role":"system","content":(f'Analyze the following scene text and extract allrequired information accurately, strictly adhering to the schema definitions.'
 												"Do NOT include any conversational preamble or text. "
                 								"Your response must start immediately with the character '{'."
 												)}
@@ -90,7 +90,7 @@ def isolate_scene_element(role='system', history=None, text='',entity='',subject
 												f"You must respond with a description of {entity} in the specified response format. "
 												f'\n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---')
 												}'''
-		prompt = {"role":"system","content":(f'Analyze the following scene text and describe all required topics accurately, strictly adhering to the schema definitions.'
+		prompt = {"role":"system","content":(f'Analyze the following scene text and briefly describe all required topics, strictly adhering to the schema definitions.'
 												"Do NOT include any conversational preamble or text. "
                 								"Your response must start immediately with the character '{'.")}
 	elif(role=='user'):

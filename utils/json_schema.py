@@ -8,13 +8,13 @@ def get_pydantic_descriptions(role,topic,subject):
 
 	# Character
 	if(role=='character'):
-		if(topic=='appearance'):return f"Description of the physical appearance of {subject}."
-		elif(topic=='personality'):return f"Description of the personality traits shown by {subject}."
-		elif(topic=='abilities'):return f"Description of extraordinary abilities shown by {subject}."
+		if(topic=='appearance'):return f"Brief description of the physical appearance of {subject}."
+		elif(topic=='personality'):return f"Brief description of the personality traits shown by {subject}."
+		elif(topic=='abilities'):return f"Brief description of extraordinary abilities shown by {subject}."
 		elif(topic=='backstory'):return f"Information about the past of {subject}."
 		elif(topic=='relationships'):return f"Nature of the relationships of {subject} with others."
-		elif(topic=='actions'):return f"Describe actions taken by {subject} in the text."
-		elif(topic=='goals'):return f"Describe the goals of {subject} in the text."
+		elif(topic=='actions'):return f"Brief description of the actions taken by {subject} in the text."
+		elif(topic=='goals'):return f"Brief description of the goals of {subject} in the text."
 
 	# Location
 	elif(role=='location'):
