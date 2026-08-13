@@ -10,6 +10,9 @@ Experiments in using Language Models to assist in novel-writing.
 1. Set the directory for the FAISS Store in `config.json`
 2. To run the web application, use the command `chainlit run app.py`
 
+## Quantization
+1. Run `quantization.py` for offline quantization.
+
 # Functionalities
 
 ## Query Answering
@@ -18,4 +21,3 @@ Experiments in using Language Models to assist in novel-writing.
 ## Text Analysis
 - **Flow :** `Scene Detection` -> `Entity Extraction + Description` -> `Long-Term Dependency Extraction` (TBD)
 
-## 
