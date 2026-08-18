@@ -7,6 +7,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import re
 from pathlib import Path
+import gc
 
 def uppercase(text):
     return text[0].upper()+text[1:]
@@ -93,6 +94,7 @@ class JSONUtils():
                     data = json.load(f)
                     name = f"{data.get('name')}.overview"
                     if name:
+                        print(name)
                         filename_to_name[filename] = name
                         documents_lookup.setdefault(name,f"Overview of {uppercase(data.get('name'))} : {' '.join(data['data']['overview'])}")
 
@@ -150,7 +152,6 @@ class JSONUtils():
                 data['related'] = dict()
 
                 for key in keys:
-
                     found_targets = set()
                     text = ' '.join(data['data'][key])
 

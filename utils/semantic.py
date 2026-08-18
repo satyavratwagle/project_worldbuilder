@@ -10,9 +10,28 @@ from datasets import Dataset
 import faiss
 import os
 from rank_bm25 import BM25Okapi
+import json
+from fastcoref import FCoref
+import spacy
+import psutil
+import gc
 
+# Patch to prevent AttributeError with older packages on Transformers 5.x
+_orig_getattr = torch.nn.Module.__getattr__
+def _patched_getattr(self, name):
+    if name == "all_tied_weights_keys":
+        return {}
+    return _orig_getattr(self, name)
+torch.nn.Module.__getattr__ = _patched_getattr
 def uppercase(text):
     return text[0].upper()+text[1:]
+
+def print_memory_usage(step):
+  process = psutil.Process(os.getpid())
+  # rss = Resident Set Size (the actual physical memory used by the process)
+  mem_bytes = process.memory_info().rss
+  mem_mb = mem_bytes / (1024 * 1024)
+  print(f"Step {step} RAM usage: {mem_mb:.2f} MB")
 
 class Semantic():
 
@@ -36,6 +55,43 @@ class Semantic():
         self.dataset = datasets.load_from_disk(os.path.join(STORE_DIR, "obsidian_dataset_temp"))
         self.dataset.load_faiss_index("embeddings", os.path.join(STORE_DIR, "obsidian_index_temp.faiss"))'''
 
+        with open('config.json', "r", encoding="utf-8") as f:
+            # Load the JSON data into a Python dictionary
+            config = json.load(f)
+        self.store_path = config['data_dir']
+
+        self.coreference_model = FCoref(device='cpu')
+
+    def find_aliases(self,name,corpus):
+        #corpus = str
+
+        predictions = self.coreference_model.predict(texts=[corpus])
+        clusters = predictions[0].get_clusters()
+        for cluster in clusters:
+            if(name in cluster):
+                all_aliases = list(set(cluster))
+                break
+
+        # remove pronouns
+        # Load the lightweight spaCy model
+        nlp = spacy.load("en_core_web_sm")
+
+        # Remove apostrophes and pronouns
+        aliases = []
+    
+        for phrase in all_aliases:
+            doc = nlp(phrase)
+            # Filter out tokens tagged as possessive ('POS')
+            # Alternatively, use token.lemma_ or just drop the POS token and keep the rest
+            filtered_tokens = [token.text for token in doc if token.pos_ != "PRON" and token.tag_ != "POS"]
+            cleaned_phrase = " ".join(filtered_tokens).strip()
+            if cleaned_phrase:
+                aliases.append(cleaned_phrase)
+
+        aliases = list(set(aliases))
+                
+        return aliases
+
     def load_extraction_model(self,extraction_model):
         self.extraction_model = extraction_model
 
@@ -54,20 +110,26 @@ class Semantic():
 
         def embed_text(batch):
             # Return a dictionary mapping to your target index string key
+            print_memory_usage('Batching')
             return {"embeddings": self.text_embedding_model.encode(batch["text"], normalize_embeddings=True)}
             
         embedding_dim = self.text_embedding_model.get_embedding_dimension()
         cosine_index = faiss.IndexFlatIP(embedding_dim)
-        new_dataset = new_dataset.map(embed_text, batched=True, batch_size=32)
+        self.new_dataset = new_dataset.map(embed_text, batched=True, batch_size=8)
+        torch.mps.empty_cache()
 
-        print(new_dataset)
-        return new_dataset,cosine_index
+        return self.new_dataset,cosine_index
 
     def reload_faiss_dataset(self):
 
-        STORE_DIR = "data/FAISS_store/"
-        self.dataset = datasets.load_from_disk(os.path.join(STORE_DIR, "worldbuilding_dataset"))
-        self.dataset.load_faiss_index("embeddings", os.path.join(STORE_DIR, "worldbuilding_dataset.faiss"))
+        self.dataset = datasets.load_from_disk(os.path.join(self.store_path, "FAISS_store/worldbuilding_dataset"))
+        self.dataset.load_faiss_index("embeddings", os.path.join(self.store_path, "FAISS_store/worldbuilding_dataset.faiss"))
+        print_memory_usage('Before')
+        try:
+            del self.new_dataset
+        except:
+            pass
+        print_memory_usage('After')
 
         print(self.dataset)
 
@@ -162,9 +224,14 @@ class Semantic():
         chosen_entities = []
         for e in entities:
             if(e['score']>entity_threshold):
-                chosen_entities.append(e['text'].lower())
+                chosen_entities.append(e['text'])
 
-        return list(set(chosen_entities))
+        entities_dict = dict()
+        for e in entities:
+            if(e['text'] in chosen_entities):
+                entities_dict[e['text']] = e['label']
+
+        return entities_dict
 
     def named_entity_extraction(self,corpus ,labels=['character','location','artifact','faction','event'],entity_threshold=0.7):
 

@@ -36,6 +36,25 @@ def get_generation_prompt(role='system', history=None, user_input='', context_te
 	else:
 		return [prompt]
 
+def get_summarization_prompt(role='system', history=None, entity='',type='',subject='',text=''):
+
+	if(role=='system'):
+		prompt = {"role": "system", "content": (f"Your job is to summarize the text given by the user."
+												"Use only the given text to summarize. Do NOT invent or extrapolate information."
+												"Do NOT include any conversational preamble or text."
+												"Answer in strictly 2 or 3 sentences.")}
+	elif(role=='user'):
+		prompt = {"role": "user", "content": (f"The following text contains the descriptions of the {subject} of {entity}, a {type} in a fictional world.\n"
+												f"Descriptions of {subject} of {entity} are described as they evolve across time, separated by ';'.\n"
+												f"Summarize the most consistent descriptions of {subject} of {entity} in the given text.\n"
+												f"\n\n{text}.")}
+
+	if(history):
+		history.append(prompt)
+		return history
+	else:
+		return [prompt]
+
 def get_context_retrieval_prompt(role='system', history=None, query='',relevant_entities=''):
 
 	if(role=='system'):
@@ -67,6 +86,7 @@ def get_gist_prompt(role='system', history=None, text='',tracked_entities=[]):
 												f"\n\nContext:{context}\n\nScene:{text}"
 												)}'''
 		prompt = {"role":"system","content":(f'Analyze the following scene text and extract allrequired information accurately, strictly adhering to the schema definitions.'
+												"Answer each field in strictly 1 or 2 sentences."
 												"Do NOT include any conversational preamble or text. "
                 								"Your response must start immediately with the character '{'."
 												)}
@@ -82,7 +102,7 @@ def get_gist_prompt(role='system', history=None, text='',tracked_entities=[]):
 	else:
 		return [prompt]
 
-def isolate_scene_element(role='system', history=None, text='',entity='',subjects=['overview']):
+def isolate_scene_element(role='system', history=None, text='',entity='',subjects=['overview'], aliases=[]):
 
 	if(role=='system'):
 		'''prompt = {"role": "system", "content": (f"Your job is to provide a brief description of {entity}, which is a {aspect} in the context of the given scene. "
@@ -91,10 +111,12 @@ def isolate_scene_element(role='system', history=None, text='',entity='',subject
 												f'\n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---')
 												}'''
 		prompt = {"role":"system","content":(f'Analyze the following scene text and briefly describe all required topics, strictly adhering to the schema definitions.'
+												"Answer each field in strictly 1 or 2 sentences."
 												"Do NOT include any conversational preamble or text. "
+												"Use only the given information when describing the topics. Do NOT invent or extrapolate information."
                 								"Your response must start immediately with the character '{'.")}
 	elif(role=='user'):
-		prompt = {"role":"user","content":(f'Describe the following topics related to {entity} : {", ".join(subjects)} f\n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---\n')}
+		prompt = {"role":"user","content":(f'Describe the following topics related to {entity} : {", ".join(subjects)}.\n {entity} is also referred to as {','.join(aliases)}. \n Your response should contain ONLY information about {entity}. Do not include information about anything else. \n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---\n')}
 
 	if(history):
 		history.append(prompt)

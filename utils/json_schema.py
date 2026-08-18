@@ -8,42 +8,43 @@ def get_pydantic_descriptions(role,topic,subject):
 
 	# Character
 	if(role=='character'):
-		if(topic=='appearance'):return f"Brief description of the physical appearance of {subject}."
-		elif(topic=='personality'):return f"Brief description of the personality traits shown by {subject}."
-		elif(topic=='abilities'):return f"Brief description of extraordinary abilities shown by {subject}."
-		elif(topic=='backstory'):return f"Information about the past of {subject}."
-		elif(topic=='relationships'):return f"Nature of the relationships of {subject} with others."
-		elif(topic=='actions'):return f"Brief description of the actions taken by {subject} in the text."
-		elif(topic=='goals'):return f"Brief description of the goals of {subject} in the text."
+		if(topic=='overview'):return f"A 1-2 sentence summary of all information known about {subject}. If no information is found, respond with 'None'."
+		if(topic=='appearance'):return f"Brief description of the physical appearance of {subject}. If no information is found, respond with 'None'."
+		elif(topic=='personality'):return f"Brief description of the personality traits shown by {subject}. If no information is found, respond with 'None'."
+		elif(topic=='abilities'):return f"Brief description of extraordinary abilities shown by {subject}. If no information is found, respond with 'None'."
+		elif(topic=='backstory'):return f"Information about the past of {subject}. If no information is found, respond with 'None'."
+		elif(topic=='relationships'):return f"Nature of the relationships of {subject} with others. If no information is found, respond with 'None'."
+		elif(topic=='actions'):return f"Brief description of the actions taken by {subject} in the text. If no information is found, respond with 'None'."
+		elif(topic=='goals'):return f"Brief description of the goals of {subject} in the text. If no information is found, respond with 'None'."
 
 	# Location
 	elif(role=='location'):
-		if(topic=='location'):return f"Description of the physical location of {subject} in the world."
-		elif(topic=='architecture'):return f"Description of the buildings within {subject} if any."
-		elif(topic=='geography'):return f"Description of the geographical layout of the area around {subject} if given."
-		elif(topic=='demographics'):return f"Description of the people living in {subject} if any."
-		elif(topic=='government'):return f"Information about the rulers of {subject} if any."
-		elif(topic=='history'):return f"Information about the history of {subject} if given."
+		if(topic=='location'):return f"Description of the physical location of {subject} in the world. If no information is found, respond with 'None'."
+		elif(topic=='architecture'):return f"Description of the buildings within {subject} if any. If no information is found, respond with 'None'."
+		elif(topic=='geography'):return f"Description of the geographical layout of the area around {subject} if given. If no information is found, respond with 'None'."
+		elif(topic=='demographics'):return f"Description of the people living in {subject} if any. If no information is found, respond with 'None'."
+		elif(topic=='government'):return f"Information about the rulers of {subject} if any. If no information is found, respond with 'None'."
+		elif(topic=='history'):return f"Information about the history of {subject} if given. If no information is found, respond with 'None'."
 
 	# Faction
 	if(role=='faction'):
-		if(topic=='structure'):return f"Description of the organizational structure of {subject}."
-		elif(topic=='ideology'):return f"Description of the ideology followed by members of {subject}"
-		elif(topic=='influence'):return f"Description of the impact of {subject} on the world."
-		elif(topic=='history'):return f"Information about the history of {subject}."
+		if(topic=='structure'):return f"Description of the organizational structure of {subject}. If no information is found, respond with 'None'."
+		elif(topic=='ideology'):return f"Description of the ideology followed by members of {subject} If no information is found, respond with 'None'."
+		elif(topic=='influence'):return f"Description of the impact of {subject} on the world. If no information is found, respond with 'None'."
+		elif(topic=='history'):return f"Information about the history of {subject}. If no information is found, respond with 'None'."
 
 	# Artifact
 	if(role=='artifact'):
-		if(topic=='rules'):return f"Description of the rules related to how {subject} operates."
-		elif(topic=='applications'):return f"Description of the areas of application of {subject}."
-		elif(topic=='variations'):return f"Description of alternative versions of {subject}."
-		elif(topic=='mythos'):return f"History and mythos related to {subject}."
+		if(topic=='rules'):return f"Description of the rules related to how {subject} operates. If no information is found, respond with 'None'."
+		elif(topic=='applications'):return f"Description of the areas of application of {subject}. If no information is found, respond with 'None'."
+		elif(topic=='variations'):return f"Description of alternative versions of {subject}. If no information is found, respond with 'None'."
+		elif(topic=='mythos'):return f"History and mythos related to {subject}. If no information is found, respond with 'None'."
 
 	# Event
 	if(role=='event'):
-		if(topic=='background'):return f"Description of past events, if any, that led up to {subject},if specified."
-		elif(topic=='process'):return f"Description of {subject} in the present."
-		elif(topic=='aftermath'): return f"Description of future impact of {subject}, if specified."
+		if(topic=='background'):return f"Description of past events, if any, that led up to {subject},if specified. If no information is found, respond with 'None'."
+		elif(topic=='process'):return f"Description of {subject} in the present. If no information is found, respond with 'None'."
+		elif(topic=='aftermath'): return f"Description of future impact of {subject}, if specified. If no information is found, respond with 'None'."
 
 
 def create_character_schema():
@@ -132,14 +133,12 @@ def get_schema(label):
 		print('No Matching Schema Found!')
 
 def get_pydantic_schema(schema_name,role,subject):
-
-	print(role)
 	schema = get_schema(role)
 
 	field_definitions = {}
 	
 	for key, topic in schema.items():
-		if(not(key=='overview') and not(key=='misc')):
+		if(not(key=='misc')):
 			val_type = type(topic)
 			try:
 				field_definitions[key] = (str,Field(description=get_pydantic_descriptions(role,topic,subject)))

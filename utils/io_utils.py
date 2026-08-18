@@ -17,6 +17,14 @@ class IO_Utils:
 	def list_files(self,folder):
 		return os.list
 
+	def get_text(self,path):
+
+		with open(path,'r') as file:
+			text = file.read()
+		text = (" ".join(text.split()))
+
+		return text
+
 	def load_text_rows(self,path):
 
 		# returns a list of lines for a text file
@@ -34,10 +42,7 @@ class IO_Utils:
 		# returns a list of lines for a text file
 
 		nlp = spacy.load("en_core_web_sm")
-		with open(path,'r') as file:
-			text = file.read()
-		text = (" ".join(text.split()))
-		
+		text = self.get_text(path)
 		doc = nlp(text)
 
 		# Extract sentences while keeping all punctuation intact

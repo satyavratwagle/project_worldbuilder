@@ -83,8 +83,7 @@ export default function KnowledgeBase() {
 
   const renderField = (field) => {
     const value = values[field.id];
-    if(isEditingAllDesc) {return <Input id={field.id} value={value} onChange={(e) => handleChange(field.id, e.target.value)} className="w-full block" />;}
-      return null;
+    return <Input id={field.id} value={value} onChange={(e) => handleChange(field.id, e.target.value)} className="w-full block" />;
     };
 
   const defaultTab = useMemo(() => {

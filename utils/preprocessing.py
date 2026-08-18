@@ -85,7 +85,10 @@ def get_chunks(corpus_text,chunk_size=400):
     # input : corpus_text (string)
     # Output : chunks (list)
 
-    sentences = corpus_text.split('\n')
+    sentence_pattern = r"(?<=[.!?])\s+"
+    sentences = re.split(sentence_pattern, corpus_text.strip())
+
+    #sentences = corpus_text.split('\n')
 
     chunks = []
     new_sentence = ""
@@ -95,7 +98,10 @@ def get_chunks(corpus_text,chunk_size=400):
         if(len(new_sentence)>chunk_size):
             chunks.append(new_sentence)
             new_sentence = ""
-        
+
+    if(len(new_sentence)>0):
+        chunks.append(new_sentence)
+
     return chunks
 
 

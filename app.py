@@ -38,9 +38,34 @@ from torchao.quantization import Int8WeightOnlyConfig, PerGroup
 import mlx_lm
 from mlx_lm import load, generate
 from mlx_lm.sample_utils import make_sampler
+import concurrent.futures
+import gc
+import mlx.core as mx
+import psutil
 
 def uppercase(text):
     return text[0].upper()+text[1:]
+
+def unload_models(model, tokenizer=None, embed_model=None):
+    # 1. Delete the Python object references
+    del model
+
+    if(tokenizer):
+        del tokenizer
+    if embed_model is not None:
+        del embed_model
+
+    # 2. Force Python's garbage collector to clear reference cycles
+    gc.collect()
+
+    # 3. Clear PyTorch's Metal (MPS) cache (for SentenceTransformers / DeBERTa)
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+    # 4. Clear MLX's Metal memory pool cache (for Llama models)
+    mx.metal.clear_cache()
+    
+    print("Models successfully purged from memory!")
 
 # Used by the response parser for tool
 class RAGQuerySchema(BaseModel):
@@ -59,6 +84,9 @@ with open('config.json', "r", encoding="utf-8") as f:
 store_path= config['data_dir']
 
 
+# Dedicated thread pool to satisfy MLX thread-local stream rules
+mlx_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
 io_utils = IO_Utils()
 
 model_id = "meta-llama/Llama-3.2-3B-Instruct"
@@ -70,9 +98,20 @@ punctuation_tuple = tuple(string.punctuation)
 persistent_actions = [
 ]
 
+# Engineering functions
 @lru_cache(maxsize=32)
 def get_or_create_generator(model, schema_class):
   return outlines.Generator(model,schema_class)
+
+def _sync_generate(prompt, max_tokens, temperature, template):
+    """The actual heavy MLX/Outlines code running safely in a background worker."""
+    if template:
+        generator = get_or_create_generator(outline_model, template)
+        sampler = make_sampler(temp=temperature)
+        return generator(prompt, sampler=sampler, max_tokens=max_tokens)
+    else:
+        sampler = make_sampler(temp=temperature)
+        return generator_model(prompt, sampler=sampler, max_tokens=max_tokens)
 
 @cl.cache
 def load_extraction_model():
@@ -91,8 +130,7 @@ def load_models():
     #tokenizer = AutoTokenizer.from_pretrained(model_id)
     #model = outlines.from_transformers(hf_model, tokenizer)
 
-    mlx_model, tokenizer = mlx_lm.load(config['model_dir']+f'/llama-32-3b-instruct-quantized-4b')
-    print("Wrapping model with Outlines (v0.3+ style)...")
+    mlx_model, tokenizer = mlx_lm.load(config['model_dir']+'/'+config['model_id'])
     model = outlines.from_mlxlm(mlx_model, tokenizer)
     
     generator_model = outlines.Generator(model)
@@ -128,18 +166,16 @@ def load_semantic_consistency_models():
 
 outline_model, tokenizer, generator_model = load_models()
 embed_model, dataset = load_embedding_models()
-nli_model,nli_tokenizer = load_semantic_consistency_models()
+#nli_model,nli_tokenizer = load_semantic_consistency_models()
 extraction_model  = load_extraction_model()
 
-print(tokenizer.decode([91710]))
-print(tokenizer.decode([90247]))
 
 sem = Semantic()
 
 # Remove after verifying libraries.
 
 sem.load_embedding_model(embed_model,dataset)
-sem.load_nli_model(nli_model,nli_tokenizer)
+#sem.load_nli_model(nli_model,nli_tokenizer)
 sem.load_extraction_model(extraction_model)
 
 json_utils = JSONUtils()
@@ -158,7 +194,7 @@ available_tools = [{
 def create_json_dict(name,type):
 
     json_dict = dict()
-    json_dict['name'] = name.lower()
+    json_dict['name'] = name
     json_dict['type'] = type.lower()
     json_dict['data'] = sch.get_schema(type)
     json_dict['tags'] = []
@@ -459,7 +495,7 @@ async def add_tag(action: cl.Action):
 
     await cl.context.emitter.task_end()
         
-async def show_checklist(entities):
+async def show_checklist(entities,message='Select topics.'):
 
     # Entities : Dict: entity:label (e.g "Alvar" : "character")
 
@@ -488,29 +524,49 @@ async def show_checklist(entities):
         props=props
     )
 
-    # 3. Send the component attached to a chat message
-    selection_response = await cl.AskElementMessage(
-        content="Select topics.",
+    element_msg = cl.AskElementMessage(
+        content=message,
         element=checklist_element
-    ).send()
+    )
+    # 3. Send the component attached to a chat message
+    selection_response = await element_msg.send()
+
+    chosen_selections = []
+    for key in selection_response.keys():
+        if(not(key=='submitted') and selection_response[key]):
+            chosen_selections.append(key)
+
+    element_msg.content = f'Selected {', '.join(chosen_selections)}!'
+    await element_msg.update()
 
     return selection_response
 
-async def show_card(json_dict,prefill=None,open_with='overview'):
+async def show_card(json_dict,message='Please describe your idea!',open_with='overview',initEdit=False,enableEdit=True):
 
     # card_title - Name ("Alvar")
     # crd_type - Idea type ("Character")
     # open_with - topic to open on ("appearance")
     # schema - dict() containing all sub_schema
     # idea (optional) - dict() like schema : Stuff to prefill
-    if(not(prefill)):
+
+
+    # Check if file exists. If it does not, add an empty schema.
+    filename = re.sub(r'[^a-zA-Z0-9]', '_', json_dict['name'].lower())
+    isExists = Path(f"{store_path}/{filename}.json").exists()
+    if(isExists):
+        # Load existing schema
+        with open(f"{store_path}/{filename}.json", "r") as file:
+            data = json.load(file)
+        prefill = data['data']
+
+    else:
         prefill = sch.get_schema(json_dict['type'])
 
     props = {
             "timeout": 6000,
             "initialTab":open_with,
-            "enableEdit": True,
-            "initEdit": True,
+            "enableEdit": enableEdit,
+            "initEdit": initEdit,
             "topText": uppercase(json_dict['type']),
             "Title": uppercase(json_dict['name']),
             "fields": []}
@@ -520,8 +576,8 @@ async def show_card(json_dict,prefill=None,open_with='overview'):
         new_field['id'] = key
         new_field['label'] = uppercase(key)
         new_field['type'] = 'text'
-        new_field['value'] = prefill[key]
-        new_field['description'] = json_dict['data'][key]#' '.join(schema[key])
+        new_field['value'] = prefill[key]#json_dict['data'][key]
+        new_field['description'] = json_dict['data'][key]#prefill[key]
         props['fields'].append(new_field)
 
     element = cl.CustomElement(
@@ -530,12 +586,38 @@ async def show_card(json_dict,prefill=None,open_with='overview'):
                     props=props
                 )
 
-    response = await cl.AskElementMessage(
-                content="Please describe your idea!",
+    card_element = cl.AskElementMessage(
+                content=message,
                 element=element,
                 timeout=6000
-            ).send()
+            )
 
+    response = await card_element.send()
+
+    card_element.content = f'Saved new information about {uppercase(json_dict['name'])}!'
+    await card_element.update()
+
+    return response
+
+async def save_json_to_database(json_dict):
+    # Given a valid json_dict of information, saves it to database.
+    # json_dict : dict() 'name':str,'type':str,'data':dict,'related':dict...
+
+    filename = json_dict['name'].lower()
+    filename = re.sub(r'[^a-zA-Z0-9]', '_', filename)
+    isExists = Path(f"{store_path}/{filename}.json").exists()
+    if(isExists):
+        with open(f"{store_path}/{filename}.json", "r") as file:
+            loaded_file = json.load(file)
+    else:
+        loaded_file = create_json_dict(json_dict['name'],json_dict['type'])
+        loaded_file['name'] = json_dict['name'].lower()
+
+    for key in loaded_file['data']:
+        loaded_file['data'][key].append(', '.join(json_dict['data'][key]))
+
+    with open(f"{store_path}/json_store/{filename}.json", "w") as file:
+        json.dump(loaded_file, file, indent=4)
 
 #############
 # Tools
@@ -580,22 +662,91 @@ async def split_scenes(file):
     
     return scenes
 
-@cl.step(name='Creating Gist')
 async def get_gist(user_message):
 
     file = user_message.elements[0]
     #text_rows = io_utils.load_text_rows(file.path)
-    scenes = await split_scenes(file)
+    entities = sem.named_entity_extraction(io_utils.get_text(file.path))
+    selection_response = await show_checklist(entities,message='Please select the entities to learn about!')
+    
+    entities_to_track = dict()
+    for key in selection_response.keys():
+        if(not(key=='submitted') and selection_response[key]):
+            entities_to_track[key] = entities[key] # Harry : character
+
+    aliases = dict()
+    for key in entities_to_track:
+        aliases[key] = sem.find_aliases(key,io_utils.get_text(file.path))
+        await cl.Message(content=f'Found the following aliases for {key}!\n {'\n'.join([f"{i}. {uppercase(alias)}" for i, alias in enumerate(aliases[key], start=1)])}').send()
+
+    scenes = pre.get_chunks(pre.get_corpus(file.path),chunk_size=800)#await split_scenes(file)
+
+    tracked_entities = dict()
+    entity_summaries = dict()
+
+    for key in entities_to_track.keys():
+        type = entities_to_track[key]
+        tracked_entities[key] = dict()
+
+        for scene_number in range(len(scenes)):
+            scene = scenes[scene_number]
+
+            with cl.Step(f'Analysis Tools on Scene : {scene[:min((50,len(scene)))]}...'):
+                #with cl.Step(f'Analysis of Scene : {scene}'):
+                if(any(alias in scene for alias in aliases[key])):
+                    tracked_entities[key][scene_number] = create_json_dict(key,type)
+
+                    RoleSchema = sch.get_pydantic_schema('RoleSchema',type,key)
+                    subjects = list(RoleSchema.model_fields.keys())
+
+                    entity_extraction_prompt_history = prompts.isolate_scene_element(role='system')
+                    entity_extraction_prompt_history = prompts.isolate_scene_element(role='user',history=entity_extraction_prompt_history,text=scene,entity=key,subjects=subjects,aliases=aliases[key])
+                    print(entity_extraction_prompt_history)
+                    isolated_element = await tokenize_and_generate(entity_extraction_prompt_history,max_new_tokens=256,temperature=0.25,template=RoleSchema)
+                    isolated_element = RoleSchema.model_validate_json(isolated_element)
+                    isolated_element = isolated_element.model_dump()
+                    for sch_key in isolated_element.keys():
+                        print(sch_key,isolated_element[sch_key])
+                    print()
+
+                    for sch_key in isolated_element.keys():
+                        tracked_entities[key][scene_number]['data'][sch_key] = isolated_element[sch_key]
+        
+
+        with cl.Step(f'Summarization Tools on information about {key}'):
+            entity_summaries[key] = create_json_dict(key,type)
+
+            for sch_key in entity_summaries[key]['data'].keys():
+                if(not(sch_key=='misc')):
+                    print([tracked_entities[key][s]['data'][sch_key] for s in tracked_entities[key].keys()])
+                    joint_text = ', '.join([tracked_entities[key][s]['data'][sch_key] for s in tracked_entities[key].keys()])
+                    summarization_prompt_history = prompts.get_summarization_prompt(role='system')
+                    summarization_prompt_history = prompts.get_summarization_prompt(role='user',history=summarization_prompt_history,entity=key,type=type,subject=sch_key,text=joint_text)
+                    entity_summary = await tokenize_and_generate(summarization_prompt_history,max_new_tokens=256,temperature=0.5)
+                    print(sch_key,entity_summary)
+                    entity_summaries[key]['data'][sch_key] = [entity_summary]
+
+
+            response = await show_card(entity_summaries[key],message=f'I was able to find the following information about {key}!')
+            for sch_key in entity_summaries[key]['data']:
+                entity_summaries[key][sch_key] = response[sch_key]
+
+        await save_json_to_database(entity_summaries[key])
+
+
+    '''
+    
 
     summary = 'No context available.' 
     tracked_entities = dict()
+    scene_summaries = dict()
 
     scene_number = 1
     for scene in scenes:
         #scene_with_context = await add_entity_context(scene)
         gist_prompt_history = prompts.get_gist_prompt(role='system') 
         gist_prompt_history = prompts.get_gist_prompt(role='user',history=gist_prompt_history,text=scene,tracked_entities=list(tracked_entities.keys()))
-        summary = await tokenize_and_generate(gist_prompt_history,max_new_tokens=256,temperature=0.3,template=SceneSummary)
+        summary = await tokenize_and_generate(gist_prompt_history,max_new_tokens=256,temperature=0.4,template=SceneSummary)
         scene_summary = SceneSummary.model_validate_json(summary)
         scene_summary = scene_summary.model_dump()
 
@@ -603,18 +754,23 @@ async def get_gist(user_message):
 
         found_subjects = dict()
         for key in scene_summary:
-            for subject in scene_summary[key]:
-                found_subjects[subject] = key
+            if(not(key=='summary')):
+                for subject in scene_summary[key]:
+                    found_subjects[subject] = key
 
-        selection_response = await show_checklist(found_subjects)
+        #scene_summaries[scene_number] = scene_summary['summary']
+
+        selection_response = await show_checklist(found_subjects,message='In Scene')
         print(selection_response)
 
         if(selection_response['submitted']):
             for key in selection_response:
-                if(selection_response[key] and not(key=='submitted')):
-                    entity_json = create_json_dict(key,found_subjects[key])
-                    await show_card(entity_json)
-                    tracked_entities[key] = (found_subjects[key],sch.get_schema(found_subjects[key]))
+                if(selection_response[key] and not(key=='submitted') and not(key in tracked_entities.keys())):
+                    tracked_entities[key] = dict()
+                    tracked_entities[key][scene_number] = create_json_dict(key,found_subjects[key])
+                elif(key in tracked_entities.keys()):
+                    tracked_entities[key][scene_number] = create_json_dict(key,found_subjects[key])
+
         else:
             pass
 
@@ -623,21 +779,50 @@ async def get_gist(user_message):
         # Redesign the summary to feed back as context.
         for entity in tracked_entities.keys():
 
-            role = tracked_entities[entity][0]
-            schema = tracked_entities[entity][1]
+            tracked_scene = list(tracked_entities[entity].keys())[-1]
 
-            RoleSchema = sch.get_pydantic_schema('RoleSchema',role,entity)
-            role_subjects = list(RoleSchema.model_fields.keys())
+            if(tracked_scene==scene_number):
+                role = tracked_entities[entity][tracked_scene]['type']
 
-            scene_extraction_prompt_history = prompts.isolate_scene_element(role='system')
-            scene_extraction_prompt_history = prompts.isolate_scene_element(role='user',history=scene_extraction_prompt_history,text=scene,entity=entity,subjects=role_subjects)
-            isolated_element = await tokenize_and_generate(scene_extraction_prompt_history,max_new_tokens=256,temperature=0.4,template=RoleSchema)
-            print(isolated_element)
-            isolated_element = RoleSchema.model_validate_json(isolated_element)
-            isolated_element = isolated_element.model_dump()
-            await cl.Message(content=isolated_element).send()
+                RoleSchema = sch.get_pydantic_schema('RoleSchema',role,entity)
+                role_subjects = list(RoleSchema.model_fields.keys())
 
+                scene_extraction_prompt_history = prompts.isolate_scene_element(role='system')
+                scene_extraction_prompt_history = prompts.isolate_scene_element(role='user',history=scene_extraction_prompt_history,text=scene,entity=entity,subjects=role_subjects)
+                isolated_element = await tokenize_and_generate(scene_extraction_prompt_history,max_new_tokens=256,temperature=0.25,template=RoleSchema)
+                print(isolated_element)
+                isolated_element = RoleSchema.model_validate_json(isolated_element)
+                isolated_element = isolated_element.model_dump()
+
+                for key in tracked_entities.keys():
+                    for sch_key in isolated_element.keys():
+                        tracked_entities[key][tracked_scene]['data'][sch_key] = isolated_element[sch_key]
+
+            print(tracked_entities)
         scene_number += 1
+
+    # Consolidate information in tracked entities - Use an LLM to do this later.
+
+    entity_summaries = dict()
+    for key in tracked_entities.keys():
+        scene = list(tracked_entities[key].keys())[0]
+        role = tracked_entities[key][scene]['type']
+        entity = tracked_entities[key][scene]['name']
+        entity_summaries[key] = create_json_dict(key,tracked_entities[key][scene]['type'])
+        for sch_key in entity_summaries[key]['data'].keys():
+            if(not(sch_key=='overview') and not(sch_key=='misc')):
+                print(sch_key)
+                entity_summaries[key]['data'][sch_key] = ', '.join([tracked_entities[key][s]['data'][sch_key] for s in tracked_entities[key].keys()])
+
+                summarization_prompt_history = prompts.get_summarization_prompt(role='system')
+                summarization_prompt_history = prompts.get_summarization_prompt(role='user',history=summarization_prompt_history,entity=entity,type=role,text='; '.join([tracked_entities[key][s]['data'][sch_key] for s in tracked_entities[key].keys()]))
+                entity_summary = await tokenize_and_generate(summarization_prompt_history,max_new_tokens=256,temperature=0.5)
+                print(entity_summary)
+
+
+
+    #print(entity_summaries)
+    '''
 
 async def extract_entities(user_message):
 
@@ -753,6 +938,9 @@ async def create_knowledge_graph():
 
 async def update_internal_knowledge_base():
 
+    #unload_models(nli_model,nli_tokenizer)
+    #unload_models(extraction_model)
+
     documents = await cl.make_async(json_utils.load_files)()
 
     new_dataset,index = await cl.make_async(sem.create_new_dataset)(documents)
@@ -760,6 +948,8 @@ async def update_internal_knowledge_base():
     await cl.make_async(json_utils.overwrite_faiss_dataset)(new_dataset,index)
 
     await cl.make_async(sem.reload_faiss_dataset)()
+
+    gc.collect()
 
 async def delete_last_message():
     chat_context = cl.chat_context.get()
@@ -769,7 +959,7 @@ async def update_faiss():
 
     dataset_dir = '/Users/satyawagle/Projects/LangChain/llm_chatbot/data/json_store'
 
-    async with cl.Step(name=f"Updating Knowledge Database") as step:
+    async with cl.Step(name=f"Knowledge Database Update Tools") as step:
 
         json_utils.update_links()
 
@@ -828,38 +1018,16 @@ async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,
                                 tokenize=False,
                                 add_generation_prompt=True
                                 )
-    print(synthesis_prompt)
 
-    if(template):
-        generator = get_or_create_generator(outline_model, template)
-
-        sampler = make_sampler(temp=temperature)
-        answer = await cl.make_async(generator)(
-                    synthesis_prompt,
-                    sampler=sampler,
-                    max_tokens=max_new_tokens,   # Set your max tokens here
-                )
-
-        # Fallback if outlines.Generator gives problems
-        '''answer = await cl.make_async(outline_model)(
-                    synthesis_prompt,
-                    output_type=template,
-                    sampler=sampler,
-                    max_tokens=max_new_tokens,   # Set your max tokens here
-                )'''
-
-        # Fallback to transformers if mlx-lm has issues
-        '''answer = await cl.make_async(generator)(
-        synthesis_prompt,
-        max_new_tokens=max_new_tokens, 
-        temperature=temperature
-        )'''
-    else:
-        answer = await cl.make_async(generator_model)(
-        synthesis_prompt,
-        max_new_tokens=max_new_tokens, 
-        temperature=temperature
-        )
+    loop = asyncio.get_running_loop()
+    answer = await loop.run_in_executor(
+        mlx_executor, 
+        _sync_generate, 
+        synthesis_prompt, 
+        max_new_tokens, 
+        temperature, 
+        template
+    )
 
     return answer
 
@@ -888,13 +1056,9 @@ async def retrieve_context(user_input):
     # Construct Tool Call
     relevant_entities = sem.entity_extraction(user_input,entity_threshold=0.25)
 
-    async with cl.Step(name="Retrieve Context") as step:
-
-        # Context Retrievant Via MCP
-        user_input_with_context = await query_processing(user_input)
-        context_text, context_list = await retrieve_graph_rag(user_input_with_context)
-
-        print(context_text)
+    # Context Retrievant Via MCP
+    user_input_with_context = await query_processing(user_input)
+    context_text, context_list = await retrieve_graph_rag(user_input_with_context)
 
     return context_text,context_list
 
@@ -1298,16 +1462,6 @@ async def save_idea_to_local_session(idea:str):
                 json.dump(data, file, indent=4)
 
             message = await cl.Message(content=f'Added idea : {idea}',actions=idea_actions).send()
-
-            task_list = cl.user_session.get("task_list")
-
-            idea_task = cl.Task(title=idea, status=cl.TaskStatus.READY)
-            await task_list.add_task(idea_task)
-            idea_task.forId = message.id
-            print(len(task_list.tasks))
-
-            # Update the task list in the interface
-            await task_list.send()
     else:
         message = await cl.Message(content=f'Cancelled!').send()
 
@@ -1362,6 +1516,7 @@ async def on_settings_update(settings: dict):
 async def on_chat_start():
 
     await create_knowledge_graph()
+    await cl.make_async(sem.reload_faiss_dataset)()
 
     cl.user_session.set("alias_map",json_utils.get_alias_map())
     cl.user_session.set("blurb_map",json_utils.get_blurb_map())
@@ -1429,16 +1584,17 @@ async def on_message(user_message: cl.Message):
             print(answer)
 
         if(True):
-            # Retrieve Base Context
-            context_text,context_list = await retrieve_context(user_input)
-
-            #sem.check_context_entailment(context_list,sub_queries)
-
-            chat_history = []
-            chat_history = prompts.get_generation_prompt('system',chat_history)
-            chat_history = prompts.get_generation_prompt('user',chat_history,user_input,context_text)
 
             async with cl.Step(name=f"Local Context to Answer Question") as step:
+                # Retrieve Base Context
+                context_text,context_list = await retrieve_context(user_input)
+
+                #sem.check_context_entailment(context_list,sub_queries)
+
+                chat_history = []
+                chat_history = prompts.get_generation_prompt('system',chat_history)
+                chat_history = prompts.get_generation_prompt('user',chat_history,user_input,context_text)
+
                 json_answer = await tokenize_and_generate(chat_history,max_new_tokens=1024,temperature=0.3,template=ReasonedResponse)
 
                 response = ReasonedResponse.model_validate_json(json_answer)
@@ -1453,73 +1609,8 @@ async def on_message(user_message: cl.Message):
 
             # Check if Base Context is Sufficient
             #best_context, max_prob = await check_context_sufficiency(response.scratchpad,context_list)
-
-        
+     
 @cl.on_chat_end
 def end_chat():
 
-    chat_history = cl.user_session.get("task_list").tasks
-
-    if(len(chat_history)>0):
-
-        for key in chat_history.keys():
-
-            idea = chat_history[key]
-
-            file_path = '/Users/satyawagle/Projects/LangChain/llm_chatbot/data/obsidian_data/buffer_file.md'
-            #file_path = action.payload['context']['path'][0]
-
-            topic = 'LLM Brainstorming'
-
-            lines_to_write = [f'- {idea}\n']
-
-            # Check if the answer is already conveyed in the file (TODO).
-
-            # Append to file
-            with open(file_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-
-            output_lines = []
-            found_header = False
-            appended = False
-
-            target_header = "# LLM Brainstorming"
-            for line in lines:
-                output_lines.append(line)
-
-                if(line.strip()==target_header):
-                    found_header  = True
-
-                # If we are under the target header and haven't appended the text yet
-                if found_header and not appended:
-                    # Check for the next block (either a new header or end of file)
-                    if line.strip().startswith('#') and line.strip() != target_header:
-                        # Insert text just before the next header
-                        output_lines+=lines_to_write
-                        appended = True
-                    elif line == lines[-1]:
-                        # If it's the last line, just append
-                        output_lines+=lines_to_write
-                        appended = True
-
-            # If the text wasn't appended (e.g., EOF reached without next header), add it
-            if found_header and not appended:
-                output_lines+=lines_to_write
-
-            if not found_header:
-                output_lines.append('\n' + target_header + '\n')
-                output_lines+=lines_to_write
-
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.writelines(output_lines)
-
-
-
-
-
-
-
-
-
-
-
+    pass
