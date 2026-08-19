@@ -7,8 +7,9 @@ def get_decomposition_prompt(role='system',history=None,user_input='',context=''
 				"content": ("You are an advanced query analysis assistant."
         				"Given a proposition, your job is to list individual, atomic assumptions made by the proposition."
         				"Do not assume any context other than that provided by the user."
+        				"Do not include assumptions that are confirmed by the context."
         				"Each assumption must be brief and specific."
-        				"Output the list of assumptions in bullet points.")}
+        				"Your response must follow the provided schema.")}
 	elif(role=='user'):
 		prompt = {"role": "user", 
 				"content": f"Proposition: {user_input}\n\nContext:{context}"}

@@ -4,6 +4,9 @@ class ReasonedResponse(BaseModel):
     scratchpad: str  # The step-by-step chain of thought
     final_answer: str # The clean answer for the user
 
+class AssumptionsList(BaseModel):
+    assumptions: list[str] = Field(description='All the assumptions made by the proposition based on the context provided.')  # The step-by-step chain of thought
+
 class SceneSummary(BaseModel):
     #summary:   str = Field(description='A concise summary of the given text, retaining the important plot points and emotional/thematic shifts. Only use information explicitly mentioned in the text.')
     character: list[str] = Field(description='The names of the sentient characters involved in the scene as a list of strings. STRICT RULE: Do NOT extract common nouns, inanimate objects, body parts, or generic items (e.g., never extract "sword", "shadow", "wind", "dog", or "stranger" unless it is a specific proper name). If no named character is present, output "None".')

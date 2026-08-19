@@ -9,12 +9,12 @@ with open('config.json', "r", encoding="utf-8") as f:
 
 
 
-model_id = 'BAAI/bge-m3' #"meta-llama/Llama-3.2-3B-Instruct"
-quantization = 8
+model_id = "meta-llama/Llama-3.1-8B-Instruct"
+quantization = 4
 quant_path = config['model_dir']+f'/{model_id.split('/')[-1]}-quantized-{str(quantization)}b'
 
 # Change the following on a per model basis
-model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="auto",local_files_only=False)
+'''model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="auto",local_files_only=False)
 tokenizer = AutoTokenizer.from_pretrained(model_id,local_files_only=False)
 
 # Run the conversion and quantization
@@ -24,8 +24,8 @@ convert(
     q_bits=quantization,              # Choose your target bit-width (e.g., 4 or 8)
     mlx_path=quant_path
 )
-
-mlx_model, tokenizer = mlx_lm.load(config['model_dir']+f'/{quant_path}')
+'''
+mlx_model, tokenizer = mlx_lm.load(config['model_dir']+f'/{config['model_id']}')
 print("Wrapping model with Outlines (v0.3+ style)...")
 model = outlines.from_mlxlm(mlx_model, tokenizer)
 

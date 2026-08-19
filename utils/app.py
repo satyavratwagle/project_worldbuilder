@@ -31,7 +31,7 @@ from utils.semantic import SemanticTools
 from json_repair import repair_json
 from pathlib import Path
 from utils.io_utils import IO_Utils
-from utils.pydantic_schema import ReasonedResponse,SceneSummary, AssumptionsList
+from utils.pydantic_schema import ReasonedResponse,SceneSummary
 
 from torchao.quantization import Int8WeightOnlyConfig, PerGroup
 import mlx_lm
@@ -59,6 +59,9 @@ store_path= config['data_dir']
 mlx_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 io_utils = IO_Utils()
+
+model_id = "meta-llama/Llama-3.2-3B-Instruct"
+
 named_entities = ['character','location','artifact','faction','event','definition']
 
 #"Qwen/Qwen2.5-0.5B-Instruct" #
@@ -177,7 +180,7 @@ def load_embedding_models():
     return embed_model, dataset
 
 @cl.cache
-def load_nli_models(): 
+def load_semantic_consistency_models(): 
     
     nli_model_id        = "cross-encoder/nli-deberta-v3-large"
     nli_tokenizer = AutoTokenizer.from_pretrained(nli_model_id)
@@ -188,14 +191,13 @@ def load_nli_models():
 outline_model, tokenizer, generator_model = load_models()
 embed_model, dataset = load_embedding_models()
 extraction_model  = load_extraction_model()
-nli_model,nli_tokenizer = load_nli_models()
+#nli_model,nli_tokenizer = load_semantic_consistency_models()
 
 du = DatastoreUtilities(config)
 du.load_embedding_model(embed_model,dataset)
 
 sem = SemanticTools(config)
 sem.load_extraction_model(extraction_model)
-sem.load_nli_model(nli_model,nli_tokenizer)
 
 # TOOLS
 
@@ -593,11 +595,11 @@ async def add_tag(action: cl.Action):
 @cl.step(name="Knowledge Database Update Tools")
 async def update_datastore():
 
-    await cl.make_async(du.update_local_dataset)()    
     await create_knowledge_graph()
+    await cl.make_async(du.update_local_dataset)()    
 
 async def create_knowledge_graph():
-    graph,documents_lookup = du.create_knowledge_graph()
+    graph,documents_lookup,filename_to_name = du.create_knowledge_graph()
     cl.user_session.set('knowledge_graph',graph)
     cl.user_session.set('documents_lookup',documents_lookup)
 
@@ -902,10 +904,10 @@ async def retrieve_graph_rag(query,threshold=0.4,k=10,hops=1):
     # Format retrieved context
     full_context_text = ""
     if(len(full_graph_context['indirect'])>0):
-        full_context_text+=f"--- SUPPLEMENTARY INFORMATION BEGINS---\n\n{"\n\n".join(full_graph_context['indirect'])}\n\n--- SUPPLEMENTARY INFORMATION ENDS---\n\n"
+        full_context_text+=f"SUPPLEMENTARY INFORMATION:\n\n{"\n\n".join(full_graph_context['indirect'])}\n\n"
     if(len(full_graph_context['direct'])>0):
         full_graph_context['direct'].reverse()
-        full_context_text += f"--- DIRECT CONTEXT BEGINS ----\n\n{"\n\n".join(full_graph_context['direct'])}\n\n--- DIRECT CONTEXT ENDS ----"
+        full_context_text += f"DIRECT CONTEXT:\n\n{"\n\n".join(full_graph_context['direct'])}"
 
     if(len(full_context_text)==0):
         full_context_text = "No context found."
@@ -1439,8 +1441,10 @@ async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,
                                 add_generation_prompt=True
                                 )
 
-    #loop = asyncio.get_running_loop()
-    answer = _sync_generate(
+    loop = asyncio.get_running_loop()
+    answer = await loop.run_in_executor(
+        mlx_executor, 
+        _sync_generate, 
         synthesis_prompt, 
         max_new_tokens, 
         temperature, 
@@ -1518,37 +1522,16 @@ async def check_idea_for_contradictions(message):
 
     idea = message.content
 
-    context_text,context_dict = await retrieve_context(idea)
-    chat_history = []
-    chat_history = prompts.get_decomposition_prompt('system',chat_history)
-    chat_history = prompts.get_decomposition_prompt('user',chat_history,idea,context_text)
-    decomposition = await tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.3,template=AssumptionsList)
-    decomposition = AssumptionsList.model_validate_json(decomposition)
-    decomposition = decomposition.model_dump()
+    _,context_dict = await retrieve_context(idea)
 
-    for d in decomposition['assumptions']:
-        print(d)
-
-
-    for context in context_dict['direct']:
-        for d in decomposition['assumptions']:
-            context = context.split(':')[-1].strip()
-            d = d+'.'
-            print(context)
-            print(d)
-            c,e,n = sem.get_entailment_probs(context,d)
-            csim = du.get_cosine_similarity(context,d)
-            print(f'Similarity : {csim}')
-            #print(f'Contradiction : {torch.round(c,decimals=3)} / Entailment : {torch.round(e,decimals=3)} / Neutral : {torch.round(n,decimals=3)}')
-            print()
-
+    _,max_prob = await check_context_sufficiency(idea,context_dict)
 
 @cl.step(name='Local Context to Reason and Answer')
 async def reason_and_answer(message):
 
     # Retrieve Base Context
     context_text,context_list = await retrieve_context(message.content)
-    print(context_text)
+
     chat_history = []
     chat_history = prompts.get_generation_prompt('system',chat_history)
     chat_history = prompts.get_generation_prompt('user',chat_history,message.content,context_text)
@@ -1622,7 +1605,6 @@ async def on_message(user_message: cl.Message):
         await update_metadata(user_message)
     else:
         await reason_and_answer(user_message)
-        #await check_idea_for_contradictions(user_message)
      
 @cl.on_chat_end
 async def end_chat():

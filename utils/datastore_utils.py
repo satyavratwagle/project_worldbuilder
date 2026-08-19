@@ -20,6 +20,7 @@ import re
 import ahocorasick
 from pathlib import Path
 from datetime import datetime
+import matplotlib.pyplot as plt
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 _orig_getattr = torch.nn.Module.__getattr__
@@ -68,8 +69,8 @@ class DatastoreUtilities():
 
         if(filtered):
 
-            # Update links here.
-            self.update_links()
+            # Update links here. (Not needed since the GraphRAG operates on Cosine Similarity)
+            #self.update_links()
 
             # Append datasets.
             updated_dataset = concatenate_datasets([filtered_dataset,new_dataset])
@@ -192,7 +193,10 @@ class DatastoreUtilities():
     def embed_text(self,text):
         return self.text_embedding_model.encode(text, normalize_embeddings=True)
 
-    def get_cosine_similarity(self,emb1,emb2):
+    def get_cosine_similarity(self,s1,s2):
+
+        emb1 = self.embed_text(s1)
+        emb2 = self.embed_text(s2)
         dot_product = np.dot(emb1, emb2)
         norm_vec1 = np.linalg.norm(emb1)
         norm_vec2 = np.linalg.norm(emb2)
@@ -249,40 +253,22 @@ class DatastoreUtilities():
         # Pass 1: Map every filename to its entity 'name'
 
         documents_lookup = {}
-        filename_to_name = {}
-        for filename in files:
-            if(filename.endswith('.json')):
-                file_path = os.path.join(self.jsonstore_dir, filename)
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    name = f"{data.get('name')}.overview"
-                    if name:
-                        filename_to_name[filename] = name
-                        documents_lookup.setdefault(name,f"Overview of {uppercase(data.get('name'))} : {' '.join(data['data']['overview'])}")
+        for d in self.dataset:
+            documents_lookup[d['id']] = d['text']
 
 
-        # Pass 2: Build graph edges
-        for filename in files:
-            if(filename.endswith('.json')):
-                file_path = os.path.join(self.jsonstore_dir, filename)
-                with open(file_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+        for d in self.dataset:
+            graph.add_node(d['id'], type=d['type'])
 
-                name = data.get('name', 'Unknown')
-                doc_type = data.get('type', 'Unknown')
-                tags = data.get('tags', [])
+        for d in self.dataset:
+            if(len(d['text'].split(':')[-1].strip())>0):
+                scores, neighbors = self.dataset.get_nearest_examples("embeddings", np.array(d['embeddings']), k=20)
 
-                # Add node to graph
-                for key in data['data'].keys():
-                    graph.add_node(f"{name}.{key}", type=doc_type)
+                for i in range(len(scores)):
+                    if (scores[i] >= 0.6 and not(d['id']==neighbors['id'][i])):
+                        graph.add_edge(d['id'], neighbors['id'][i])
 
-                    related_files = data['related'][key]
-                    # Build edges using the explicit 'related' field schema
-                    for rel_file in related_files:
-                        target_name = filename_to_name.get(rel_file)
-                        graph.add_edge(f"{name}.{key}", target_name)
-
-        return graph, documents_lookup, filename_to_name
+        return graph, documents_lookup
 
     def update_links(self):
 
