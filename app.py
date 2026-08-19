@@ -43,33 +43,6 @@ import mlx.core as mx
 import psutil
 from utils.datastore_utils import DatastoreUtilities
 
-def uppercase(text):
-    return text[0].upper()+text[1:]
-
-def unload_models(model, tokenizer=None, embed_model=None):
-    # 1. Delete the Python object references
-    del model
-
-    if(tokenizer):
-        del tokenizer
-    if embed_model is not None:
-        del embed_model
-
-    # 2. Force Python's garbage collector to clear reference cycles
-    gc.collect()
-
-    # 3. Clear PyTorch's Metal (MPS) cache (for SentenceTransformers / DeBERTa)
-    if torch.backends.mps.is_available():
-        torch.mps.empty_cache()
-
-    # 4. Clear MLX's Metal memory pool cache (for Llama models)
-    mx.metal.clear_cache()
-    
-    print("Models successfully purged from memory!")
-
-# Used by the response parser for tool
-class RAGQuerySchema(BaseModel):
-    query: str = Field(description="The search query to lookup local markdown files or notes.")
 
 helpers = [{"id":"Ideate", "icon":"lightbulb", "description":"Add ideas to knowledge base"},
                 {"id":"Analyze", "icon":"brain", "description":"Analyze uploaded text"},
@@ -77,12 +50,10 @@ helpers = [{"id":"Ideate", "icon":"lightbulb", "description":"Add ideas to knowl
                 {"id":"View", "icon":"eye", "description":"View a card"},
                 {"id":"Metadata", "icon":"tag", "description":"Add Metadata"}]
 
-
 with open('config.json', "r", encoding="utf-8") as f:
     # Load the JSON data into a Python dictionary
     config = json.load(f)
 store_path= config['data_dir']
-
 
 # Dedicated thread pool to satisfy MLX thread-local stream rules
 mlx_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -130,6 +101,42 @@ def create_context(context_dict,topic):
 
     return context_str
 
+def create_json_dict(name,type):
+
+    json_dict = dict()
+    json_dict['name'] = name
+    json_dict['type'] = type.lower()
+    json_dict['data'] = sch.get_schema(type)
+    json_dict['tags'] = []
+    json_dict['related'] = sch.get_schema(type)
+    json_dict['aliases'] = []
+    json_dict['blurb'] = ""
+
+    return json_dict
+
+def uppercase(text):
+    return text[0].upper()+text[1:]
+
+def unload_models(model, tokenizer=None, embed_model=None):
+    # 1. Delete the Python object references
+    del model
+
+    if(tokenizer):
+        del tokenizer
+    if embed_model is not None:
+        del embed_model
+
+    # 2. Force Python's garbage collector to clear reference cycles
+    gc.collect()
+
+    # 3. Clear PyTorch's Metal (MPS) cache (for SentenceTransformers / DeBERTa)
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+    # 4. Clear MLX's Metal memory pool cache (for Llama models)
+    mx.metal.clear_cache()
+    
+    print("Models successfully purged from memory!")
 
 @cl.cache
 def load_extraction_model():
@@ -204,19 +211,6 @@ available_tools = [{
     }
 }]
 
-def create_json_dict(name,type):
-
-    json_dict = dict()
-    json_dict['name'] = name
-    json_dict['type'] = type.lower()
-    json_dict['data'] = sch.get_schema(type)
-    json_dict['tags'] = []
-    json_dict['related'] = sch.get_schema(type)
-    json_dict['aliases'] = []
-    json_dict['blurb'] = ""
-
-    return json_dict
-
 # Legacy
 async def retrieve_local_notes(query: str, threshold: float = 0.4, k = 10) -> str:
 
@@ -239,7 +233,123 @@ async def get_most_relevant_file(query: str, threshold: float = 0.4, k = 1) -> s
     return du.get_most_relevant_file(query,threshold,k)
 
 #############
+
+# Chainlit UI Functions
+
+#############
+
+async def delete_last_message():
+    chat_context = cl.chat_context.get()
+    await chat_context[-1].remove()
+
+async def show_checklist(entities,message='Select topics.'):
+
+    # Entities : Dict: entity:label (e.g "Alvar" : "character")
+
+    items_list = []
+    for key in entities.keys():
+
+        entity = key
+        label = entities[key]
+
+        items_list.append(
+                {
+                    "id":entity,
+                    "label":entity,
+                    "description":label,
+                    "defaultChecked": False
+                })
+
+    props = {
+            "timeout": 6000,
+            "topText": "Found the following topics in the text!",
+            "Title": "Select topics to track!",
+            "items": items_list}
+
+    checklist_element = cl.CustomElement(
+        name="SelectToTrack",
+        props=props
+    )
+
+    element_msg = cl.AskElementMessage(
+        content=message,
+        element=checklist_element
+    )
+    # 3. Send the component attached to a chat message
+    selection_response = await element_msg.send()
+
+    chosen_selections = []
+    for key in selection_response.keys():
+        if(not(key=='submitted') and selection_response[key]):
+            chosen_selections.append(key)
+
+    element_msg.content = f'Selected {', '.join(chosen_selections)}!'
+    await element_msg.update()
+
+    return selection_response
+
+async def show_card(json_dict,message='Please describe your idea!',open_with='overview',initEdit=False,enableEdit=True):
+
+    # card_title - Name ("Alvar")
+    # crd_type - Idea type ("Character")
+    # open_with - topic to open on ("appearance")
+    # schema - dict() containing all sub_schema
+    # idea (optional) - dict() like schema : Stuff to prefill
+
+
+    # Check if file exists. If it does not, add an empty schema.
+    filename = re.sub(r'[^a-zA-Z0-9]', '_', json_dict['name'].lower())
+    isExists = Path(f"{store_path}/{filename}.json").exists()
+    if(isExists):
+        # Load existing schema
+        with open(f"{store_path}/{filename}.json", "r") as file:
+            data = json.load(file)
+        prefill = data['data']
+
+    else:
+        prefill = sch.get_schema(json_dict['type'])
+
+    props = {
+            "timeout": 6000,
+            "initialTab":open_with,
+            "enableEdit": enableEdit,
+            "initEdit": initEdit,
+            "topText": uppercase(json_dict['type']),
+            "Title": uppercase(json_dict['name']),
+            "fields": []}
+
+    for key in json_dict['data'].keys():
+        new_field = dict()
+        new_field['id'] = key
+        new_field['label'] = uppercase(key)
+        new_field['type'] = 'text'
+        new_field['value'] = prefill[key]#json_dict['data'][key]
+        new_field['description'] = json_dict['data'][key]#prefill[key]
+        props['fields'].append(new_field)
+
+    element = cl.CustomElement(
+                    name="KnowledgeBase",
+                    display="inline",
+                    props=props
+                )
+
+    card_element = cl.AskElementMessage(
+                content=message,
+                element=element,
+                timeout=6000
+            )
+
+    response = await card_element.send()
+
+    card_element.content = f'Saved new information about {uppercase(json_dict['name'])}!'
+    await card_element.update()
+
+    return response
+
+#############
+
 # Callbacks
+
 #############
 
 @cl.action_callback("show_ideas_history")
@@ -475,133 +585,11 @@ async def add_tag(action: cl.Action):
             await cl.Message(content=f'File not found!').send()
 
     await cl.context.emitter.task_end()
-        
-async def show_checklist(entities,message='Select topics.'):
-
-    # Entities : Dict: entity:label (e.g "Alvar" : "character")
-
-    items_list = []
-    for key in entities.keys():
-
-        entity = key
-        label = entities[key]
-
-        items_list.append(
-                {
-                    "id":entity,
-                    "label":entity,
-                    "description":label,
-                    "defaultChecked": False
-                })
-
-    props = {
-            "timeout": 6000,
-            "topText": "Found the following topics in the text!",
-            "Title": "Select topics to track!",
-            "items": items_list}
-
-    checklist_element = cl.CustomElement(
-        name="SelectToTrack",
-        props=props
-    )
-
-    element_msg = cl.AskElementMessage(
-        content=message,
-        element=checklist_element
-    )
-    # 3. Send the component attached to a chat message
-    selection_response = await element_msg.send()
-
-    chosen_selections = []
-    for key in selection_response.keys():
-        if(not(key=='submitted') and selection_response[key]):
-            chosen_selections.append(key)
-
-    element_msg.content = f'Selected {', '.join(chosen_selections)}!'
-    await element_msg.update()
-
-    return selection_response
-
-async def show_card(json_dict,message='Please describe your idea!',open_with='overview',initEdit=False,enableEdit=True):
-
-    # card_title - Name ("Alvar")
-    # crd_type - Idea type ("Character")
-    # open_with - topic to open on ("appearance")
-    # schema - dict() containing all sub_schema
-    # idea (optional) - dict() like schema : Stuff to prefill
-
-
-    # Check if file exists. If it does not, add an empty schema.
-    filename = re.sub(r'[^a-zA-Z0-9]', '_', json_dict['name'].lower())
-    isExists = Path(f"{store_path}/{filename}.json").exists()
-    if(isExists):
-        # Load existing schema
-        with open(f"{store_path}/{filename}.json", "r") as file:
-            data = json.load(file)
-        prefill = data['data']
-
-    else:
-        prefill = sch.get_schema(json_dict['type'])
-
-    props = {
-            "timeout": 6000,
-            "initialTab":open_with,
-            "enableEdit": enableEdit,
-            "initEdit": initEdit,
-            "topText": uppercase(json_dict['type']),
-            "Title": uppercase(json_dict['name']),
-            "fields": []}
-
-    for key in json_dict['data'].keys():
-        new_field = dict()
-        new_field['id'] = key
-        new_field['label'] = uppercase(key)
-        new_field['type'] = 'text'
-        new_field['value'] = prefill[key]#json_dict['data'][key]
-        new_field['description'] = json_dict['data'][key]#prefill[key]
-        props['fields'].append(new_field)
-
-    element = cl.CustomElement(
-                    name="KnowledgeBase",
-                    display="inline",
-                    props=props
-                )
-
-    card_element = cl.AskElementMessage(
-                content=message,
-                element=element,
-                timeout=6000
-            )
-
-    response = await card_element.send()
-
-    card_element.content = f'Saved new information about {uppercase(json_dict['name'])}!'
-    await card_element.update()
-
-    return response
-
-async def save_json_to_database(json_dict):
-    # Given a valid json_dict of information, saves it to database.
-    # json_dict : dict() 'name':str,'type':str,'data':dict,'related':dict...
-
-    filename = json_dict['name'].lower()
-    filename = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-    isExists = Path(f"{store_path}/{filename}.json").exists()
-    if(isExists):
-        with open(f"{store_path}/{filename}.json", "r") as file:
-            loaded_file = json.load(file)
-    else:
-        loaded_file = create_json_dict(json_dict['name'],json_dict['type'])
-        loaded_file['name'] = json_dict['name'].lower()
-
-    for key in loaded_file['data']:
-        loaded_file['data'][key].append(', '.join(json_dict['data'][key]))
-
-    with open(f"{store_path}/json_store/{filename}.json", "w") as file:
-        json.dump(loaded_file, file, indent=4)
 
 #############
+
 # Datastore Operations
+
 #############
 
 @cl.step(name="Knowledge Database Update Tools")
@@ -926,22 +914,6 @@ async def retrieve_graph_rag(query,threshold=0.4,k=10,hops=1):
 
     return  full_context_text,full_graph_context
 
-@cl.step(name='Retrieve Context')
-async def retrieve_context(topic):
-
-    #chat_history = []
-    #chat_history = prompts.get_context_retrieval_prompt('system',chat_history)
-    #chat_history = prompts.get_context_retrieval_prompt('user',chat_history,user_input,', '.join(relevant_entities))
-
-    # Construct Tool Call
-    relevant_entities = sem.entity_extraction(topic,entity_threshold=0.25)
-
-    # Context Retrievant Via MCP
-    topic_with_context = await query_processing(topic)
-    context_text, context_list = await retrieve_graph_rag(topic_with_context)
-
-    return context_text,context_list
-
 async def view_idea(message):
 
     exists,data = du.load_json(message.content)
@@ -1007,8 +979,30 @@ async def view_idea(message):
     else:
         topic_response = await cl.Message(content="Topic not found!").send()
 
+async def save_json_to_database(json_dict):
+    # Given a valid json_dict of information, saves it to database.
+    # json_dict : dict() 'name':str,'type':str,'data':dict,'related':dict...
+
+    filename = json_dict['name'].lower()
+    filename = re.sub(r'[^a-zA-Z0-9]', '_', filename)
+    isExists = Path(f"{store_path}/{filename}.json").exists()
+    if(isExists):
+        with open(f"{store_path}/{filename}.json", "r") as file:
+            loaded_file = json.load(file)
+    else:
+        loaded_file = create_json_dict(json_dict['name'],json_dict['type'])
+        loaded_file['name'] = json_dict['name'].lower()
+
+    for key in loaded_file['data']:
+        loaded_file['data'][key].append(', '.join(json_dict['data'][key]))
+
+    with open(f"{store_path}/json_store/{filename}.json", "w") as file:
+        json.dump(loaded_file, file, indent=4)
+
 #############
+
 # Corpus Analysis Tools
+
 #############
 
 @cl.step(name='Splitting Scenes')
@@ -1345,16 +1339,9 @@ async def create_schema_element(entity,label,schema,message="Please describe you
 
 
 #############
-# Chainlit message manipulation tools (?)
-#############
 
-async def delete_last_message():
-    chat_context = cl.chat_context.get()
-    await chat_context[-1].remove()
-
-
-#############
 # Semantic Functions
+
 #############
 
 async def add_entity_context(idea,entity_threshold=0.4):
@@ -1425,8 +1412,26 @@ async def check_context_sufficiency(proposition,context_dict):
     return best_context, max_prob
 
 #############
+
 # Core Functions
+
 #############
+
+@cl.step(name='Retrieve Context')
+async def retrieve_context(topic):
+
+    #chat_history = []
+    #chat_history = prompts.get_context_retrieval_prompt('system',chat_history)
+    #chat_history = prompts.get_context_retrieval_prompt('user',chat_history,user_input,', '.join(relevant_entities))
+
+    # Construct Tool Call
+    relevant_entities = sem.entity_extraction(topic,entity_threshold=0.25)
+
+    # Context Retrievant Via MCP
+    topic_with_context = await query_processing(topic)
+    context_text, context_list = await retrieve_graph_rag(topic_with_context)
+
+    return context_text,context_list
 
 async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,template=None, use_chat_template=True):
 
@@ -1463,7 +1468,6 @@ async def query_processing(user_input,entity_threshold=0.4):
 
     return user_input_with_context
 
-@cl.step(name='Identify Additional Context')
 async def identify_additional_context(user_input,context_text):
         synthesis_history = [
                             {"role": "system", "content": f"You are a helpful writing assistant. You must answer with at least 3 and at most 5 additional questions that will help answer the user query with local context. You cannot ask the user query as a question. Your response must be in the form of bullet points using the bullet marker '*'"},
@@ -1549,7 +1553,6 @@ async def reason_and_answer(message):
 # MAIN APP START
 
 #############
-
 
 @cl.on_settings_update
 async def on_settings_update(settings: dict):
