@@ -6,7 +6,7 @@ from transformers import AutoModelForSequenceClassification,AutoTokenizer
 from sentence_transformers import SentenceTransformer
 import datasets
 import networkx as nx
-from datasets import Dataset
+from datasets import Dataset,concatenate_datasets
 import faiss
 import os
 from rank_bm25 import BM25Okapi
@@ -15,6 +15,9 @@ from fastcoref import FCoref
 import spacy
 import psutil
 import gc
+import shutil
+import re
+
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 _orig_getattr = torch.nn.Module.__getattr__
@@ -33,40 +36,21 @@ def print_memory_usage(step):
   mem_mb = mem_bytes / (1024 * 1024)
   print(f"Step {step} RAM usage: {mem_mb:.2f} MB")
 
-class Semantic():
+class SemanticTools():
 
-    def __init__(self):
-
-        #extraction_model_id = "urchade/gliner_small-v2.1"
-        #self.extraction_model = GLiNER.from_pretrained(extraction_model_id)
-
-        '''extraction_model_id = "urchade/gliner_small-v2.1"
-        nli_model_id        = "cross-encoder/nli-deberta-v3-large"
-        embedding_model_id  = "BAAI/bge-m3"
-
-        self.extraction_model = GLiNER.from_pretrained(extraction_model_id)
-
-        self.nli_tokenizer = AutoTokenizer.from_pretrained(nli_model_id)
-        self.nli_model = AutoModelForSequenceClassification.from_pretrained(nli_model_id)
-
-        self.text_embedding_model = SentenceTransformer(embedding_model_id)
-
-        STORE_DIR = "data/FAISS_store/"
-        self.dataset = datasets.load_from_disk(os.path.join(STORE_DIR, "obsidian_dataset_temp"))
-        self.dataset.load_faiss_index("embeddings", os.path.join(STORE_DIR, "obsidian_index_temp.faiss"))'''
-
-        with open('config.json', "r", encoding="utf-8") as f:
-            # Load the JSON data into a Python dictionary
-            config = json.load(f)
+    def __init__(self,config):
         self.store_path = config['data_dir']
-
         self.coreference_model = FCoref(device='cpu')
+        self.jsonstore_dir = f'{self.store_path}/json_store'
+        self.faiss_dataset_path = f'{self.store_path}/FAISS_store/worldbuilding_dataset'
+        self.faiss_index_path = f"{self.store_path}/FAISS_store/worldbuilding_dataset.faiss"
 
     def find_aliases(self,name,corpus):
         #corpus = str
 
         predictions = self.coreference_model.predict(texts=[corpus])
         clusters = predictions[0].get_clusters()
+        all_aliases = []
         for cluster in clusters:
             if(name in cluster):
                 all_aliases = list(set(cluster))
@@ -95,119 +79,10 @@ class Semantic():
     def load_extraction_model(self,extraction_model):
         self.extraction_model = extraction_model
 
-    def load_embedding_model(self,embed_model,dataset):
-        self.text_embedding_model = embed_model
-        self.dataset = dataset
-
     def load_nli_model(self,nli_model,nli_tokenizer):
 
         self.nli_tokenizer = nli_tokenizer
         self.nli_model = nli_model
-
-    def create_new_dataset(self,documents):
-
-        new_dataset = Dataset.from_list(documents)
-
-        def embed_text(batch):
-            # Return a dictionary mapping to your target index string key
-            print_memory_usage('Batching')
-            return {"embeddings": self.text_embedding_model.encode(batch["text"], normalize_embeddings=True)}
-            
-        embedding_dim = self.text_embedding_model.get_embedding_dimension()
-        cosine_index = faiss.IndexFlatIP(embedding_dim)
-        self.new_dataset = new_dataset.map(embed_text, batched=True, batch_size=8)
-        torch.mps.empty_cache()
-
-        return self.new_dataset,cosine_index
-
-    def reload_faiss_dataset(self):
-
-        self.dataset = datasets.load_from_disk(os.path.join(self.store_path, "FAISS_store/worldbuilding_dataset"))
-        self.dataset.load_faiss_index("embeddings", os.path.join(self.store_path, "FAISS_store/worldbuilding_dataset.faiss"))
-        print_memory_usage('Before')
-        try:
-            del self.new_dataset
-        except:
-            pass
-        print_memory_usage('After')
-
-        print(self.dataset)
-
-    def get_most_relevant_file(self,query,threshold,k):
-
-        query_vector = self.embed_text(query)
-        scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=k)
-    
-        if scores[0] >= threshold:
-            return examples
-        else:
-            return []
-
-    def get_graph_rag_context(self,query,graph,documents_lookup,threshold=0.4,k=10,hops=1):
-
-        # need self.knowledge_graph, self.documents_lookup
-
-        query_vector = self.embed_text(query)
-        scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=k)
-
-        seed_results = []
-        for i in range(len(scores)):
-            if(scores[i] >= threshold and len(examples['text'][i].split(':')[-1].strip())>0):
-                seed_results.append({'name':examples['name'][i],'text':examples['text'][i],'id':examples['id'][i]})
-
-        retrieved_contexts = dict()
-        retrieved_contexts['direct'] = []
-        retrieved_contexts['indirect'] = []
-
-        retrieved_context_ids = dict()
-        retrieved_context_ids['direct'] = []
-        retrieved_context_ids['indirect'] = []
-
-        seen_names = set()
-
-        for doc in seed_results:
-            seen_names.add(doc["id"].lower())
-
-
-        for doc in seed_results:
-            name = doc["id"].lower()
-            
-            # Add primary seed document if not already added
-            retrieved_contexts['direct'].append(doc["text"])
-            retrieved_context_ids['direct'].append(doc["id"])
-            
-            # Step 2: Graph Expansion (Traverse 1 or more hops via the 'related' field)
-            if graph.has_node(name):
-                # Find all connected nodes within N hops
-                neighbors = nx.single_source_shortest_path_length(graph, name, cutoff=hops)
-                for neighbor_name in neighbors:
-                    if neighbor_name != name and neighbor_name not in seen_names:
-                        seen_names.add(neighbor_name)
-                        # Pull all text chunks belonging to the related file/entity
-                        neighbor_info = documents_lookup.get(neighbor_name, [])
-                        if(len(neighbor_info.split(':')[-1].strip())>0):
-                            retrieved_contexts['indirect'].append(neighbor_info)
-                            retrieved_context_ids['indirect'].append(neighbor_name)
-
-        tokenized_context_docs = [text.lower().split() for text in retrieved_contexts['direct']+retrieved_contexts['indirect']]
-        if(len(tokenized_context_docs)>0):
-            self.bm25_model = BM25Okapi(tokenized_context_docs)
-            tokenized_query = query.lower().split()
-            doc_scores = self.bm25_model.get_scores(tokenized_query)
-
-        return retrieved_contexts,retrieved_context_ids
-
-    def embed_text(self,text):
-        return self.text_embedding_model.encode(text, normalize_embeddings=True)
-
-    def get_cosine_similarity(self,emb1,emb2):
-        dot_product = np.dot(emb1, emb2)
-        norm_vec1 = np.linalg.norm(emb1)
-        norm_vec2 = np.linalg.norm(emb2)
-
-        similarity = dot_product / (norm_vec1 * norm_vec2)
-
-        return similarity
 
     def check_context_entailment(self,contexts,queries):
 
@@ -248,10 +123,6 @@ class Semantic():
                     entities_dict[ent['text']]= {label:[] for label in labels}
 
                 entities_dict[ent['text']][ent['label']].append(ent['score'])
-
-            print(entities)
-            print(chunk)
-            print()
 
 
         chosen_entities = dict()

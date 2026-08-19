@@ -22,13 +22,12 @@ import ast
 
 from gliner import GLiNER
 import utils.prompts as prompts
-from utils.json_utils import JSONUtils
 from transformers import AutoModelForCausalLM,AutoModelForSequenceClassification,TorchAoConfig,AutoTokenizer,BartTokenizer, BartForConditionalGeneration
 from pydantic import BaseModel, Field
 from datasets import Dataset,concatenate_datasets
 from typing import Literal
 from sentence_transformers import SentenceTransformer
-from utils.semantic import Semantic
+from utils.semantic import SemanticTools
 from json_repair import repair_json
 from pathlib import Path
 from utils.io_utils import IO_Utils
@@ -42,6 +41,7 @@ import concurrent.futures
 import gc
 import mlx.core as mx
 import psutil
+from utils.datastore_utils import DatastoreUtilities
 
 def uppercase(text):
     return text[0].upper()+text[1:]
@@ -74,13 +74,13 @@ class RAGQuerySchema(BaseModel):
 helpers = [{"id":"Ideate", "icon":"lightbulb", "description":"Add ideas to knowledge base"},
                 {"id":"Analyze", "icon":"brain", "description":"Analyze uploaded text"},
                 {"id":"Update", "icon":"list-restart", "description":"Update internal knowledge base"},
-                {"id":"Check", "icon":"list-checks", "description":"Check an idea"},
+                {"id":"View", "icon":"eye", "description":"View a card"},
                 {"id":"Metadata", "icon":"tag", "description":"Add Metadata"}]
 
 
 with open('config.json', "r", encoding="utf-8") as f:
-        # Load the JSON data into a Python dictionary
-        config = json.load(f)
+    # Load the JSON data into a Python dictionary
+    config = json.load(f)
 store_path= config['data_dir']
 
 
@@ -95,10 +95,9 @@ named_entities = ['character','location','artifact','faction','event','definitio
 
 #"Qwen/Qwen2.5-0.5B-Instruct" #
 punctuation_tuple = tuple(string.punctuation)
-persistent_actions = [
-]
 
-# Engineering functions
+# Engineering functions (synchronous)
+
 @lru_cache(maxsize=32)
 def get_or_create_generator(model, schema_class):
   return outlines.Generator(model,schema_class)
@@ -112,6 +111,25 @@ def _sync_generate(prompt, max_tokens, temperature, template):
     else:
         sampler = make_sampler(temp=temperature)
         return generator_model(prompt, sampler=sampler, max_tokens=max_tokens)
+
+def create_context(context_dict,topic):
+
+    context_str = ''
+
+    def key_description(key,desc):
+        if(key in context_dict.keys()):
+            return f'{desc} : {context_dict[key]}\n'
+        else:
+            return ''
+
+    context_str += key_description('summary','Earlier scene')
+    context_str += key_description('abilities',f'Estimated knowledge of the abilities possessed by {topic}')
+    context_str += key_description('personality',f'Estimated knowledge of the personality of {topic}')
+    context_str += key_description('backstory',f'Estimated knowledge of that past of {topic}')
+    context_str += key_description('relationships',f'Estimated knowledge of the relationships of {topic} with other characters')
+
+    return context_str
+
 
 @cl.cache
 def load_extraction_model():
@@ -154,7 +172,6 @@ def load_embedding_models():
 
     return embed_model, dataset
 
-
 @cl.cache
 def load_semantic_consistency_models(): 
     
@@ -166,19 +183,15 @@ def load_semantic_consistency_models():
 
 outline_model, tokenizer, generator_model = load_models()
 embed_model, dataset = load_embedding_models()
-#nli_model,nli_tokenizer = load_semantic_consistency_models()
 extraction_model  = load_extraction_model()
+#nli_model,nli_tokenizer = load_semantic_consistency_models()
 
+du = DatastoreUtilities(config)
+du.load_embedding_model(embed_model,dataset)
 
-sem = Semantic()
-
-# Remove after verifying libraries.
-
-sem.load_embedding_model(embed_model,dataset)
-#sem.load_nli_model(nli_model,nli_tokenizer)
+sem = SemanticTools(config)
 sem.load_extraction_model(extraction_model)
 
-json_utils = JSONUtils()
 # TOOLS
 
 available_tools = [{
@@ -204,38 +217,6 @@ def create_json_dict(name,type):
 
     return json_dict
 
-async def retrieve_graph_rag(query,threshold=0.4,k=10,hops=1):
-
-    graph = cl.user_session.get("knowledge_graph")
-    documents_lookup = cl.user_session.get("documents_lookup")
-
-    retrieved_ids = set()
-    full_graph_context = dict()
-    full_graph_context['direct'] = []
-    full_graph_context['indirect'] = []
-
-    
-    retrieved_contexts,ids = sem.get_graph_rag_context(query,graph,documents_lookup,threshold,k,hops)
-
-    for key in ['direct','indirect']:
-        for idx in range(len(ids[key])):
-            if(not(ids[key][idx] in retrieved_ids)):
-                full_graph_context[key].append(retrieved_contexts[key][idx])
-                retrieved_ids.add(ids[key][idx])
-
-    # Format retrieved context
-    full_context_text = ""
-    if(len(full_graph_context['indirect'])>0):
-        full_context_text+=f"SUPPLEMENTARY INFORMATION:\n\n{"\n\n".join(full_graph_context['indirect'])}\n\n"
-    if(len(full_graph_context['direct'])>0):
-        full_graph_context['direct'].reverse()
-        full_context_text += f"DIRECT CONTEXT:\n\n{"\n\n".join(full_graph_context['direct'])}"
-
-    if(len(full_context_text)==0):
-        full_context_text = "No context found."
-
-    return  full_context_text,full_graph_context
-
 # Legacy
 async def retrieve_local_notes(query: str, threshold: float = 0.4, k = 10) -> str:
 
@@ -255,7 +236,7 @@ async def retrieve_local_notes(query: str, threshold: float = 0.4, k = 10) -> st
 
 async def get_most_relevant_file(query: str, threshold: float = 0.4, k = 1) -> str:
 
-    return sem.get_most_relevant_file(query,threshold,k)
+    return du.get_most_relevant_file(query,threshold,k)
 
 #############
 # Callbacks
@@ -401,14 +382,14 @@ async def add_blurb(action: cl.Action):
                 ),
             ]
 
-    exists,data = json_utils.load_json(action.payload['topic'])
+    exists,data = du.load_json(action.payload['topic'])
     if(len(data['blurb'].strip())>0):
         await cl.Message(content=f'Currently : {data['blurb']}').send()
     res = await cl.AskUserMessage(content=f"Provide a description of {uppercase(action.payload['topic'])} in common words.",timeout=60).send()
     if(res):    
         if(exists):
             data['blurb'] = res['output']
-            json_utils.save_json(action.payload['topic'],data)
+            du.save_json(action.payload['topic'],data)
             await cl.Message(content=f'Saved blurb for {uppercase(action.payload['topic'])}',actions=actions).send()
         else:
             await cl.Message(content=f'File not found!').send()
@@ -438,7 +419,7 @@ async def add_alias(action: cl.Action):
                 ),
             ]
 
-    exists,data = json_utils.load_json(action.payload['topic'])
+    exists,data = du.load_json(action.payload['topic'])
     if(len(data['aliases'])>0):
         await cl.Message(content=f'Currently : {','.join(data['aliases'])}').send()
     res = await cl.AskUserMessage(content=f"Provide an alias for {uppercase(action.payload['topic'])}.",timeout=60).send()
@@ -448,7 +429,7 @@ async def add_alias(action: cl.Action):
             aliases = res['output'].split(',')
             data['aliases'] += aliases
             data['aliases'] = list(set(data['aliases']))
-            json_utils.save_json(action.payload['topic'],data)
+            du.save_json(action.payload['topic'],data)
             await cl.Message(content=f'Saved aliases for {uppercase(action.payload['topic'])}',actions=actions).send()
         else:
             await cl.Message(content=f'File not found!').send()
@@ -479,7 +460,7 @@ async def add_tag(action: cl.Action):
                 ),
             ]
 
-    exists,data = json_utils.load_json(action.payload['topic'])
+    exists,data = du.load_json(action.payload['topic'])
     if(len(data['tags'])>0):
         await cl.Message(content=f'Currently : {','.join(data['tags'])}').send()
     res = await cl.AskUserMessage(content=f"Provide tags for {uppercase(action.payload['topic'])}.",timeout=60).send()
@@ -488,7 +469,7 @@ async def add_tag(action: cl.Action):
         if(exists):
             aliases = res['output'].split(',')
             data['tags'] += aliases
-            json_utils.save_json(action.payload['topic'],data)
+            du.save_json(action.payload['topic'],data)
             await cl.Message(content=f'Saved tags for {uppercase(action.payload['topic'])}',actions=actions).send()
         else:
             await cl.Message(content=f'File not found!').send()
@@ -620,7 +601,414 @@ async def save_json_to_database(json_dict):
         json.dump(loaded_file, file, indent=4)
 
 #############
-# Tools
+# Datastore Operations
+#############
+
+@cl.step(name="Knowledge Database Update Tools")
+async def update_datastore():
+
+    await create_knowledge_graph()
+    await cl.make_async(du.update_local_dataset)()    
+
+async def create_knowledge_graph():
+    graph,documents_lookup,filename_to_name = du.create_knowledge_graph()
+    cl.user_session.set('knowledge_graph',graph)
+    cl.user_session.set('documents_lookup',documents_lookup)
+
+async def save_idea_to_local_session(message):    
+
+    idea = message.content
+
+    idea_actions = [
+        cl.Action(
+            name="crosscheck",
+            icon="circle-question-mark",
+            payload={"idea": idea},
+            label="Cross Check Idea"
+        ),
+        cl.Action(
+            name="remove_from_idea_history",
+            icon="trash-2",
+            payload={"none": " "},
+            label="Remove Idea"
+        )
+    ]
+
+    cancel_action = [
+        cl.Action(
+            name="cancel_button",
+            icon="trash-2",
+            payload={"value": True},
+            label="Click me!"
+        )
+    ]
+
+    # Add punctuation if it isn't there.
+    if(not(idea.endswith('.'))):
+        idea += '.'
+
+    most_relevant_file = await get_most_relevant_file(idea,threshold=0.4,k=5)
+
+    if(len(most_relevant_file)>0):
+        cl.user_session.set('response_msg',"Found the following topics relevant to your idea!")
+        cl.user_session.set('options',list(set(most_relevant_file['name']))+['Create New','Select a Topic','Cancel'])
+    else:
+        cl.user_session.set('response_msg',"Found no topics relevant to your idea.")
+        cl.user_session.set('options',['Create New','Select a Topic','Cancel'])
+
+    async def choose_topic():
+
+        response = await cl.AskActionMessage(
+            content=cl.user_session.get('response_msg'),
+            actions=[cl.Action(name=topic.lower(), 
+                                payload={'name': topic.lower(), 'done':False, 'next':None, 'cancel':False}, 
+                                label=uppercase(topic)) for topic in cl.user_session.get('options')],).send()
+        payload = response['payload']
+
+        # Response metadata
+        if(payload['name']=='cancel'):
+            payload['cancel'] = True
+            return payload
+
+        elif(payload['name']=='create new'):
+
+            # Get the topic name as text from user
+            topic_request = await cl.AskUserMessage(content="What is the topic of your idea?", timeout=30).send()
+            topic_name = topic_request['output'].lower()
+
+            # Check if the corresponding file already exists
+            filename = re.sub(r'[^a-zA-Z0-9]', '_', topic_name)
+            isExists = Path(f"{store_path}/{filename}.json").exists()
+            if(isExists):
+                # If the file exists, prompt the user for a different action
+                payload['next'] = 'choose_topic'
+                cl.user_session.set('response_msg','File already exists! Please select a different option.')
+                cl.user_session.set('options',['Create New','Select a Topic','Cancel'])
+                return payload
+
+            payload['name'] = topic_name
+
+        elif(payload['name']=='select a topic'):
+
+            # Get the topic name as text from user
+            topic_request = await cl.AskUserMessage(content="Choose a topic to update", timeout=30).send()
+            topic_name = topic_request['output'].lower()
+
+            # Check if the corresponding file already exists
+            filename = re.sub(r'[^a-zA-Z0-9]', '_', topic_name)
+            isExists = Path(f"{store_path}/{filename}.json").exists()
+            if(not(isExists)):
+                # If the file does not exist, prompt a different action
+                payload['next'] = 'choose_topic'
+                cl.user_session.set('response_msg','File does not exist! Please select a different option.')
+                cl.user_session.set('options',['Create New','Select a Topic','Cancel'])
+                return payload
+            payload['name'] = topic_name
+
+        print(payload['name'])
+        payload['next'] = 'get_schema'
+        return payload
+
+    async def get_schema(payload):
+        # Return a partially filled schema
+
+        # If topic exists, return the saved schema, else, create a new one.
+        topic_name = payload['name'].lower()
+        filename = re.sub(r'[^a-zA-Z0-9]', '_', topic_name)
+        isExists = Path(f"{store_path}/{filename}.json").exists()
+
+        if(isExists):
+            # Load existing schema
+            with open(f"{store_path}/{filename}.json", "r") as file:
+                data = json.load(file)
+            schema = sch.get_schema(data['type'])
+        else:
+            # Create a new schema
+            schemas = [uppercase(entity) for entity in named_entities]+['Cancel']
+
+            response = await cl.AskActionMessage(
+                content="What is kind of idea is it?",
+                actions=[cl.Action(name=schema.lower(), payload={'name': schema.lower(), 'done':False, 'curr':'get_schema' ,'next':None, 'cancel':False}, label=schema) for schema in schemas],
+            ).send()
+
+            payload = response['payload']
+
+            if(payload['name']=='cancel'):
+                payload['cancel'] = True
+                return payload
+
+            # Retrieve the relevant schema
+            schema_type = payload['name']
+            schema = sch.get_schema(schema_type)
+
+            data = dict()
+            data['name'] = topic_name.lower()
+            data['type'] = schema_type
+            data['data'] = schema
+            data['tags'] = []
+            data['related'] = dict()
+            data['aliases'] = []
+            data['blurb'] = ''
+            for key in data['data'].keys():
+                data['related'][key] = []
+            
+        # Get the sub-schema associated with the idea
+        sub_schemas = [uppercase(key) for key in schema.keys()]+['Cancel']
+
+        response = await cl.AskActionMessage(
+            content=f"What part of {uppercase(topic_name)} is your new idea about?",
+            actions=[cl.Action(name=sub_schema.lower(), payload={'name': sub_schema.lower(), 'done':False, 'json':data, 'next':None, 'cancel':False}, label=sub_schema) for sub_schema in sub_schemas]
+        ).send()
+        payload = response['payload']
+
+        if(payload['name']=='cancel'):
+            payload['cancel'] = True
+            return payload
+
+        payload['next'] = 'done'
+        payload['done'] = True
+
+        return payload
+
+
+    # Creation flow
+
+    done = False
+    next_step = 'choose_topic'
+    while(not(done)):
+
+        if(next_step=='choose_topic'):
+            payload = await choose_topic()
+        elif(next_step=='get_schema'):
+            payload = await get_schema(payload)
+            
+        canceled = payload['cancel']
+        if(canceled):
+            break
+
+        next_step = payload['next']
+        done = payload['done']
+
+    canceled = payload['cancel']
+    print(canceled)
+
+    if(not(canceled)):
+
+        response = await show_card(payload['json'],message='Please describe your idea!',open_with=payload['name'],initEdit=False,enableEdit=True)
+
+        '''sub_schema = payload['name']
+
+        data = payload['json']
+        idea_name = data['name']
+        idea_type = data['type']
+        schema = data['data']
+
+        props = {
+                "timeout": 6000,
+                "initialTab":sub_schema,
+                "enableEdit": True,
+                "initEdit": True,
+                "topText": uppercase(idea_type),
+                "Title": uppercase(idea_name),
+                "fields": []}
+
+        for key in schema.keys():
+            new_field = dict()
+            new_field['id'] = key
+            new_field['label'] = uppercase(key)
+            new_field['type'] = 'text'
+            
+            if(key.lower()==sub_schema.lower()):
+                new_field['value'] = idea
+            else:
+                new_field['value'] = ''
+            new_field['description'] = schema[key]#' '.join(schema[key])
+            props['fields'].append(new_field)
+
+        element = cl.CustomElement(
+                        name="KnowledgeBase",
+                        display="inline",
+                        props=props
+                    )
+
+        response = await cl.AskElementMessage(
+                    content="Please describe your idea!",
+                    element=element,
+                    timeout=6000
+                ).send()'''
+
+        # TODO : SAVE JSON to filesystem
+        print(response)
+
+        if(response['submitted']):
+            for key in schema.keys():
+                if(len(response[key])>0):
+                    #schema[key].append(response[key])
+                    schema[key] = response[key]
+
+            print(schema)
+
+            data['data'] = schema
+            data['tags'] = []
+            data['related'] = dict()
+
+            for key in data['data'].keys():
+                data['related'][key] = []
+
+            filename = idea_name.lower()
+            filename = re.sub(r'[^a-zA-Z0-9]', '_', filename)
+            with open(f"{store_path}/json_store/{filename}.json", "w") as file:
+                json.dump(data, file, indent=4)
+
+            message = await cl.Message(content=f'Added idea : {idea}',actions=idea_actions).send()
+    else:
+        message = await cl.Message(content=f'Cancelled!').send()
+
+    return None
+
+async def update_metadata(message):
+    actions = [
+                cl.Action(
+                    name="add_blurb",
+                    icon="",
+                    payload={'topic':message.content},
+                    label="Add Blurb"
+                ),
+                cl.Action(
+                    name="add_alias",
+                    icon="",
+                    payload={'topic':message.content},
+                    label="Add Alias"
+                ),
+                cl.Action(
+                    name="add_tag",
+                    icon="",
+                    payload={'topic':message.content},
+                    label="Add Tag"
+                ),
+            ]
+
+    exists,data = du.load_json(message.content)
+    if(exists):
+        await cl.Message(content=f'Update metadata for {uppercase(message.content)}?',actions=actions).send()
+    else:
+        await cl.Message(content=f'No such file exists! You should create one.').send()
+
+async def retrieve_graph_rag(query,threshold=0.4,k=10,hops=1):
+
+    graph = cl.user_session.get("knowledge_graph")
+    documents_lookup = cl.user_session.get("documents_lookup")
+
+    retrieved_ids = set()
+    full_graph_context = dict()
+    full_graph_context['direct'] = []
+    full_graph_context['indirect'] = []
+
+    
+    retrieved_contexts,ids = du.get_graph_rag_context(query,graph,documents_lookup,threshold,k,hops)
+
+    for key in ['direct','indirect']:
+        for idx in range(len(ids[key])):
+            if(not(ids[key][idx] in retrieved_ids)):
+                full_graph_context[key].append(retrieved_contexts[key][idx])
+                retrieved_ids.add(ids[key][idx])
+
+    # Format retrieved context
+    full_context_text = ""
+    if(len(full_graph_context['indirect'])>0):
+        full_context_text+=f"SUPPLEMENTARY INFORMATION:\n\n{"\n\n".join(full_graph_context['indirect'])}\n\n"
+    if(len(full_graph_context['direct'])>0):
+        full_graph_context['direct'].reverse()
+        full_context_text += f"DIRECT CONTEXT:\n\n{"\n\n".join(full_graph_context['direct'])}"
+
+    if(len(full_context_text)==0):
+        full_context_text = "No context found."
+
+    return  full_context_text,full_graph_context
+
+@cl.step(name='Retrieve Context')
+async def retrieve_context(topic):
+
+    #chat_history = []
+    #chat_history = prompts.get_context_retrieval_prompt('system',chat_history)
+    #chat_history = prompts.get_context_retrieval_prompt('user',chat_history,user_input,', '.join(relevant_entities))
+
+    # Construct Tool Call
+    relevant_entities = sem.entity_extraction(topic,entity_threshold=0.25)
+
+    # Context Retrievant Via MCP
+    topic_with_context = await query_processing(topic)
+    context_text, context_list = await retrieve_graph_rag(topic_with_context)
+
+    return context_text,context_list
+
+async def view_idea(message):
+
+    exists,data = du.load_json(message.content)
+
+    if(exists):
+
+        entity = data['name']
+        schema = data['data']
+        label = data['type']
+        
+        props = {
+                "timeout": 6000,
+                "initialTab":'overview',
+                "enableEdit": True,
+                "initEdit": False,
+                "topText": label[:1].upper()+label[1:],
+                "Title": entity[:1].upper()+entity[1:],
+                "fields": []}
+
+        for key in schema.keys():
+            new_field = dict()
+            new_field['id'] = key
+            new_field['label'] = key[:1].upper()+key[1:]
+            new_field['type'] = 'text'
+            new_field['value'] = ''
+            new_field['description'] = schema[key]#' '.join(schema[key])
+            props['fields'].append(new_field)
+
+        element = cl.CustomElement(
+                        name="KnowledgeBase",
+                        display="inline",
+                        props=props
+                    )
+
+        response = await cl.AskElementMessage(
+                    content=f"",
+                    element=element,
+                    timeout=6000
+                ).send()
+
+        # TODO : SAVE JSON to filesystem
+
+        if(response['submitted']):
+            for key in schema.keys():
+                if(len(response[key])>0):
+                    #schema[key].append(response[key])
+                    schema[key] = [x for x in response[key] if x.strip()]
+
+            data['data'] = schema
+            data['tags'] = []
+            data['related'] = dict()
+
+            for key in data['data'].keys():
+                data['related'][key] = []
+
+            filename = entity.lower()
+            filename = re.sub(r'[^a-zA-Z0-9]', '_', filename)
+            with open(f"{store_path}/json_store/{filename}.json", "w") as file:
+                json.dump(data, file, indent=4)
+
+            await cl.Message(content=f'Updated information about {uppercase(entity)}!').send()
+
+    else:
+        topic_response = await cl.Message(content="Topic not found!").send()
+
+#############
+# Corpus Analysis Tools
 #############
 
 @cl.step(name='Splitting Scenes')
@@ -640,10 +1028,10 @@ async def split_scenes(file):
         chunk = await add_entity_context(' '.join(sentences[idx:idx+window_size]))
         chunks.append(chunk)
 
-    chunk_embeddings = sem.embed_text(chunks)
+    chunk_embeddings = du.embed_text(chunks)
 
     for idx in range(len(chunk_embeddings)-1):
-        cosine_sim = sem.get_cosine_similarity(chunk_embeddings[idx],chunk_embeddings[idx+1])
+        cosine_sim = du.get_cosine_similarity(chunk_embeddings[idx],chunk_embeddings[idx+1])
         #print(s1)
         #print(s2)
         #print(cosine_sim)
@@ -677,7 +1065,19 @@ async def get_gist(user_message):
     aliases = dict()
     for key in entities_to_track:
         aliases[key] = sem.find_aliases(key,io_utils.get_text(file.path))
-        await cl.Message(content=f'Found the following aliases for {key}!\n {'\n'.join([f"{i}. {uppercase(alias)}" for i, alias in enumerate(aliases[key], start=1)])}').send()
+        if(len(aliases[key])>0):
+            await cl.Message(content=f'Found the following aliases for {key}!\n {'\n'.join([f"{i}. {uppercase(alias)}" for i, alias in enumerate(aliases[key], start=1)])}').send()
+        else:
+            alias_text = await cl.AskUserMessage(content=f'Found no aliases for {key}! Would you like to add any aliases? Please split each alias with a /.',timeout=120).send()
+            aliases[key] = [key]
+
+            if('/' in alias_text['output']):
+                aliases[key] += alias_text['output'].split('/')
+            else:
+                aliases[key] += [alias_text['output']]
+
+    print(aliases)
+
 
     scenes = pre.get_chunks(pre.get_corpus(file.path),chunk_size=800)#await split_scenes(file)
 
@@ -688,29 +1088,40 @@ async def get_gist(user_message):
         type = entities_to_track[key]
         tracked_entities[key] = dict()
 
+        previous_context = None
+
         for scene_number in range(len(scenes)):
             scene = scenes[scene_number]
 
             with cl.Step(f'Analysis Tools on Scene : {scene[:min((50,len(scene)))]}...'):
                 #with cl.Step(f'Analysis of Scene : {scene}'):
-                if(any(alias in scene for alias in aliases[key])):
-                    tracked_entities[key][scene_number] = create_json_dict(key,type)
+                
+                tracked_entities[key][scene_number] = create_json_dict(key,type)
 
-                    RoleSchema = sch.get_pydantic_schema('RoleSchema',type,key)
-                    subjects = list(RoleSchema.model_fields.keys())
+                if(any(alias in scene for alias in aliases[key])): 
+                    get_full = True
+                else: 
+                    get_full = False
+                    for sch_key in tracked_entities[key][scene_number]['data'].keys():
+                        tracked_entities[key][scene_number]['data'][sch_key] = ''
 
-                    entity_extraction_prompt_history = prompts.isolate_scene_element(role='system')
-                    entity_extraction_prompt_history = prompts.isolate_scene_element(role='user',history=entity_extraction_prompt_history,text=scene,entity=key,subjects=subjects,aliases=aliases[key])
-                    print(entity_extraction_prompt_history)
-                    isolated_element = await tokenize_and_generate(entity_extraction_prompt_history,max_new_tokens=256,temperature=0.25,template=RoleSchema)
-                    isolated_element = RoleSchema.model_validate_json(isolated_element)
-                    isolated_element = isolated_element.model_dump()
-                    for sch_key in isolated_element.keys():
-                        print(sch_key,isolated_element[sch_key])
-                    print()
 
-                    for sch_key in isolated_element.keys():
-                        tracked_entities[key][scene_number]['data'][sch_key] = isolated_element[sch_key]
+                RoleSchema = sch.get_pydantic_schema('RoleSchema',type,key,full=get_full)
+                subjects = list(RoleSchema.model_fields.keys())
+
+                entity_extraction_prompt_history = prompts.isolate_scene_element(role='system')
+                entity_extraction_prompt_history = prompts.isolate_scene_element(role='user',history=entity_extraction_prompt_history,text=scene,entity=key,subjects=subjects,aliases=aliases[key],context=previous_context,full=get_full)
+                print(entity_extraction_prompt_history)
+                isolated_element = await tokenize_and_generate(entity_extraction_prompt_history,max_new_tokens=256,temperature=0.25,template=RoleSchema)
+                isolated_element = RoleSchema.model_validate_json(isolated_element)
+                isolated_element = isolated_element.model_dump()
+                previous_context = create_context(isolated_element,key)
+                for sch_key in isolated_element.keys():
+                    print(sch_key,isolated_element[sch_key])
+                print()
+
+                for sch_key in isolated_element.keys():
+                    tracked_entities[key][scene_number]['data'][sch_key] = isolated_element[sch_key]
         
 
         with cl.Step(f'Summarization Tools on information about {key}'):
@@ -728,10 +1139,13 @@ async def get_gist(user_message):
 
 
             response = await show_card(entity_summaries[key],message=f'I was able to find the following information about {key}!')
-            for sch_key in entity_summaries[key]['data']:
-                entity_summaries[key][sch_key] = response[sch_key]
 
-        await save_json_to_database(entity_summaries[key])
+            if(response['submitted']):
+                for sch_key in entity_summaries[key]['data']:
+                    entity_summaries[key][sch_key] = response[sch_key]
+                await save_json_to_database(entity_summaries[key])
+            else:
+                await cl.Message(content='Cancelled Wiki Creation Process!').send()
 
 
     '''
@@ -929,56 +1343,24 @@ async def create_schema_element(entity,label,schema,message="Please describe you
 
     return response
 
-async def create_knowledge_graph():
 
-    graph,documents_lookup,filename_to_name = json_utils.create_knowledge_graph()
-
-    cl.user_session.set('knowledge_graph',graph)
-    cl.user_session.set('documents_lookup',documents_lookup)
-
-async def update_internal_knowledge_base():
-
-    #unload_models(nli_model,nli_tokenizer)
-    #unload_models(extraction_model)
-
-    documents = await cl.make_async(json_utils.load_files)()
-
-    new_dataset,index = await cl.make_async(sem.create_new_dataset)(documents)
-
-    await cl.make_async(json_utils.overwrite_faiss_dataset)(new_dataset,index)
-
-    await cl.make_async(sem.reload_faiss_dataset)()
-
-    gc.collect()
+#############
+# Chainlit message manipulation tools (?)
+#############
 
 async def delete_last_message():
     chat_context = cl.chat_context.get()
     await chat_context[-1].remove()
 
-async def update_faiss():
 
-    dataset_dir = '/Users/satyawagle/Projects/LangChain/llm_chatbot/data/json_store'
-
-    async with cl.Step(name=f"Knowledge Database Update Tools") as step:
-
-        json_utils.update_links()
-
-        await create_knowledge_graph()
-        
-        await update_internal_knowledge_base()
+#############
+# Semantic Functions
+#############
 
 async def add_entity_context(idea,entity_threshold=0.4):
 
     blurb_map = cl.user_session.get('blurb_map')
     alias_map = cl.user_session.get('alias_map')
-
-    '''entities = sem.entity_extraction(idea,entity_threshold=entity_threshold)
-    print(entities)
-    entity_context = dict()
-    for entity in entities:
-        exists,data = json_utils.load_json(entity)
-        if(exists):
-            entity_context[uppercase(entity)] = (''.join(data['blurb'])).lower()'''
 
     entity_context = dict()
 
@@ -1006,6 +1388,41 @@ async def add_entity_context(idea,entity_threshold=0.4):
 
     return idea
 
+@cl.step(name='Check Context Sufficiency')
+async def check_context_sufficiency(proposition,context_dict):
+
+    # Check if Context can answer the Question
+
+    max_prob = 0.0
+    best_context = 0
+
+    context_list = []
+    for key in context_dict.keys():
+        context_list += context_dict[key]
+
+    #proposition = await add_entity_context(proposition)
+    print(proposition)
+
+    if(len(context_list)>0):
+
+        for i,context in enumerate(context_list):
+            # Use only the textual part of the context for NLI to preserve tokens + not include tags etc.
+            trimmed_context = [c for c in context.split(':') if len(c)>0]
+            trimmed_context = trimmed_context[-1].strip()
+            #trimmed_context = await add_entity_context(trimmed_context)
+            print(trimmed_context)
+            contradiction,entailment_probs,neutral = sem.get_entailment_probs(trimmed_context,proposition)
+            print(contradiction,entailment_probs,neutral)
+            print()
+            #print(context,entailment_probs)
+            if(entailment_probs>max_prob):
+                max_prob = entailment_probs
+                best_context = i
+
+        #print(f"Best Context with Entailment Probability {max_prob}")
+        #print(context_list[best_context])
+
+    return best_context, max_prob
 
 #############
 # Core Functions
@@ -1045,58 +1462,6 @@ async def query_processing(user_input,entity_threshold=0.4):
     print(user_input_with_context)
 
     return user_input_with_context
-
-@cl.step(name='Retrieve Context')
-async def retrieve_context(user_input):
-
-    #chat_history = []
-    #chat_history = prompts.get_context_retrieval_prompt('system',chat_history)
-    #chat_history = prompts.get_context_retrieval_prompt('user',chat_history,user_input,', '.join(relevant_entities))
-
-    # Construct Tool Call
-    relevant_entities = sem.entity_extraction(user_input,entity_threshold=0.25)
-
-    # Context Retrievant Via MCP
-    user_input_with_context = await query_processing(user_input)
-    context_text, context_list = await retrieve_graph_rag(user_input_with_context)
-
-    return context_text,context_list
-
-@cl.step(name='Check Context Sufficiency')
-async def check_context_sufficiency(proposition,context_dict):
-
-    # Check if Context can answer the Question
-
-    max_prob = 0.0
-    best_context = 0
-
-    context_list = []
-    for key in context_dict.keys():
-        context_list += context_dict[key]
-
-    #proposition = await add_entity_context(proposition)
-    print(proposition)
-
-    if(len(context_list)>0):
-
-        for i,context in enumerate(context_list):
-            # Use only the textual part of the context for NLI to preserve tokens + not include tags etc.
-            trimmed_context = [c for c in context.split(':') if len(c)>0]
-            trimmed_context = trimmed_context[-1].strip()
-            #trimmed_context = await add_entity_context(trimmed_context)
-            print(trimmed_context)
-            contradiction,entailment_probs,neutral = sem.get_entailment_probs(trimmed_context,proposition)
-            print(contradiction,entailment_probs,neutral)
-            print()
-            #print(context,entailment_probs)
-            if(entailment_probs>max_prob):
-                max_prob = entailment_probs
-                best_context = i
-
-        #print(f"Best Context with Entailment Probability {max_prob}")
-        #print(context_list[best_context])
-
-    return best_context, max_prob
 
 @cl.step(name='Identify Additional Context')
 async def identify_additional_context(user_input,context_text):
@@ -1149,351 +1514,35 @@ async def get_context_from_user(question,context_text):
 
     return context_text,answered
 
-async def check_idea(user_input):
+async def check_idea_for_contradictions(message):
 
-    exists,data = json_utils.load_json(user_input)
-
-    if(exists):
-
-        entity = data['name']
-        schema = data['data']
-        label = data['type']
-        
-        props = {
-                "timeout": 6000,
-                "initialTab":'overview',
-                "enableEdit": True,
-                "initEdit": False,
-                "topText": label[:1].upper()+label[1:],
-                "Title": entity[:1].upper()+entity[1:],
-                "fields": []}
-
-        for key in schema.keys():
-            new_field = dict()
-            new_field['id'] = key
-            new_field['label'] = key[:1].upper()+key[1:]
-            new_field['type'] = 'text'
-            new_field['value'] = ''
-            new_field['description'] = schema[key]#' '.join(schema[key])
-            props['fields'].append(new_field)
-
-        element = cl.CustomElement(
-                        name="KnowledgeBase",
-                        display="inline",
-                        props=props
-                    )
-
-        response = await cl.AskElementMessage(
-                    content=f"",
-                    element=element,
-                    timeout=6000
-                ).send()
-
-        # TODO : SAVE JSON to filesystem
-
-        if(response['submitted']):
-            for key in schema.keys():
-                if(len(response[key])>0):
-                    #schema[key].append(response[key])
-                    schema[key] = [x for x in response[key] if x.strip()]
-
-            data['data'] = schema
-            data['tags'] = []
-            data['related'] = dict()
-
-            for key in data['data'].keys():
-                data['related'][key] = []
-
-            filename = entity.lower()
-            filename = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-            with open(f"{store_path}/json_store/{filename}.json", "w") as file:
-                json.dump(data, file, indent=4)
-
-            await cl.Message(content=f'Updated information about {uppercase(entity)}!').send()
-
-    else:
-        topic_response = await cl.Message(content="Topic not found!").send()
-
-async def check_idea_for_contradictions(idea:str):
+    idea = message.content
 
     _,context_dict = await retrieve_context(idea)
 
     _,max_prob = await check_context_sufficiency(idea,context_dict)
 
-async def save_idea_to_local_session(idea:str):    
+@cl.step(name='Local Context to Reason and Answer')
+async def reason_and_answer(message):
 
-    idea_actions = [
-        cl.Action(
-            name="crosscheck",
-            icon="circle-question-mark",
-            payload={"idea": idea},
-            label="Cross Check Idea"
-        ),
-        cl.Action(
-            name="remove_from_idea_history",
-            icon="trash-2",
-            payload={"none": " "},
-            label="Remove Idea"
-        )
-    ]
+    # Retrieve Base Context
+    context_text,context_list = await retrieve_context(message.content)
 
-    cancel_action = [
-        cl.Action(
-            name="cancel_button",
-            icon="trash-2",
-            payload={"value": True},
-            label="Click me!"
-        )
-    ]
+    chat_history = []
+    chat_history = prompts.get_generation_prompt('system',chat_history)
+    chat_history = prompts.get_generation_prompt('user',chat_history,message.content,context_text)
 
-    # Add punctuation if it isn't there.
-    if(not(idea.endswith('.'))):
-        idea += '.'
+    json_answer = await tokenize_and_generate(chat_history,max_new_tokens=1024,temperature=0.3,template=ReasonedResponse)
 
-    most_relevant_file = await get_most_relevant_file(idea,threshold=0.4,k=5)
+    response = ReasonedResponse.model_validate_json(json_answer)
 
-    if(len(most_relevant_file)>0):
-        cl.user_session.set('response_msg',"Found the following topics relevant to your idea!")
-        cl.user_session.set('options',list(set(most_relevant_file['name']))+['Create New','Select a Topic','Cancel'])
-    else:
-        cl.user_session.set('response_msg',"Found no topics relevant to your idea.")
-        cl.user_session.set('options',['Create New','Select a Topic','Cancel'])
-
-    async def choose_topic():
-
-        response = await cl.AskActionMessage(
-            content=cl.user_session.get('response_msg'),
-            actions=[cl.Action(name=topic.lower(), 
-                                payload={'name': topic.lower(), 'done':False, 'next':None, 'cancel':False}, 
-                                label=uppercase(topic)) for topic in cl.user_session.get('options')],).send()
-        payload = response['payload']
-
-        # Response metadata
-        if(payload['name']=='cancel'):
-            payload['cancel'] = True
-            return payload
-
-        elif(payload['name']=='create new'):
-
-            # Get the topic name as text from user
-            topic_request = await cl.AskUserMessage(content="What is the topic of your idea?", timeout=30).send()
-            topic_name = topic_request['output'].lower()
-
-            # Check if the corresponding file already exists
-            filename = re.sub(r'[^a-zA-Z0-9]', '_', topic_name)
-            isExists = Path(f"{store_path}/{filename}.json").exists()
-            if(isExists):
-                # If the file exists, prompt the user for a different action
-                payload['next'] = 'choose_topic'
-                cl.user_session.set('response_msg','File already exists! Please select a different option.')
-                cl.user_session.set('options',['Create New','Select a Topic','Cancel'])
-                return payload
-
-            payload['name'] = topic_name
-
-        elif(payload['name']=='select a topic'):
-
-            # Get the topic name as text from user
-            topic_request = await cl.AskUserMessage(content="Choose a topic to update", timeout=30).send()
-            topic_name = topic_request['output'].lower()
-
-            # Check if the corresponding file already exists
-            filename = re.sub(r'[^a-zA-Z0-9]', '_', topic_name)
-            isExists = Path(f"{store_path}/{filename}.json").exists()
-            if(not(isExists)):
-                # If the file does not exist, prompt a different action
-                payload['next'] = 'choose_topic'
-                cl.user_session.set('response_msg','File does not exist! Please select a different option.')
-                cl.user_session.set('options',['Create New','Select a Topic','Cancel'])
-                return payload
-            payload['name'] = topic_name
-
-        print(payload['name'])
-        payload['next'] = 'get_schema'
-        return payload
-
-    async def get_schema(payload):
-        # Return a partially filled schema
-
-        # If topic exists, return the saved schema, else, create a new one.
-        topic_name = payload['name'].lower()
-        filename = re.sub(r'[^a-zA-Z0-9]', '_', topic_name)
-        isExists = Path(f"{store_path}/{filename}.json").exists()
-
-        if(isExists):
-            # Load existing schema
-            with open(f"{store_path}/{filename}.json", "r") as file:
-                data = json.load(file)
-            schema = sch.get_schema(data['type'])
-        else:
-            # Create a new schema
-            schemas = [uppercase(entity) for entity in named_entities]+['Cancel']
-
-            response = await cl.AskActionMessage(
-                content="What is kind of idea is it?",
-                actions=[cl.Action(name=schema.lower(), payload={'name': schema.lower(), 'done':False, 'curr':'get_schema' ,'next':None, 'cancel':False}, label=schema) for schema in schemas],
-            ).send()
-
-            payload = response['payload']
-
-            if(payload['name']=='cancel'):
-                payload['cancel'] = True
-                return payload
-
-            # Retrieve the relevant schema
-            schema_type = payload['name']
-            schema = sch.get_schema(schema_type)
-
-            data = dict()
-            data['name'] = topic_name.lower()
-            data['type'] = schema_type
-            data['data'] = schema
-            data['tags'] = []
-            data['related'] = dict()
-            data['aliases'] = []
-            data['blurb'] = ''
-            for key in data['data'].keys():
-                data['related'][key] = []
-            
-        # Get the sub-schema associated with the idea
-        sub_schemas = [uppercase(key) for key in schema.keys()]+['Cancel']
-
-        response = await cl.AskActionMessage(
-            content=f"What part of {uppercase(topic_name)} is your new idea about?",
-            actions=[cl.Action(name=sub_schema.lower(), payload={'name': sub_schema.lower(), 'done':False, 'json':data, 'next':None, 'cancel':False}, label=sub_schema) for sub_schema in sub_schemas]
-        ).send()
-        payload = response['payload']
-
-        if(payload['name']=='cancel'):
-            payload['cancel'] = True
-            return payload
-
-        payload['next'] = 'done'
-        payload['done'] = True
-
-        return payload
-
-
-    # Creation flow
-
-    done = False
-    next_step = 'choose_topic'
-    while(not(done)):
-
-        if(next_step=='choose_topic'):
-            payload = await choose_topic()
-        elif(next_step=='get_schema'):
-            payload = await get_schema(payload)
-            
-        canceled = payload['cancel']
-        if(canceled):
-            break
-
-        next_step = payload['next']
-        done = payload['done']
-
-    canceled = payload['cancel']
-    print(canceled)
-
-    if(not(canceled)):
-
-        sub_schema = payload['name']
-
-        data = payload['json']
-        idea_name = data['name']
-        idea_type = data['type']
-        schema = data['data']
-
-        props = {
-                "timeout": 6000,
-                "initialTab":sub_schema,
-                "enableEdit": True,
-                "initEdit": True,
-                "topText": uppercase(idea_type),
-                "Title": uppercase(idea_name),
-                "fields": []}
-
-        for key in schema.keys():
-            new_field = dict()
-            new_field['id'] = key
-            new_field['label'] = uppercase(key)
-            new_field['type'] = 'text'
-            
-            if(key.lower()==sub_schema.lower()):
-                new_field['value'] = idea
-            else:
-                new_field['value'] = ''
-            new_field['description'] = schema[key]#' '.join(schema[key])
-            props['fields'].append(new_field)
-
-        element = cl.CustomElement(
-                        name="KnowledgeBase",
-                        display="inline",
-                        props=props
-                    )
-
-        response = await cl.AskElementMessage(
-                    content="Please describe your idea!",
-                    element=element,
-                    timeout=6000
-                ).send()
-
-        # TODO : SAVE JSON to filesystem
-        print(response)
-
-        if(response['submitted']):
-            for key in schema.keys():
-                if(len(response[key])>0):
-                    #schema[key].append(response[key])
-                    schema[key] = response[key]
-
-            print(schema)
-
-            data['data'] = schema
-            data['tags'] = []
-            data['related'] = dict()
-
-            for key in data['data'].keys():
-                data['related'][key] = []
-
-            filename = idea_name.lower()
-            filename = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-            with open(f"{store_path}/json_store/{filename}.json", "w") as file:
-                json.dump(data, file, indent=4)
-
-            message = await cl.Message(content=f'Added idea : {idea}',actions=idea_actions).send()
-    else:
-        message = await cl.Message(content=f'Cancelled!').send()
-
-    return None
-
-async def update_metadata(user_input):
-    actions = [
-                cl.Action(
-                    name="add_blurb",
-                    icon="",
-                    payload={'topic':user_input},
-                    label="Add Blurb"
-                ),
-                cl.Action(
-                    name="add_alias",
-                    icon="",
-                    payload={'topic':user_input},
-                    label="Add Alias"
-                ),
-                cl.Action(
-                    name="add_tag",
-                    icon="",
-                    payload={'topic':user_input},
-                    label="Add Tag"
-                ),
-            ]
-
-    exists,data = json_utils.load_json(user_input)
-    if(exists):
-        await cl.Message(content=f'Update metadata for {uppercase(user_input)}?',actions=actions).send()
-    else:
-        await cl.Message(content=f'No such file exists! You should create one.').send()
+    actions = [cl.Action(
+            name="show_reasoning",
+            icon="message-circle-question-mark",
+            payload={'content':response.scratchpad},
+            label="Show Reasoning"
+            )]
+    await cl.Message(content=response.final_answer,actions=actions).send()
 
 #############
 
@@ -1516,10 +1565,10 @@ async def on_settings_update(settings: dict):
 async def on_chat_start():
 
     await create_knowledge_graph()
-    await cl.make_async(sem.reload_faiss_dataset)()
+    await cl.make_async(du.reload_faiss_dataset)()
 
-    cl.user_session.set("alias_map",json_utils.get_alias_map())
-    cl.user_session.set("blurb_map",json_utils.get_blurb_map())
+    cl.user_session.set("alias_map",du.get_alias_map())
+    cl.user_session.set("blurb_map",du.get_blurb_map())
 
     # Define System prompt
     cl.user_session.set("chat_history", [])
@@ -1527,14 +1576,7 @@ async def on_chat_start():
 
     await cl.context.emitter.set_commands(helpers)
 
-    await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?",actions=persistent_actions).send()
-    
-    #task_list = cl.TaskList()
-    #cl.user_session.set("task_list",task_list)
-    #task_list.status = "Idea History"
-    #task_list.title = "Ideas."
-
-    #await task_list.send()
+    await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?").send()
 
 @cl.on_message
 async def on_message(user_message: cl.Message):
@@ -1548,69 +1590,19 @@ async def on_message(user_message: cl.Message):
         if not user_message.elements:
             await cl.Message(content="No file attached").send()
         else:
-            #async with cl.Step(name=f"Extract Entities") as step:
-            #    await extract_entities(user_message)
-            
             await get_gist(user_message)
-            #await split_scenes(user_message)
-
     elif(selected_mode=='Update'):
-
-        await update_faiss()
-
+        await update_datastore()
     elif(selected_mode=='Ideate'):
-        await check_idea_for_contradictions(user_message.content)
-        await save_idea_to_local_session(user_message.content)
-
-    elif(selected_mode=='Check'):
-        await check_idea(user_message.content)
-
+        #await check_idea_for_contradictions(user_message)
+        await save_idea_to_local_session(user_message)
+    elif(selected_mode=='View'):
+        await view_idea(user_message)
     elif(selected_mode=='Metadata'):
-        await update_metadata(user_message.content)
-
+        await update_metadata(user_message)
     else:
-
-        user_input = user_message.content
-        if(False):
-            #user_input_with_context = await query_processing(user_input,entity_threshold=0.2)
-            context_text,context_list = await retrieve_context(user_input)
-
-            chat_history = []
-            chat_history = prompts.get_decomposition_prompt('system',chat_history)
-            chat_history = prompts.get_decomposition_prompt('user',chat_history,user_input,context_text)
-
-            answer = await tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.4)
-
-            print(answer)
-
-        if(True):
-
-            async with cl.Step(name=f"Local Context to Answer Question") as step:
-                # Retrieve Base Context
-                context_text,context_list = await retrieve_context(user_input)
-
-                #sem.check_context_entailment(context_list,sub_queries)
-
-                chat_history = []
-                chat_history = prompts.get_generation_prompt('system',chat_history)
-                chat_history = prompts.get_generation_prompt('user',chat_history,user_input,context_text)
-
-                json_answer = await tokenize_and_generate(chat_history,max_new_tokens=1024,temperature=0.3,template=ReasonedResponse)
-
-                response = ReasonedResponse.model_validate_json(json_answer)
-
-                actions = [cl.Action(
-                        name="show_reasoning",
-                        icon="message-circle-question-mark",
-                        payload={'content':response.scratchpad},
-                        label="Show Reasoning"
-                        )]
-                await cl.Message(content=response.final_answer,actions=actions).send()
-
-            # Check if Base Context is Sufficient
-            #best_context, max_prob = await check_context_sufficiency(response.scratchpad,context_list)
+        await reason_and_answer(user_message)
      
 @cl.on_chat_end
-def end_chat():
-
-    pass
+async def end_chat():
+    await update_datastore()

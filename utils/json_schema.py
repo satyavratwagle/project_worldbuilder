@@ -6,6 +6,8 @@ pydantic_descriptions = dict()
 # Character
 def get_pydantic_descriptions(role,topic,subject):
 
+	if(topic=='summary'): return f"A 1-2 sentence summary of the provided text, including instigating event and reaction. If context is provided, DO NOT include it in the summary."
+
 	# Character
 	if(role=='character'):
 		if(topic=='overview'):return f"A 1-2 sentence summary of all information known about {subject}. If no information is found, respond with 'None'."
@@ -14,8 +16,6 @@ def get_pydantic_descriptions(role,topic,subject):
 		elif(topic=='abilities'):return f"Brief description of extraordinary abilities shown by {subject}. If no information is found, respond with 'None'."
 		elif(topic=='backstory'):return f"Information about the past of {subject}. If no information is found, respond with 'None'."
 		elif(topic=='relationships'):return f"Nature of the relationships of {subject} with others. If no information is found, respond with 'None'."
-		elif(topic=='actions'):return f"Brief description of the actions taken by {subject} in the text. If no information is found, respond with 'None'."
-		elif(topic=='goals'):return f"Brief description of the goals of {subject} in the text. If no information is found, respond with 'None'."
 
 	# Location
 	elif(role=='location'):
@@ -132,18 +132,20 @@ def get_schema(label):
 	else:
 		print('No Matching Schema Found!')
 
-def get_pydantic_schema(schema_name,role,subject):
+def get_pydantic_schema(schema_name,role,subject,full=True):
 	schema = get_schema(role)
 
 	field_definitions = {}
+	field_definitions['summary'] = (str,Field(description=get_pydantic_descriptions(role,'summary',subject)))
 	
-	for key, topic in schema.items():
-		if(not(key=='misc')):
-			val_type = type(topic)
-			try:
-				field_definitions[key] = (str,Field(description=get_pydantic_descriptions(role,topic,subject)))
-			except:
-				pass
+	if(full):
+		for key, topic in schema.items():
+			if(not(key=='misc')):
+				val_type = type(topic)
+				try:
+					field_definitions[key] = (str,Field(description=get_pydantic_descriptions(role,topic,subject)))
+				except:
+					pass
 		
 	return create_model(schema_name, **field_definitions)
 

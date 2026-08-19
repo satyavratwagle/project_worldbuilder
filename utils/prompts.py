@@ -102,7 +102,7 @@ def get_gist_prompt(role='system', history=None, text='',tracked_entities=[]):
 	else:
 		return [prompt]
 
-def isolate_scene_element(role='system', history=None, text='',entity='',subjects=['overview'], aliases=[]):
+def isolate_scene_element(role='system', history=None, text='',entity='',subjects=['overview'], aliases=[],context=None,full=True):
 
 	if(role=='system'):
 		'''prompt = {"role": "system", "content": (f"Your job is to provide a brief description of {entity}, which is a {aspect} in the context of the given scene. "
@@ -116,7 +116,25 @@ def isolate_scene_element(role='system', history=None, text='',entity='',subject
 												"Use only the given information when describing the topics. Do NOT invent or extrapolate information."
                 								"Your response must start immediately with the character '{'.")}
 	elif(role=='user'):
-		prompt = {"role":"user","content":(f'Describe the following topics related to {entity} : {", ".join(subjects)}.\n {entity} is also referred to as {','.join(aliases)}. \n Your response should contain ONLY information about {entity}. Do not include information about anything else. \n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---\n')}
+
+		if(full):
+			subjects.remove('summary')
+			character_prompt = f'Use the current scene to describe the following topics related to {entity} : {", ".join(subjects)}; also provide a brief summary of the scene.'
+		else:
+			character_prompt = f'Use the current scene to provide a brief summary of the scene.'
+
+		if(context):
+			prompt = {"role":"user","content":(character_prompt+f'Do not use the context from previous scene directly in your responses.'
+												f'\n {entity} is also referred to as {','.join(aliases)}.'
+												f'\n In all fields except "summary", your response should contain ONLY information about {entity}.'
+												f'In all fields except "summary", Do not include information about anything else.'
+												f'\n--- CONTEXT FROM PREVIOUS SCENE ---\n{context.strip()}\n--- END OF CONTEXT FROM PREVIOUS SCENE---\n\n'
+												f'\n--- CURRENT SCENE ---\n{text.strip()}\n--- END OF CURRENT SCENE ---\n')}
+		else:
+			prompt = {"role":"user","content":(character_prompt+f'\n {entity} is also referred to as {','.join(aliases)}.'
+												f'\n Your response should contain ONLY information about {entity}.'
+												f'Do not include information about anything else.'
+												f'\n--- CURRENT SCENE ---\n{text.strip()}\n--- END OF CURRENT SCENE ---\n')}
 
 	if(history):
 		history.append(prompt)
