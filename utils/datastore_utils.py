@@ -342,6 +342,12 @@ class DatastoreUtilities():
 
         return json_text
 
+    def does_file_exist(self,name):
+        entity = name.lower()
+        filename = re.sub(r'[^a-zA-Z0-9]', '_', entity)
+        exists = Path(f"{self.jsonstore_dir}/{filename}.json").exists()
+        return exists
+        
     def save_json(self,name,data):
         entity = name.lower()
         filename = re.sub(r'[^a-zA-Z0-9]', '_', entity)

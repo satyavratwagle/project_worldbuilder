@@ -117,6 +117,7 @@ def create_dictionary_schema():
 
 def get_schema(label):
 
+	label = label.lower()
 	if(label=='character'):
 		return create_character_schema()
 	elif(label=='location'):

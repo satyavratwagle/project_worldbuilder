@@ -103,9 +103,9 @@ def create_json_dict(name,type):
     json_dict = dict()
     json_dict['name'] = name
     json_dict['type'] = type.lower()
-    json_dict['data'] = sch.get_schema(type)
+    json_dict['data'] = sch.get_schema(type.lower())
     json_dict['tags'] = []
-    json_dict['related'] = sch.get_schema(type)
+    json_dict['related'] = sch.get_schema(type.lower())
     json_dict['aliases'] = []
     json_dict['blurb'] = ""
 
@@ -286,7 +286,7 @@ async def show_checklist(entities,message='Select topics.'):
 
     return selection_response
 
-async def show_card(json_dict,message='Please describe your idea!',open_with='overview',initEdit=False,enableEdit=True):
+async def show_card(json_dict,prefill=None,message='Please describe your idea!',open_with='overview',initEdit=False,enableEdit=True):
 
     # card_title - Name ("Alvar")
     # crd_type - Idea type ("Character")
@@ -295,17 +295,18 @@ async def show_card(json_dict,message='Please describe your idea!',open_with='ov
     # idea (optional) - dict() like schema : Stuff to prefill
 
 
-    # Check if file exists. If it does not, add an empty schema.
-    filename = re.sub(r'[^a-zA-Z0-9]', '_', json_dict['name'].lower())
-    isExists = Path(f"{store_path}/{filename}.json").exists()
-    if(isExists):
-        # Load existing schema
-        with open(f"{store_path}/{filename}.json", "r") as file:
-            data = json.load(file)
-        prefill = data['data']
+    if(not(prefill)):
+        # Check if file exists. If it does not, add an empty schema.
+        filename = re.sub(r'[^a-zA-Z0-9]', '_', json_dict['name'].lower())
+        isExists = Path(f"{store_path}/{filename}.json").exists()
+        if(isExists):
+            # Load existing schema
+            with open(f"{store_path}/{filename}.json", "r") as file:
+                data = json.load(file)
+            prefill = data['data']
 
-    else:
-        prefill = sch.get_schema(json_dict['type'])
+        else:
+            prefill = sch.get_schema(json_dict['type'])
 
     props = {
             "timeout": 6000,
@@ -321,8 +322,8 @@ async def show_card(json_dict,message='Please describe your idea!',open_with='ov
         new_field['id'] = key
         new_field['label'] = uppercase(key)
         new_field['type'] = 'text'
-        new_field['value'] = prefill[key]#json_dict['data'][key]
-        new_field['description'] = json_dict['data'][key]#prefill[key]
+        new_field['value'] = prefill[key]
+        new_field['description'] = json_dict['data'][key]
         props['fields'].append(new_field)
 
     element = cl.CustomElement(
@@ -605,30 +606,6 @@ async def save_idea_to_local_session(message):
 
     idea = message.content
 
-    idea_actions = [
-        cl.Action(
-            name="crosscheck",
-            icon="circle-question-mark",
-            payload={"idea": idea},
-            label="Cross Check Idea"
-        ),
-        cl.Action(
-            name="remove_from_idea_history",
-            icon="trash-2",
-            payload={"none": " "},
-            label="Remove Idea"
-        )
-    ]
-
-    cancel_action = [
-        cl.Action(
-            name="cancel_button",
-            icon="trash-2",
-            payload={"value": True},
-            label="Click me!"
-        )
-    ]
-
     # Add punctuation if it isn't there.
     if(not(idea.endswith('.'))):
         idea += '.'
@@ -642,215 +619,108 @@ async def save_idea_to_local_session(message):
         cl.user_session.set('response_msg',"Found no topics relevant to your idea.")
         cl.user_session.set('options',['Create New','Select a Topic','Cancel'])
 
-    async def choose_topic():
+    # Phase 1 : Get a topic (str)
+
+    async def create_card(status_dict):
+
+        # Temporary variables
+        topic_type = None
 
         response = await cl.AskActionMessage(
             content=cl.user_session.get('response_msg'),
             actions=[cl.Action(name=topic.lower(), 
-                                payload={'name': topic.lower(), 'done':False, 'next':None, 'cancel':False}, 
+                                payload={'name': topic.lower()}, 
                                 label=uppercase(topic)) for topic in cl.user_session.get('options')],).send()
         payload = response['payload']
 
-        # Response metadata
+        # Cancel
         if(payload['name']=='cancel'):
-            payload['cancel'] = True
-            return payload
+            status_dict['cancel'] = True
+            return status_dict
 
+        # Create a new file for the idea
         elif(payload['name']=='create new'):
 
-            # Get the topic name as text from user
             topic_request = await cl.AskUserMessage(content="What is the topic of your idea?", timeout=30).send()
             topic_name = topic_request['output'].lower()
 
-            # Check if the corresponding file already exists
-            filename = re.sub(r'[^a-zA-Z0-9]', '_', topic_name)
-            isExists = Path(f"{store_path}/{filename}.json").exists()
-            if(isExists):
-                # If the file exists, prompt the user for a different action
-                payload['next'] = 'choose_topic'
+            if(du.does_file_exist(topic_name)):
                 cl.user_session.set('response_msg','File already exists! Please select a different option.')
-                cl.user_session.set('options',['Create New','Select a Topic','Cancel'])
-                return payload
+                return status_dict
+            else:
+                topic_types = [uppercase(entity) for entity in named_entities]+['Cancel']
+                type_response = await cl.AskActionMessage(
+                    content="What is kind of idea is it?",
+                    actions=[cl.Action(name=type.lower(), payload={'type': type.lower()}, label=type) for type in topic_types],
+                ).send()
 
-            payload['name'] = topic_name
+                if(type_response['payload']['type']=='cancel'):
+                    status_dict['cancel'] = True
+                    return status_dict
+                else:
+                    topic_type = uppercase(type_response['payload']['type'])
 
+        # Choose an existing topic
         elif(payload['name']=='select a topic'):
 
-            # Get the topic name as text from user
             topic_request = await cl.AskUserMessage(content="Choose a topic to update", timeout=30).send()
             topic_name = topic_request['output'].lower()
 
-            # Check if the corresponding file already exists
-            filename = re.sub(r'[^a-zA-Z0-9]', '_', topic_name)
-            isExists = Path(f"{store_path}/{filename}.json").exists()
-            if(not(isExists)):
-                # If the file does not exist, prompt a different action
-                payload['next'] = 'choose_topic'
+            print(topic_name)
+            if(not(du.does_file_exist(topic_name))):
                 cl.user_session.set('response_msg','File does not exist! Please select a different option.')
-                cl.user_session.set('options',['Create New','Select a Topic','Cancel'])
-                return payload
-            payload['name'] = topic_name
-
-        print(payload['name'])
-        payload['next'] = 'get_schema'
-        return payload
-
-    async def get_schema(payload):
-        # Return a partially filled schema
-
-        # If topic exists, return the saved schema, else, create a new one.
-        topic_name = payload['name'].lower()
-        filename = re.sub(r'[^a-zA-Z0-9]', '_', topic_name)
-        isExists = Path(f"{store_path}/{filename}.json").exists()
-
-        if(isExists):
-            # Load existing schema
-            with open(f"{store_path}/{filename}.json", "r") as file:
-                data = json.load(file)
-            schema = sch.get_schema(data['type'])
+                return status_dict
         else:
-            # Create a new schema
-            schemas = [uppercase(entity) for entity in named_entities]+['Cancel']
+            topic_name = payload['name']
+    
+        # Get Schema
+        if(topic_type):
+            json_dict = create_json_dict(topic_name,topic_type)
+        else:
+            _,json_dict = du.load_json(topic_name)
+            topic_type = json_dict['type']
 
-            response = await cl.AskActionMessage(
-                content="What is kind of idea is it?",
-                actions=[cl.Action(name=schema.lower(), payload={'name': schema.lower(), 'done':False, 'curr':'get_schema' ,'next':None, 'cancel':False}, label=schema) for schema in schemas],
-            ).send()
-
-            payload = response['payload']
-
-            if(payload['name']=='cancel'):
-                payload['cancel'] = True
-                return payload
-
-            # Retrieve the relevant schema
-            schema_type = payload['name']
-            schema = sch.get_schema(schema_type)
-
-            data = dict()
-            data['name'] = topic_name.lower()
-            data['type'] = schema_type
-            data['data'] = schema
-            data['tags'] = []
-            data['related'] = dict()
-            data['aliases'] = []
-            data['blurb'] = ''
-            for key in data['data'].keys():
-                data['related'][key] = []
-            
         # Get the sub-schema associated with the idea
-        sub_schemas = [uppercase(key) for key in schema.keys()]+['Cancel']
+        headings = [uppercase(key) for key in json_dict['data'].keys()]+['Cancel']
 
-        response = await cl.AskActionMessage(
-            content=f"What part of {uppercase(topic_name)} is your new idea about?",
-            actions=[cl.Action(name=sub_schema.lower(), payload={'name': sub_schema.lower(), 'done':False, 'json':data, 'next':None, 'cancel':False}, label=sub_schema) for sub_schema in sub_schemas]
+        heading_response = await cl.AskActionMessage(
+            content=f"What does your idea describe about {uppercase(topic_name)}?",
+            actions=[cl.Action(name=heading.lower(), payload={'name': heading.lower()}, label=heading) for heading in headings]
         ).send()
-        payload = response['payload']
+        
+        if(heading_response['payload']['name']=='cancel'):
+            status_dict['cancel'] = True
+            return status_dict
+        else:
+            heading = heading_response['payload']['name']
+            prefill = sch.get_schema(topic_type)
+            prefill[heading] = idea
 
-        if(payload['name']=='cancel'):
-            payload['cancel'] = True
-            return payload
+            card_response = await show_card(json_dict,prefill=prefill,message='Here is your idea!',open_with=heading,initEdit=False,enableEdit=True)
 
-        payload['next'] = 'done'
-        payload['done'] = True
+            print(card_response)
+            if(card_response['submitted']):
+                for heading in json_dict['data'].keys():
+                    if(len(card_response[heading][-1])>0):
+                        json_dict['data'][heading] = card_response[heading]
 
-        return payload
-
-
-    # Creation flow
-
-    done = False
-    next_step = 'choose_topic'
-    while(not(done)):
-
-        if(next_step=='choose_topic'):
-            payload = await choose_topic()
-        elif(next_step=='get_schema'):
-            payload = await get_schema(payload)
-            
-        canceled = payload['cancel']
-        if(canceled):
-            break
-
-        next_step = payload['next']
-        done = payload['done']
-
-    canceled = payload['cancel']
-    print(canceled)
-
-    if(not(canceled)):
-
-        response = await show_card(payload['json'],message='Please describe your idea!',open_with=payload['name'],initEdit=False,enableEdit=True)
-
-        '''sub_schema = payload['name']
-
-        data = payload['json']
-        idea_name = data['name']
-        idea_type = data['type']
-        schema = data['data']
-
-        props = {
-                "timeout": 6000,
-                "initialTab":sub_schema,
-                "enableEdit": True,
-                "initEdit": True,
-                "topText": uppercase(idea_type),
-                "Title": uppercase(idea_name),
-                "fields": []}
-
-        for key in schema.keys():
-            new_field = dict()
-            new_field['id'] = key
-            new_field['label'] = uppercase(key)
-            new_field['type'] = 'text'
-            
-            if(key.lower()==sub_schema.lower()):
-                new_field['value'] = idea
+                du.save_json(topic_name,json_dict)
+                status_dict['done'] = True
             else:
-                new_field['value'] = ''
-            new_field['description'] = schema[key]#' '.join(schema[key])
-            props['fields'].append(new_field)
+                status_dict['cancel'] = True
+            return status_dict
 
-        element = cl.CustomElement(
-                        name="KnowledgeBase",
-                        display="inline",
-                        props=props
-                    )
+    status_dict = dict()
+    status_dict['done'] = False
+    status_dict['cancel'] = False
 
-        response = await cl.AskElementMessage(
-                    content="Please describe your idea!",
-                    element=element,
-                    timeout=6000
-                ).send()'''
-
-        # TODO : SAVE JSON to filesystem
-        print(response)
-
-        if(response['submitted']):
-            for key in schema.keys():
-                if(len(response[key])>0):
-                    #schema[key].append(response[key])
-                    schema[key] = response[key]
-
-            print(schema)
-
-            data['data'] = schema
-            data['tags'] = []
-            data['related'] = dict()
-
-            for key in data['data'].keys():
-                data['related'][key] = []
-
-            filename = idea_name.lower()
-            filename = re.sub(r'[^a-zA-Z0-9]', '_', filename)
-            with open(f"{store_path}/json_store/{filename}.json", "w") as file:
-                json.dump(data, file, indent=4)
-
-            message = await cl.Message(content=f'Added idea : {idea}',actions=idea_actions).send()
+    while(not(status_dict['done']) and not(status_dict['cancel'])):
+        status_dict = await create_card(status_dict)
+        
+    if(status_dict['done']):
+        message = await cl.Message(content=f'Saved Idea to Database!').send()
     else:
         message = await cl.Message(content=f'Cancelled!').send()
-
-    return None
 
 async def update_metadata(message):
     actions = [
