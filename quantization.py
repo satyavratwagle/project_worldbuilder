@@ -1,4 +1,4 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer #4.53.2
 from mlx_lm import convert
 import json
 import torch
@@ -14,7 +14,7 @@ quantization = 4
 quant_path = config['model_dir']+f'/{model_id.split('/')[-1]}-quantized-{str(quantization)}b'
 
 # Change the following on a per model basis
-'''model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="auto",local_files_only=False)
+model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="auto",local_files_only=False)
 tokenizer = AutoTokenizer.from_pretrained(model_id,local_files_only=False)
 
 # Run the conversion and quantization
@@ -24,8 +24,8 @@ convert(
     q_bits=quantization,              # Choose your target bit-width (e.g., 4 or 8)
     mlx_path=quant_path
 )
-'''
-mlx_model, tokenizer = mlx_lm.load(config['model_dir']+f'/{config['model_id']}')
+
+mlx_model, tokenizer = mlx_lm.load(config['model_dir']+f'/{model_id.split("/")[-1]}-quantized-{str(quantization)}b')
 print("Wrapping model with Outlines (v0.3+ style)...")
 model = outlines.from_mlxlm(mlx_model, tokenizer)
 

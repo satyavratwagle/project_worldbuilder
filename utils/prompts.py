@@ -48,7 +48,8 @@ def get_summarization_prompt(role='system', history=None, entity='',type='',subj
 		prompt = {"role": "user", "content": (f"The following text contains the descriptions of the {subject} of {entity}, a {type} in a fictional world.\n"
 												f"Descriptions of {subject} of {entity} are described as they evolve across time, separated by ';'.\n"
 												f"Summarize the most consistent descriptions of {subject} of {entity} in the given text.\n"
-												f"\n\n{text}.")}
+												"Do NOT include scene numbers or references to the scenes in your response."
+												f"\n\n--- TEXT TO SUMMARIZE BEGINS ---{text}--- TEXT TO SUMMARIZE ENDS ---")}
 
 	if(history):
 		history.append(prompt)
@@ -103,7 +104,7 @@ def get_gist_prompt(role='system', history=None, text='',tracked_entities=[]):
 	else:
 		return [prompt]
 
-def isolate_scene_element(role='system', history=None, text='',entity='',subjects=['overview'], aliases=[],context=None,full=True):
+def isolate_scene_element(role='system', history=None, text='',entity='',subjects=['overview'], aliases=[],scene_context=None,rag_context=None,full=True):
 
 	if(role=='system'):
 		'''prompt = {"role": "system", "content": (f"Your job is to provide a brief description of {entity}, which is a {aspect} in the context of the given scene. "
@@ -111,10 +112,10 @@ def isolate_scene_element(role='system', history=None, text='',entity='',subject
 												f"You must respond with a description of {entity} in the specified response format. "
 												f'\n--- TEXT TO ANALYZE ---\n{text.strip()}\n--- END OF TEXT ---')
 												}'''
-		prompt = {"role":"system","content":(f'Analyze the following scene text and briefly describe all required topics, strictly adhering to the schema definitions.'
-												"Answer each field in strictly 1 or 2 sentences."
+		prompt = {"role":"system","content":(f'Analyze the following scene text and briefly describe all required topics, strictly adhering to the schema definitions. '
+												"Answer each field in strictly 1 or 2 sentences. "
 												"Do NOT include any conversational preamble or text. "
-												"Use only the given information when describing the topics. Do NOT invent or extrapolate information."
+												"You must use only the scene text and supplementary information provided by the user when describing the topics. Do NOT invent or extrapolate information. "
                 								"Your response must start immediately with the character '{'.")}
 	elif(role=='user'):
 
@@ -124,17 +125,20 @@ def isolate_scene_element(role='system', history=None, text='',entity='',subject
 		else:
 			character_prompt = f'Use the current scene to provide a brief summary of the scene.'
 
-		if(context):
-			prompt = {"role":"user","content":(character_prompt+f'Do not use the context from previous scene directly in your responses.'
+		if(scene_context):
+			prompt = {"role":"user","content":(character_prompt+f'Do not use the context from previous scene directly in your responses. '
+												f'You may only use relevant supplementary information in your responses.'
 												f'\n {entity} is also referred to as {','.join(aliases)}.'
 												f'\n In all fields except "summary", your response should contain ONLY information about {entity}.'
 												f'In all fields except "summary", Do not include information about anything else.'
-												f'\n--- CONTEXT FROM PREVIOUS SCENE ---\n{context.strip()}\n--- END OF CONTEXT FROM PREVIOUS SCENE---\n\n'
+												f'\n--- SUPPLEMENTARY INFORMATION ---\n{rag_context.strip()}\n--- END OF SUPPLEMENTARY INFORMATION---\n\n'
+												f'\n--- CONTEXT FROM PREVIOUS SCENE ---\n{scene_context.strip()}\n--- END OF CONTEXT FROM PREVIOUS SCENE---\n\n'
 												f'\n--- CURRENT SCENE ---\n{text.strip()}\n--- END OF CURRENT SCENE ---\n')}
 		else:
 			prompt = {"role":"user","content":(character_prompt+f'\n {entity} is also referred to as {','.join(aliases)}.'
 												f'\n Your response should contain ONLY information about {entity}.'
 												f'Do not include information about anything else.'
+												f'\n--- SUPPLEMENTARY INFORMATION ---\n{rag_context.strip()}\n--- END OF SUPPLEMENTARY INFORMATION---\n\n'
 												f'\n--- CURRENT SCENE ---\n{text.strip()}\n--- END OF CURRENT SCENE ---\n')}
 
 	if(history):

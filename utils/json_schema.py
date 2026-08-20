@@ -6,7 +6,7 @@ pydantic_descriptions = dict()
 # Character
 def get_pydantic_descriptions(role,topic,subject):
 
-	if(topic=='summary'): return f"A 1-2 sentence summary of the provided text, including instigating event and reaction. If context is provided, DO NOT include it in the summary."
+	if(topic=='summary'): return f"A 1-2 sentence summary of the provided scene. You MUST include the time of the day, the date and the location of the scene. If context is provided, DO NOT include it in the summary."
 
 	# Character
 	if(role=='character'):
@@ -42,7 +42,8 @@ def get_pydantic_descriptions(role,topic,subject):
 
 	# Event
 	if(role=='event'):
-		if(topic=='background'):return f"Description of past events, if any, that led up to {subject},if specified. If no information is found, respond with 'None'."
+		if(topic=='duration'):return f"The duration of {subject} in a 'from / to' format,if specified. If no information is found, respond with 'None'."
+		elif(topic=='background'):return f"Description of past events, if any, that led up to {subject},if specified. If no information is found, respond with 'None'."
 		elif(topic=='process'):return f"Description of {subject} in the present. If no information is found, respond with 'None'."
 		elif(topic=='aftermath'): return f"Description of future impact of {subject}, if specified. If no information is found, respond with 'None'."
 
@@ -101,6 +102,7 @@ def create_event_schema():
 
 	schema = dict()
 	schema['overview'] = []
+	schema['duration'] = []
 	schema['background'] = []
 	schema['process'] = []
 	schema['aftermath'] = []

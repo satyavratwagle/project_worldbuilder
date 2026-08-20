@@ -938,6 +938,7 @@ async def get_gist(user_message):
             else:
                 aliases[key] += [alias_text['output']]
 
+        aliases[key] = list(set(aliases[key]))
     print(aliases)
 
 
@@ -946,159 +947,107 @@ async def get_gist(user_message):
     tracked_entities = dict()
     entity_summaries = dict()
 
-    for key in entities_to_track.keys():
-        type = entities_to_track[key]
-        tracked_entities[key] = dict()
+    for entity in entities_to_track.keys():
+        type = entities_to_track[entity]
+        tracked_entities[entity] = dict()
 
         previous_context = None
+        held_context = None
 
         for scene_number in range(len(scenes)):
             scene = scenes[scene_number]
+            await asyncio.sleep(0.01)
 
             with cl.Step(f'Analysis Tools on Scene : {scene[:min((50,len(scene)))]}...'):
                 #with cl.Step(f'Analysis of Scene : {scene}'):
                 
-                tracked_entities[key][scene_number] = create_json_dict(key,type)
+                tracked_entities[entity][scene_number] = create_json_dict(entity,type)
 
-                if(any(alias in scene for alias in aliases[key])): 
+                if(any(alias in scene for alias in aliases[entity])): 
                     get_full = True
                 else: 
                     get_full = False
-                    for sch_key in tracked_entities[key][scene_number]['data'].keys():
-                        tracked_entities[key][scene_number]['data'][sch_key] = ''
+
+                tracked_entities[entity][scene_number]['present'] = get_full
+
+                # Get context to add to scene
+                _,rag_dict = await retrieve_context(scene,rag_threshold=0.5)
+                rag_context = '\n'.join(list(set().union(*rag_dict.values())))
 
 
-                RoleSchema = sch.get_pydantic_schema('RoleSchema',type,key,full=get_full)
+                RoleSchema = sch.get_pydantic_schema('RoleSchema',type,entity,full=get_full)
                 subjects = list(RoleSchema.model_fields.keys())
 
                 entity_extraction_prompt_history = prompts.isolate_scene_element(role='system')
-                entity_extraction_prompt_history = prompts.isolate_scene_element(role='user',history=entity_extraction_prompt_history,text=scene,entity=key,subjects=subjects,aliases=aliases[key],context=previous_context,full=get_full)
-                print(entity_extraction_prompt_history)
+                entity_extraction_prompt_history = prompts.isolate_scene_element(role='user',
+                                                                                history=entity_extraction_prompt_history,
+                                                                                text=scene,
+                                                                                entity=entity,
+                                                                                subjects=subjects,
+                                                                                aliases=aliases[entity],
+                                                                                scene_context=previous_context,
+                                                                                rag_context=rag_context,
+                                                                                full=get_full)
+                print(entity_extraction_prompt_history[-1]['content'])
                 isolated_element = await tokenize_and_generate(entity_extraction_prompt_history,max_new_tokens=256,temperature=0.25,template=RoleSchema)
                 isolated_element = RoleSchema.model_validate_json(isolated_element)
                 isolated_element = isolated_element.model_dump()
-                previous_context = create_context(isolated_element,key)
-                for sch_key in isolated_element.keys():
-                    print(sch_key,isolated_element[sch_key])
+                if(get_full):
+                    held_context = isolated_element
+                else:
+                    if(held_context):
+                        for topic in held_context.keys():
+                            if(not topic in isolated_element.keys()):
+                                isolated_element[topic] = f'{entity} was not present in the previous scene, but historically : {held_context[topic]}'
+
+                previous_context = create_context(isolated_element,entity)
+
+                for heading in isolated_element.keys():
+                    print(heading,isolated_element[heading])
                 print()
 
-                for sch_key in isolated_element.keys():
-                    tracked_entities[key][scene_number]['data'][sch_key] = isolated_element[sch_key]
+                for heading in isolated_element.keys():
+                    tracked_entities[entity][scene_number]['data'][heading] = isolated_element[heading]
         
+        # Summarize the entity in the full text
 
-        with cl.Step(f'Summarization Tools on information about {key}'):
-            entity_summaries[key] = create_json_dict(key,type)
+        async def join_entity_and_summary_text(tracked_data,entity,topic):
 
-            for sch_key in entity_summaries[key]['data'].keys():
-                if(not(sch_key=='misc')):
-                    print([tracked_entities[key][s]['data'][sch_key] for s in tracked_entities[key].keys()])
-                    joint_text = ', '.join([tracked_entities[key][s]['data'][sch_key] for s in tracked_entities[key].keys()])
+            full_data = []
+            for scene in tracked_data[entity].keys():
+                topic_data = tracked_data[entity][scene]['data'][topic]
+                summary = tracked_data[entity][scene]['data']['summary']
+                if(tracked_entities[entity][scene]['present']):
+                    full_data.append(f'Summary of Scene {scene} : {summary}\nInformation about {topic} of {entity} : {topic_data}')
+                else:
+                    full_data.append(f'Summary of Scene {scene} : {summary}\nNo information about {topic} of {entity} was found in the scene.')
+
+            full_data = '\n\n'.join(full_data)
+
+            print(full_data)
+            return full_data
+
+        with cl.Step(f'Summarization Tools on information about {entity}'):
+            entity_summaries[entity] = create_json_dict(entity,type)
+            scene_summaries = [tracked_entities[entity][s]['data']['summary'] for s in tracked_entities[entity].keys()]
+
+            for heading in entity_summaries[entity]['data'].keys():
+                if(not(heading=='misc')):
+                    joint_text = await join_entity_and_summary_text(tracked_entities,entity,heading)
                     summarization_prompt_history = prompts.get_summarization_prompt(role='system')
-                    summarization_prompt_history = prompts.get_summarization_prompt(role='user',history=summarization_prompt_history,entity=key,type=type,subject=sch_key,text=joint_text)
+                    summarization_prompt_history = prompts.get_summarization_prompt(role='user',history=summarization_prompt_history,entity=entity,type=type,subject=heading,text=joint_text)
                     entity_summary = await tokenize_and_generate(summarization_prompt_history,max_new_tokens=256,temperature=0.5)
-                    print(sch_key,entity_summary)
-                    entity_summaries[key]['data'][sch_key] = [entity_summary]
+                    entity_summaries[entity]['data'][heading] = [entity_summary]
 
-
-            response = await show_card(entity_summaries[key],message=f'I was able to find the following information about {key}!')
+            print(entity_summaries[entity])
+            response = await show_card(entity_summaries[entity],message=f'I was able to find the following information about {entity}!')
 
             if(response['submitted']):
-                for sch_key in entity_summaries[key]['data']:
-                    entity_summaries[key][sch_key] = response[sch_key]
-                await save_json_to_database(entity_summaries[key])
+                for heading in entity_summaries[entity]['data']:
+                    entity_summaries[entity][heading] = response[heading]
+                await save_json_to_database(entity_summaries[entity])
             else:
                 await cl.Message(content='Cancelled Wiki Creation Process!').send()
-
-
-    '''
-    
-
-    summary = 'No context available.' 
-    tracked_entities = dict()
-    scene_summaries = dict()
-
-    scene_number = 1
-    for scene in scenes:
-        #scene_with_context = await add_entity_context(scene)
-        gist_prompt_history = prompts.get_gist_prompt(role='system') 
-        gist_prompt_history = prompts.get_gist_prompt(role='user',history=gist_prompt_history,text=scene,tracked_entities=list(tracked_entities.keys()))
-        summary = await tokenize_and_generate(gist_prompt_history,max_new_tokens=256,temperature=0.4,template=SceneSummary)
-        scene_summary = SceneSummary.model_validate_json(summary)
-        scene_summary = scene_summary.model_dump()
-
-        print(scene_summary)
-
-        found_subjects = dict()
-        for key in scene_summary:
-            if(not(key=='summary')):
-                for subject in scene_summary[key]:
-                    found_subjects[subject] = key
-
-        #scene_summaries[scene_number] = scene_summary['summary']
-
-        selection_response = await show_checklist(found_subjects,message='In Scene')
-        print(selection_response)
-
-        if(selection_response['submitted']):
-            for key in selection_response:
-                if(selection_response[key] and not(key=='submitted') and not(key in tracked_entities.keys())):
-                    tracked_entities[key] = dict()
-                    tracked_entities[key][scene_number] = create_json_dict(key,found_subjects[key])
-                elif(key in tracked_entities.keys()):
-                    tracked_entities[key][scene_number] = create_json_dict(key,found_subjects[key])
-
-        else:
-            pass
-
-        print(tracked_entities)
-
-        # Redesign the summary to feed back as context.
-        for entity in tracked_entities.keys():
-
-            tracked_scene = list(tracked_entities[entity].keys())[-1]
-
-            if(tracked_scene==scene_number):
-                role = tracked_entities[entity][tracked_scene]['type']
-
-                RoleSchema = sch.get_pydantic_schema('RoleSchema',role,entity)
-                role_subjects = list(RoleSchema.model_fields.keys())
-
-                scene_extraction_prompt_history = prompts.isolate_scene_element(role='system')
-                scene_extraction_prompt_history = prompts.isolate_scene_element(role='user',history=scene_extraction_prompt_history,text=scene,entity=entity,subjects=role_subjects)
-                isolated_element = await tokenize_and_generate(scene_extraction_prompt_history,max_new_tokens=256,temperature=0.25,template=RoleSchema)
-                print(isolated_element)
-                isolated_element = RoleSchema.model_validate_json(isolated_element)
-                isolated_element = isolated_element.model_dump()
-
-                for key in tracked_entities.keys():
-                    for sch_key in isolated_element.keys():
-                        tracked_entities[key][tracked_scene]['data'][sch_key] = isolated_element[sch_key]
-
-            print(tracked_entities)
-        scene_number += 1
-
-    # Consolidate information in tracked entities - Use an LLM to do this later.
-
-    entity_summaries = dict()
-    for key in tracked_entities.keys():
-        scene = list(tracked_entities[key].keys())[0]
-        role = tracked_entities[key][scene]['type']
-        entity = tracked_entities[key][scene]['name']
-        entity_summaries[key] = create_json_dict(key,tracked_entities[key][scene]['type'])
-        for sch_key in entity_summaries[key]['data'].keys():
-            if(not(sch_key=='overview') and not(sch_key=='misc')):
-                print(sch_key)
-                entity_summaries[key]['data'][sch_key] = ', '.join([tracked_entities[key][s]['data'][sch_key] for s in tracked_entities[key].keys()])
-
-                summarization_prompt_history = prompts.get_summarization_prompt(role='system')
-                summarization_prompt_history = prompts.get_summarization_prompt(role='user',history=summarization_prompt_history,entity=entity,type=role,text='; '.join([tracked_entities[key][s]['data'][sch_key] for s in tracked_entities[key].keys()]))
-                entity_summary = await tokenize_and_generate(summarization_prompt_history,max_new_tokens=256,temperature=0.5)
-                print(entity_summary)
-
-
-
-    #print(entity_summaries)
-    '''
 
 async def extract_entities(user_message):
 
@@ -1286,18 +1235,18 @@ async def check_context_sufficiency(proposition,context_dict):
 #############
 
 @cl.step(name='Retrieve Context')
-async def retrieve_context(topic):
+async def retrieve_context(topic,entity_threshold=0.25,rag_threshold=0.4):
 
     #chat_history = []
     #chat_history = prompts.get_context_retrieval_prompt('system',chat_history)
     #chat_history = prompts.get_context_retrieval_prompt('user',chat_history,user_input,', '.join(relevant_entities))
 
     # Construct Tool Call
-    relevant_entities = sem.entity_extraction(topic,entity_threshold=0.25)
+    relevant_entities = sem.entity_extraction(topic,entity_threshold=entity_threshold)
 
     # Context Retrievant Via MCP
     topic_with_context = await query_processing(topic)
-    context_text, context_list = await retrieve_graph_rag(topic_with_context)
+    context_text, context_list = await retrieve_graph_rag(topic_with_context,threshold=rag_threshold)
 
     return context_text,context_list
 
@@ -1310,7 +1259,7 @@ async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,
                                 )
 
     #loop = asyncio.get_running_loop()
-    answer = _sync_generate(
+    answer = await asyncio.to_thread(_sync_generate,
         synthesis_prompt, 
         max_new_tokens, 
         temperature, 
@@ -1411,7 +1360,6 @@ async def check_idea_for_contradictions(message):
             print(f'Similarity : {csim}')
             #print(f'Contradiction : {torch.round(c,decimals=3)} / Entailment : {torch.round(e,decimals=3)} / Neutral : {torch.round(n,decimals=3)}')
             print()
-
 
 @cl.step(name='Local Context to Reason and Answer')
 async def reason_and_answer(message):
