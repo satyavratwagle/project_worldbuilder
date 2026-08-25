@@ -31,7 +31,7 @@ from utils.semantic import SemanticTools
 from json_repair import repair_json
 from pathlib import Path
 from utils.io_utils import IO_Utils
-from utils.pydantic_schema import ReasonedResponse,SceneSummary, AssumptionsList
+from utils.pydantic_schema import ReasonedResponse,SceneSummary, AssumptionsList, create_multi_mcq_model
 
 from torchao.quantization import Int8WeightOnlyConfig, PerGroup
 import mlx_lm
@@ -57,6 +57,9 @@ store_path= config['data_dir']
 
 # Dedicated thread pool to satisfy MLX thread-local stream rules
 mlx_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+outline_model = None
+tokenizer = None
+generator_model = None
 
 io_utils = IO_Utils()
 named_entities = ['character','location','artifact','faction','event','definition']
@@ -70,8 +73,24 @@ punctuation_tuple = tuple(string.punctuation)
 def get_or_create_generator(model, schema_class):
   return outlines.Generator(model,schema_class)
 
+def _sync_load_models():
+    """Loads models entirely inside the background worker thread so the stream belongs to it."""
+    global outline_model, tokenizer, generator_model
+    if outline_model is None:
+        mlx_model, tokenizer_obj = mlx_lm.load(config['model_dir'] + '/' + config['model_id'])
+        model_obj = outlines.from_mlxlm(mlx_model, tokenizer_obj)
+        generator_model_obj = outlines.Generator(model_obj)
+        
+        outline_model = model_obj
+        tokenizer = tokenizer_obj
+        generator_model = generator_model_obj
+    return outline_model, tokenizer, generator_model
+
 def _sync_generate(prompt, max_tokens, temperature, template):
     """The actual heavy MLX/Outlines code running safely in a background worker."""
+    _sync_load_models()
+    mx.eval()
+
     if template:
         generator = get_or_create_generator(outline_model, template)
         sampler = make_sampler(temp=temperature)
@@ -80,9 +99,7 @@ def _sync_generate(prompt, max_tokens, temperature, template):
         sampler = make_sampler(temp=temperature)
         return generator_model(prompt, sampler=sampler, max_tokens=max_tokens)
 
-def create_context(context_dict,topic):
-
-    context_str = ''
+def create_context(context_dict,topic,context_str=''):
 
     def key_description(key,desc):
         if(key in context_dict.keys()):
@@ -137,7 +154,7 @@ def unload_models(model, tokenizer=None, embed_model=None):
 
 @cl.cache
 def load_extraction_model():
-    extraction_model_id = "urchade/gliner_small-v2.1"
+    extraction_model_id = config["gliner_dir"]+'/checkpoint-1000'
     extraction_model = GLiNER.from_pretrained(extraction_model_id)
 
     return extraction_model
@@ -185,17 +202,17 @@ def load_nli_models():
 
     return nli_model,nli_tokenizer
 
-outline_model, tokenizer, generator_model = load_models()
+#outline_model, tokenizer, generator_model = load_models()
 embed_model, dataset = load_embedding_models()
 extraction_model  = load_extraction_model()
-nli_model,nli_tokenizer = load_nli_models()
+#nli_model,nli_tokenizer = load_nli_models()
 
 du = DatastoreUtilities(config)
 du.load_embedding_model(embed_model,dataset)
 
 sem = SemanticTools(config)
 sem.load_extraction_model(extraction_model)
-sem.load_nli_model(nli_model,nli_tokenizer)
+#sem.load_nli_model(nli_model,nli_tokenizer)
 
 # TOOLS
 
@@ -309,7 +326,7 @@ async def show_card(json_dict,prefill=None,message='Please describe your idea!',
             prefill = sch.get_schema(json_dict['type'])
 
     props = {
-            "timeout": 6000,
+            "timeout": 5,
             "initialTab":open_with,
             "enableEdit": enableEdit,
             "initEdit": initEdit,
@@ -335,13 +352,17 @@ async def show_card(json_dict,prefill=None,message='Please describe your idea!',
     card_element = cl.AskElementMessage(
                 content=message,
                 element=element,
-                timeout=6000
+                timeout=50
             )
 
     response = await card_element.send()
 
-    card_element.content = f'Saved new information about {uppercase(json_dict['name'])}!'
-    await card_element.update()
+    print(response)
+    if(response):
+        card_element.content = f'Saved new information about {uppercase(json_dict['name'])}!'
+        await card_element.update()
+
+    print('D Now')
 
     return response
 
@@ -784,11 +805,11 @@ async def retrieve_graph_rag(query,threshold=0.4,k=10,hops=1):
 
 async def view_idea(message):
 
-    exists,data = du.load_json(message.content)
+    exists,data = du.load_json(message['content'])
 
     if(exists):
 
-        entity = data['name']
+        '''entity = data['name']
         schema = data['data']
         label = data['type']
         
@@ -820,7 +841,9 @@ async def view_idea(message):
                     content=f"",
                     element=element,
                     timeout=6000
-                ).send()
+                ).send()'''
+
+        await show_card(data)
 
         # TODO : SAVE JSON to filesystem
 
@@ -917,6 +940,7 @@ async def get_gist(user_message):
     file = user_message.elements[0]
     #text_rows = io_utils.load_text_rows(file.path)
     entities = sem.named_entity_extraction(io_utils.get_text(file.path))
+    print(entities)
     selection_response = await show_checklist(entities,message='Please select the entities to learn about!')
     
     entities_to_track = dict()
@@ -939,13 +963,16 @@ async def get_gist(user_message):
                 aliases[key] += [alias_text['output']]
 
         aliases[key] = list(set(aliases[key]))
-    print(aliases)
-
 
     scenes = pre.get_chunks(pre.get_corpus(file.path),chunk_size=800)#await split_scenes(file)
 
     tracked_entities = dict()
     entity_summaries = dict()
+
+    time_q = 'When is the given scene happening? (The unit of time is FMC)'
+    place_q = 'Where is the given scene happening?'
+
+    answer = None
 
     for entity in entities_to_track.keys():
         type = entities_to_track[entity]
@@ -954,61 +981,100 @@ async def get_gist(user_message):
         previous_context = None
         held_context = None
 
+        time_candidates = ['Unknown']
+        location_candidates = ['Unknown']
+
         for scene_number in range(len(scenes)):
             scene = scenes[scene_number]
             await asyncio.sleep(0.01)
 
-            with cl.Step(f'Analysis Tools on Scene : {scene[:min((50,len(scene)))]}...'):
+            # Get time and place of scene
+            timeplace_candidates = sem.entity_extraction(scene,labels=['time','location'])
+
+            for key in timeplace_candidates.keys():
+                if(timeplace_candidates[key]=='time'):
+                    time_candidates.append(key)
+                if(timeplace_candidates[key]=='location'):
+                    location_candidates.append(key)
+
+            time_candidates = list(set(time_candidates))
+            location_candidates = list(set(location_candidates))
+
+            qa_dict = dict()
+            qa_dict[time_q] = time_candidates
+            qa_dict[place_q] = location_candidates
+            
+            if(answer):
+                timeplace_scene  = f"Time of Previous Scene : {answer[time_q]} ; Location of Previous Scene : {answer[place_q]}\n"+scene
+            else:
+                timeplace_scene = ""
+
+            TimePlaceModel = create_multi_mcq_model(question_options_dict=qa_dict)
+            timeplace_prompt = prompts.get_timeplace_prompt(timeplace_scene,qa_dict = qa_dict)
+            answer = await tokenize_and_generate(timeplace_prompt,max_new_tokens=64,temperature=0.25,template=TimePlaceModel)
+            answer = TimePlaceModel.model_validate_json(answer).model_dump()
+
+            current_timeplace = f"Time : {answer[time_q]} ; Location : {answer[place_q]}\n"
+
+            #print(time_candidates)
+            #print(location_candidates)
+            #print()
+
+            #with cl.Step(f'Analysis Tools on Scene : {scene[:min((50,len(scene)))]}...'):
                 #with cl.Step(f'Analysis of Scene : {scene}'):
                 
-                tracked_entities[entity][scene_number] = create_json_dict(entity,type)
+            tracked_entities[entity][scene_number] = create_json_dict(entity,type)
 
-                if(any(alias in scene for alias in aliases[entity])): 
-                    get_full = True
-                else: 
-                    get_full = False
+            if(any(alias in scene for alias in aliases[entity])): 
+                get_full = True
+            else: 
+                get_full = False
 
-                tracked_entities[entity][scene_number]['present'] = get_full
+            tracked_entities[entity][scene_number]['present'] = get_full
 
-                # Get context to add to scene
-                _,rag_dict = await retrieve_context(scene,rag_threshold=0.5)
-                rag_context = '\n'.join(list(set().union(*rag_dict.values())))
+            scene = current_timeplace+scene
 
+            # Get context to add to scene
+            _,rag_dict = await retrieve_context(scene,rag_threshold=0.5)
+            rag_context = '\n'.join(list(set().union(*rag_dict.values())))
 
-                RoleSchema = sch.get_pydantic_schema('RoleSchema',type,entity,full=get_full)
-                subjects = list(RoleSchema.model_fields.keys())
+            RoleSchema = sch.get_pydantic_schema('RoleSchema',type,entity,full=get_full)
+            subjects = list(RoleSchema.model_fields.keys())
 
-                entity_extraction_prompt_history = prompts.isolate_scene_element(role='system')
-                entity_extraction_prompt_history = prompts.isolate_scene_element(role='user',
-                                                                                history=entity_extraction_prompt_history,
-                                                                                text=scene,
-                                                                                entity=entity,
-                                                                                subjects=subjects,
-                                                                                aliases=aliases[entity],
-                                                                                scene_context=previous_context,
-                                                                                rag_context=rag_context,
-                                                                                full=get_full)
-                print(entity_extraction_prompt_history[-1]['content'])
-                isolated_element = await tokenize_and_generate(entity_extraction_prompt_history,max_new_tokens=256,temperature=0.25,template=RoleSchema)
-                isolated_element = RoleSchema.model_validate_json(isolated_element)
-                isolated_element = isolated_element.model_dump()
-                if(get_full):
-                    held_context = isolated_element
-                else:
-                    if(held_context):
-                        for topic in held_context.keys():
-                            if(not topic in isolated_element.keys()):
-                                isolated_element[topic] = f'{entity} was not present in the previous scene, but historically : {held_context[topic]}'
+            entity_extraction_prompt_history = prompts.isolate_scene_element(role='system')
+            entity_extraction_prompt_history = prompts.isolate_scene_element(role='user',
+                                                                            history=entity_extraction_prompt_history,
+                                                                            text=scene,
+                                                                            entity=entity,
+                                                                            subjects=subjects,
+                                                                            aliases=aliases[entity],
+                                                                            scene_context=previous_context,
+                                                                            rag_context=rag_context,
+                                                                            full=get_full)
+            print(entity_extraction_prompt_history[-1]['content'])
+            isolated_element = await tokenize_and_generate(entity_extraction_prompt_history,max_new_tokens=256,temperature=0.25,template=RoleSchema)
+            isolated_element = RoleSchema.model_validate_json(isolated_element)
+            isolated_element = isolated_element.model_dump()
+            if(get_full):
+                held_context = isolated_element
+            else:
+                if(held_context):
+                    for topic in held_context.keys():
+                        if(not topic in isolated_element.keys()):
+                            isolated_element[topic] = f'{entity} was not present in the previous scene, but historically : {held_context[topic]}'
 
-                previous_context = create_context(isolated_element,entity)
+            previous_context = create_context(isolated_element,entity,context_str=current_timeplace)
 
-                for heading in isolated_element.keys():
-                    print(heading,isolated_element[heading])
-                print()
+            for heading in isolated_element.keys():
+                print(heading,isolated_element[heading])
+            print()
 
-                for heading in isolated_element.keys():
-                    tracked_entities[entity][scene_number]['data'][heading] = isolated_element[heading]
-        
+            tracked_entities[entity][scene_number]['data']['time'] = answer[time_q]
+            tracked_entities[entity][scene_number]['data']['location'] = answer[place_q]
+            for heading in isolated_element.keys():
+                tracked_entities[entity][scene_number]['data'][heading] = isolated_element[heading]
+
+    
         # Summarize the entity in the full text
 
         async def join_entity_and_summary_text(tracked_data,entity,topic):
@@ -1017,37 +1083,41 @@ async def get_gist(user_message):
             for scene in tracked_data[entity].keys():
                 topic_data = tracked_data[entity][scene]['data'][topic]
                 summary = tracked_data[entity][scene]['data']['summary']
+                time = tracked_data[entity][scene]['data']['time']
+                location = tracked_data[entity][scene]['data']['location']
+
+
                 if(tracked_entities[entity][scene]['present']):
-                    full_data.append(f'Summary of Scene {scene} : {summary}\nInformation about {topic} of {entity} : {topic_data}')
+                    full_data.append(f'Time : {time}\nLocation : {location}\nSummary of Scene {scene} : {summary}\nInformation about {topic} of {entity} : {topic_data}')
                 else:
-                    full_data.append(f'Summary of Scene {scene} : {summary}\nNo information about {topic} of {entity} was found in the scene.')
+                    full_data.append(f'Time : {time}\nLocation : {location}\nSummary of Scene {scene} : {summary}\nNo information about {topic} of {entity} was found in the scene.')
 
             full_data = '\n\n'.join(full_data)
 
             print(full_data)
             return full_data
 
-        with cl.Step(f'Summarization Tools on information about {entity}'):
-            entity_summaries[entity] = create_json_dict(entity,type)
-            scene_summaries = [tracked_entities[entity][s]['data']['summary'] for s in tracked_entities[entity].keys()]
+        entity_summaries[entity] = create_json_dict(entity,type)
 
-            for heading in entity_summaries[entity]['data'].keys():
-                if(not(heading=='misc')):
-                    joint_text = await join_entity_and_summary_text(tracked_entities,entity,heading)
-                    summarization_prompt_history = prompts.get_summarization_prompt(role='system')
-                    summarization_prompt_history = prompts.get_summarization_prompt(role='user',history=summarization_prompt_history,entity=entity,type=type,subject=heading,text=joint_text)
-                    entity_summary = await tokenize_and_generate(summarization_prompt_history,max_new_tokens=256,temperature=0.5)
-                    entity_summaries[entity]['data'][heading] = [entity_summary]
+        scene_summaries = [tracked_entities[entity][s]['data']['summary'] for s in tracked_entities[entity].keys()]
 
-            print(entity_summaries[entity])
-            response = await show_card(entity_summaries[entity],message=f'I was able to find the following information about {entity}!')
+        for heading in entity_summaries[entity]['data'].keys():
+            if(not(heading=='misc')):
+                joint_text = await join_entity_and_summary_text(tracked_entities,entity,heading)
+                summarization_prompt_history = prompts.get_summarization_prompt(role='system')
+                summarization_prompt_history = prompts.get_summarization_prompt(role='user',history=summarization_prompt_history,entity=entity,type=type,subject=heading,text=joint_text)
+                entity_summary = await tokenize_and_generate(summarization_prompt_history,max_new_tokens=256,temperature=0.5)
+                entity_summaries[entity]['data'][heading] = [entity_summary]
 
-            if(response['submitted']):
-                for heading in entity_summaries[entity]['data']:
-                    entity_summaries[entity][heading] = response[heading]
-                await save_json_to_database(entity_summaries[entity])
-            else:
-                await cl.Message(content='Cancelled Wiki Creation Process!').send()
+        await asyncio.sleep(1)
+        response = await show_card(entity_summaries[entity],message=f'I was able to find the following information about {entity}!')
+
+        if(response['submitted']):
+            for heading in entity_summaries[entity]['data']:
+                entity_summaries[entity][heading] = response[heading]
+            await save_json_to_database(entity_summaries[entity])
+        else:
+            await cl.Message(content='Cancelled Wiki Creation Process!').send()
 
 async def extract_entities(user_message):
 
@@ -1258,13 +1328,31 @@ async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,
                                 add_generation_prompt=True
                                 )
 
-    #loop = asyncio.get_running_loop()
-    answer = await asyncio.to_thread(_sync_generate,
+    loop = asyncio.get_running_loop()
+    
+    # This guarantees execution happens strictly on your single worker thread (mlx_executor)
+    answer = await loop.run_in_executor(
+        mlx_executor,
+        _sync_generate,
         synthesis_prompt, 
         max_new_tokens, 
         temperature, 
         template
     )
+
+    '''answer = await asyncio.to_thread(_sync_generate,
+        synthesis_prompt, 
+        max_new_tokens, 
+        temperature, 
+        template
+    )'''
+
+    '''answer = _sync_generate(
+        synthesis_prompt, 
+        max_new_tokens, 
+        temperature, 
+        template
+    )'''
 
     return answer
 
@@ -1402,6 +1490,9 @@ async def on_settings_update(settings: dict):
 @cl.on_chat_start
 async def on_chat_start():
 
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(mlx_executor, _sync_load_models)
+
     await create_knowledge_graph()
     await cl.make_async(du.reload_faiss_dataset)()
 
@@ -1439,6 +1530,8 @@ async def on_message(user_message: cl.Message):
     elif(selected_mode=='Metadata'):
         await update_metadata(user_message)
     else:
+        #relevant_entities = sem.entity_extraction(user_message.content,labels=['time'],entity_threshold=0.25)
+        #print(relevant_entities)
         await reason_and_answer(user_message)
         #await check_idea_for_contradictions(user_message)
      

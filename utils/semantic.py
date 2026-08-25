@@ -92,9 +92,10 @@ class SemanticTools():
                 c,e,n, = self.get_entailment_probs(context,query)
                 print(f"{query} : {np.round(c,2)} | {np.round(e,2)} | {np.round(n,2)}")
 
-    def entity_extraction(self,text,labels=['character','location','artifact','faction','event'],entity_threshold=0.45):
+    def entity_extraction(self,text,labels=['character','location','artifact','faction','event','time'],entity_threshold=0.45):
 
         entities = self.extraction_model.predict_entities(text, labels)
+        print(entities)
 
         chosen_entities = []
         for e in entities:
@@ -108,7 +109,7 @@ class SemanticTools():
 
         return entities_dict
 
-    def named_entity_extraction(self,corpus ,labels=['character','location','artifact','faction','event'],entity_threshold=0.7):
+    def named_entity_extraction(self,corpus ,labels=['character','location','artifact','faction','event','time'],entity_threshold=0.7):
 
         #corpus = pre.get_corpus(corpus_path)
         chunks = pre.get_chunks(corpus,chunk_size=200)
@@ -118,7 +119,6 @@ class SemanticTools():
 
             entities = self.extraction_model.predict_entities(chunk, labels)
             for ent in entities:
-
                 if(not(ent['text'] in entities_dict.keys())):
                     entities_dict[ent['text']]= {label:[] for label in labels}
 

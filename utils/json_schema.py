@@ -6,7 +6,7 @@ pydantic_descriptions = dict()
 # Character
 def get_pydantic_descriptions(role,topic,subject):
 
-	if(topic=='summary'): return f"A 1-2 sentence summary of the provided scene. You MUST include the time of the day, the date and the location of the scene. If context is provided, DO NOT include it in the summary."
+	if(topic=='summary'): return f"A 2-3 sentence summary of the provided scene. If context is provided, DO NOT include it in the summary."
 
 	# Character
 	if(role=='character'):

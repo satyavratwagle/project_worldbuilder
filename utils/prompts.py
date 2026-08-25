@@ -25,7 +25,7 @@ def get_generation_prompt(role='system', history=None, user_input='', context_te
 	if(role=='system'):
 		prompt = {"role": "system", "content": (f"You are a helpful assistant. You must answer the user query using ONLY the local context."
 												"Always output your reasoning in verbose form in the 'scratchpad' field,"
-												"followed by a brief answer based on your reasoning in the 'answer' field."
+												"followed by a descriptive answer based on your reasoning in the 'answer' field."
 												"Do NOT include any conversational preamble or text. "
 												"Your response must start immediately with the character '{'.")}
 	elif(role=='user'):
@@ -36,6 +36,25 @@ def get_generation_prompt(role='system', history=None, user_input='', context_te
 		return history
 	else:
 		return [prompt]
+
+def get_timeplace_prompt(scene='', qa_dict=None):
+
+	prompt_history = []	
+
+	system_prompt = {"role": "system", "content": (f"You are a helpful assistant. You must answer the user query using ONLY the local context."
+											"Do NOT include any conversational preamble or text. "
+											"Your response must follow to provided schema.")}
+	prompt_history.append(system_prompt)
+
+	user_prompt_content = 'Given that the units of measuring time are FMC or Crossings, answer the following questions\n'
+	for key in qa_dict.keys():
+		user_prompt_content += f'{key}\nYour options are : {qa_dict[key]}\n'
+	user_prompt_content+= f'\n---SCENE BEGINS---\n{scene}\n---SCENE ENDS---\n'
+	user_prompt = {"role": "user", "content": user_prompt_content}
+
+	prompt_history.append(user_prompt)
+
+	return prompt_history
 
 def get_summarization_prompt(role='system', history=None, entity='',type='',subject='',text=''):
 
