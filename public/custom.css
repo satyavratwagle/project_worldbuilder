@@ -1,0 +1,12 @@
+/* Example: Expanding the width of Chainlit's side panels */
+body .MuiDrawer-root .MuiDrawer-paper,
+aside.MuiDrawer-root {
+  width: 600px !important;
+  max-width: 600px !important;
+  flex: 0 0 600px !important;
+}
+
+/* If targeting the specific right-side element view drawer container */
+.MuiDrawer-root .MuiPaper-root {
+  min-width: 100px;
+}

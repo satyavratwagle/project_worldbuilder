@@ -104,7 +104,6 @@ def get_chunks(corpus_text,chunk_size=400):
 
     return chunks
 
-
 def get_sentences(corpus_text):
     # Split a corpus into sentences.
 

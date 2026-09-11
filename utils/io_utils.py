@@ -21,14 +21,21 @@ class IO_Utils:
 
 		with open(path,'r') as file:
 			text = file.read()
-		text = (" ".join(text.split()))
+		#text = (" ".join(text.split()))
+
+		return text
+
+	def load_text_paragraphs(self,path):
+
+		with open(path,'r') as file:
+			text = file.read()
+		text = (text.split('\n\n'))
 
 		return text
 
 	def load_text_rows(self,path):
 
 		# returns a list of lines for a text file
-
 		text_rows = []
 		with open(path,'r') as file:
 			for row in file.readlines():

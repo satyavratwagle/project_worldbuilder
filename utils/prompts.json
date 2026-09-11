@@ -1,0 +1,101 @@
+{
+	"node_summary_prompt_existing":
+		{"system":
+			{
+				"role": 
+					"system", 
+				"content": 
+					["Your job is to update the given summary of the given topic with the provided additional information.",
+					"Your response must include the additional information in the existing summary.",
+					"Your response must NOT be longer than three (3) sentences.",
+					"Do NOT include any conversational preamble or text."]
+			},
+		"user":
+			{
+				"role": 
+					"user", 
+				"content": 
+					["Topic : [NODE_NAME]",
+					"\n--- SUMMARY OF [NODE_NAME] STARTS ---\n[EXISTING_SUMMARY]\n--- SUMMARY OF [NODE_NAME] ENDS ---\n",
+					"\n--- ADDITIONAL INFORMATION ABOUT [NODE_NAME] STARTS ---\n[NODE_DESCRIPTION]\n--- ADDITIONAL INFORMATION ABOUT [NODE_NAME] ENDS ---\n",
+					"\n A summary of [NODE_NAME] is as follows :"]
+			}
+		},
+	"node_summary_prompt_new":
+		{"system":
+			{
+				"role": 
+					"system", 
+				"content": 
+					["Your job is to summarize the given description of the given topic.",
+					"Your response must include the important information given in the description.",
+					"Your response must NOT be longer than three (3) sentences.",
+					"Do NOT include any conversational preamble or text."]
+			},
+		"user":
+			{
+				"role": 
+					"user", 
+				"content": 
+					["Topic : [NODE_NAME]",
+					"\n--- DESCRIPTION OF [NODE_NAME] STARTS ---\n[NODE_DESCRIPTION]\n--- DESCRIPTION OF [NODE_NAME] ENDS ---\n",
+					"\n A summary of [NODE_NAME] is as follows :"]
+			}
+		},
+	"text_decomposition_prompt":
+		{
+			"system":
+				{
+					"role": 
+						"system", 
+					"content": 
+						["Your job is to describe the given text with the help of the provided context.",
+						"Your descriptions descriptions MUST explicitly describe topics provided by the user.",				
+						"Your response MUST include descriptions of ALL topics.",
+						"Each sentence MUST start with the name of a topic.",
+						"No more than five (5) sentences should begin with the same words.",
+						"Each sentence in your response should start with the subject followed by the verb and then the object of the sentence.",
+						"Each sentence in your response must be short.",
+						"Each sentence in your response must not be more than eight (8) words long.",
+						"You must NOT use conjunctions in your response.",
+						"You must NEVER end a sentence with a verb.",
+						"You must maintain the tense of the original text in your response.",
+						"You must NOT use the newline character in your response.",
+						"You must ONLY use information provided by the user in your response. Do NOT extrapolate or invent new information.",
+						"Do NOT include any conversational preamble or text."]
+
+				},
+			"user":
+				{
+					"role": 
+						"user", 
+					"content": 
+						["Describe the following topics in the given text with the help of the following context.",
+						"Topics to focus on : [TOPICS]\n",
+						"\n --- TEXT STARTS ---\n[TEXT]\n --- TEXT ENDS ---"]
+				}			
+		},
+	"reasoned_answer_prompt":
+		{
+			"system":
+				{
+					"role": 
+						"system", 
+					"content": 
+						["You are a helpful assistant. You must answer the user query using ONLY the local context.",
+						"Always output your reasoning in verbose form in the 'scratchpad' field.",
+						"Output a descriptive answer based on your reasoning in the 'answer' field.",
+						"Do NOT include any conversational preamble or text. ",
+						"Your response must start immediately with the character '{'."]
+				},
+			"user":
+				{
+					"role": 
+						"user", 
+					"content": 
+						["User Query: [USER_QUERY]\n\n",
+						"--- LOCAL CONTEXT BEGINS ---\n[LOCAL_CONTEXT]\n--- LOCAL CONTEXT ENDS ---\n\n"]
+				}			
+		}
+
+}
