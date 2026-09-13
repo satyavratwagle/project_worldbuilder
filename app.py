@@ -1,5 +1,5 @@
 import chainlit as cl
-from chainlit.input_widget import Switch
+from chainlit.input_widget import Slider
 import asyncio
 import json
 import torch
@@ -48,11 +48,12 @@ import mlx.core as mx
 import psutil
 import difflib
 
-helpers = [{"id":"Ideate", "icon":"lightbulb", "description":"Add ideas to knowledge base"},
-                {"id":"Analyze", "icon":"brain", "description":"Analyze uploaded text"},
-                {"id":"Update", "icon":"list-restart", "description":"Update internal knowledge base"},
-                {"id":"View", "icon":"eye", "description":"View a card"},
-                {"id":"Metadata", "icon":"tag", "description":"Add Metadata"}]
+helpers = [ {"id":"Ideate", "icon":"lightbulb", "description":"Add ideas to knowledge base"},
+            {"id":"Brainstorm", "icon":"lightbulb", "description":"Brainstorm for new ideas"},
+            {"id":"Analyze", "icon":"brain", "description":"Analyze uploaded text"},
+            {"id":"Update", "icon":"list-restart", "description":"Update internal knowledge base"},
+            {"id":"View", "icon":"eye", "description":"View a card"},
+            {"id":"Metadata", "icon":"tag", "description":"Add Metadata"}]
 
 with open('config.json', "r", encoding="utf-8") as f:
     # Load the JSON data into a Python dictionary
@@ -691,6 +692,32 @@ async def on_show_context(action: cl.Action):
 
     response = await graph_message.send()
 
+@cl.action_callback("show_node_info")
+async def on_show_node_info(action: cl.Action):
+
+    node_name = action.payload.get("node_name")
+    node_info = du.get_node_info(node_name)
+
+    if(node_info):
+
+        graph_element = cl.user_session.get("graph_element")
+        graph_element.props['title'] = node_info['node_name']
+        graph_element.props['subtitle'] = node_info['summary']
+        graph_element.props['edges'] = node_info['edge_info']
+
+        cl.user_session.set("graph_element", graph_element)
+
+        graph_message = cl.Message(
+                    content="Showing node information!",
+                    elements=[graph_element]
+                )
+
+        cl.user_session.set("graph_message", graph_message)
+
+        response = await graph_message.send()
+
+    else:
+        await cl.Message(content=f'No node named {node_name} found!').send()
 #############
 
 # Datastore Operations
@@ -700,9 +727,10 @@ async def on_show_context(action: cl.Action):
 @cl.action_callback("update_faiss")
 async def update_datastore(action: cl.Action):
 
-    dataset,index = await cl.make_async(du.update_faiss_dataset)()    
-    await cl.make_async(du.overwrite_faiss_dataset)(dataset,index)
-    await cl.Message(content="Saved to Knowledge Base!").send()
+    async with cl.Step(name="Saving Knowledge Base",default_open=True) as step:
+        dataset,index = du.update_faiss_dataset()    
+        du.overwrite_faiss_dataset(dataset,index)
+        du.reload_faiss_dataset()
 
 async def retrieve_graph_rag(query,threshold=0.4,k=10,hops=1):
 
@@ -936,7 +964,7 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
                     if(added_head and added_tail):
                         print(heads_to_add)
                         print(tails_to_add)
-                        await cl.Message(f"Added {sentence} related to {', '.join([node for node in heads_to_add+tails_to_add])}").send()
+                        #await cl.Message(f"Added {sentence} related to {', '.join([node for node in heads_to_add+tails_to_add])}").send()
                         [du.add_node(head_node) for head_node in heads_to_add]
                         [du.add_node(tail_node) for tail_node in tails_to_add]
 
@@ -947,7 +975,7 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
 
                     elif(added_head):
                         print(heads_to_add)
-                        await cl.Message(f"Added {sentence} related to {', '.join([node for node in heads_to_add])}").send()
+                        #await cl.Message(f"Added {sentence} related to {', '.join([node for node in heads_to_add])}").send()
                         [du.add_node(head_node) for head_node in heads_to_add]
                         for head_node in heads_to_add:
                             key = du.add_edge(head_node,head_node,sentence)
@@ -955,7 +983,7 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
                         
                     elif(added_tail):
                         print(tails_to_add)
-                        await cl.Message(f"Added {sentence} related to {', '.join([node for node in tails_to_add])}").send()
+                        #await cl.Message(f"Added {sentence} related to {', '.join([node for node in tails_to_add])}").send()
                         [du.add_node(tail_node) for tail_node in tails_to_add]
                         for tail_node in tails_to_add:
                             key = du.add_edge(tail_node,tail_node,sentence)
@@ -963,14 +991,20 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
 
             # Allow user to change edges if needed
             for head,tail,key,desc in added_edges:
-                actions = [cl.Action(name='edit', payload={"label":"Edit"}, label="Edit"),
+                actions = [cl.Action(name='add', payload={"label": "None"}, label="Add"),
+                            cl.Action(name='edit', payload={"label":"Edit"}, label="Edit"),
                             cl.Action(name='skip', payload={"label": "None"}, label="Skip")]
-                response = await cl.AskActionMessage(content=f'> {desc}\n\nWould you like to edit it?',actions=actions,timeout=60).send()
 
+                request = cl.AskActionMessage(content=f'> {desc}\n\nWould you like to edit it?',actions=actions,timeout=60)
+                response = await request.send()
+                await request.remove()
                 if(response and response.get("name")=='edit'):
-                    response = await cl.AskUserMessage(content=f"Please update the output in the chat!",timeout=120).send()
+                    response = await cl.AskUserMessage(content=f"> {desc}\n\nPlease update the output in the chat!",timeout=120).send()
                     du.knowledge_graph.edges[head,tail,key]['desc'] = response['output']
                     du.knowledge_graph.edges[head,tail,key]['parsed'] = False
+                if(response and response.get("name")=='skip'):
+                    du.remove_edge(head,tail,key)
+                    await cl.Message(content=f"Did not add description!").send()
 
             du.save_graph()
 
@@ -981,6 +1015,7 @@ async def summarize_nodes(graph_name='graph'):
     async with cl.Step(name="Finding New Connections",icon="lightbulb") as step:
         # Find similar edges and keep one.
         edges_to_resolve = du.resolve_edges()
+        du.save_graph()
         for similar_edges in edges_to_resolve:
             if(len(similar_edges)>1):
                 actions=[cl.Action(name=edge[3], payload={"edge_data":edge}, label=f"{edge[0]} to {edge[1]} key {edge[2]} : {edge[3]}") for edge in similar_edges]
@@ -998,15 +1033,14 @@ async def summarize_nodes(graph_name='graph'):
         du.save_graph()
 
     # Update the node summaries
-    async with cl.Step(name='Updating Summaries',icon="lightbulb") as step:
-        step.input = "Updating Node Summaries!"
-        all_node_data = du.get_all_node_data()
-        new_summaries = []
-        for node_name in all_node_data.keys():
-            unparsed_edges = du.get_unparsed_edges(node_name)
-            print(node_name,len(unparsed_edges))
+    all_node_data = du.get_all_node_data()
+    new_summaries = []
+    for node_name in all_node_data.keys():
+        unparsed_edges = du.get_unparsed_edges(node_name)
+        print(node_name,len(unparsed_edges))
 
-            if(len(unparsed_edges)>0):
+        if(len(unparsed_edges)>0):
+            async with cl.Step(name=f'Updating Summary of {node_name}',icon="lightbulb") as step:
                 old_summary = du.get_node_summary(node_name)
                 new_information = ' '.join([edge[3]['desc'] for edge in unparsed_edges])
 
@@ -1030,20 +1064,24 @@ async def summarize_nodes(graph_name='graph'):
 
                 print(f'New Summary of {node_name} : {new_summary}')
                 print()
-            else:
-                print(f'{node_name} has no new edges!')
-        step.output = "Node Summaries Updated!"
+        else:
+            print(f'{node_name} has no new edges!')
 
     # Allow user to update the summaries if needed.
     for node,summary in new_summaries:
-        actions = [cl.Action(name='edit', payload={"node":node,"summary":summary}, label="Edit"),
+        actions = [cl.Action(name='add', payload={"label": "None"}, label="Add"),
+                    cl.Action(name='edit', payload={"label":"Edit"}, label="Edit"),
                     cl.Action(name='skip', payload={"label": "None"}, label="Skip")]
-        response = await cl.AskActionMessage(content=f'### {node}\n> {summary}\n\nWould you like to edit it?',actions=actions,timeout=60).send()
-
+        request = cl.AskActionMessage(content=f'### {node}\n> {summary}\n\nWould you like to edit it?',actions=actions,timeout=60)
+        response = await request.send()
+        await request.remove()
         if(response and response.get("name")=='edit'):
             print('Here!')
-            response = await cl.AskUserMessage(content=f"Please provide a new summary in the chat!",timeout=120).send()
+            response = await cl.AskUserMessage(content=f"### {node}\n> {summary}\n\nPlease provide a new summary in the chat!",timeout=120).send()
             du.add_node(node,response['output'])
+        if(response and response.get("name")=='skip'):
+            du.remove_node(node)
+            await cl.Message(content=f"Did not add topic!").send()
         
     # Update the edge labels to indicate that they have been incorporated in the summary
     for node in all_node_data.keys():
@@ -1270,18 +1308,22 @@ async def create_schema_element(entity,label,schema,message="Please describe you
 #############
 
 async def decompose_text(text,topics=[],temperature=0.2):
-    # entities : list (List of topics to focus on)
+    # topics : list (List of topics to focus on)
+    settings = cl.user_session.get('settings')
+
+    background_info = '\n'.join([summary for summary in du.get_node_summaries(topics) if summary])
 
     history = []
 
     props_dict = dict()
-    props_dict['topics']    = ', '.join(topics)
-    props_dict['text']      = text
+    props_dict['topics']                = ', '.join(topics)
+    props_dict['text']                  = text
+    props_dict['background_knowledge']  = background_info
 
     chat_history = prompts.get_text_decomposition_prompt(props_dict,history=[])
-    print(chat_history)
+    print(chat_history[-1]['content'])
 
-    summary_response = await tokenize_and_generate(chat_history,temperature=temperature,max_new_tokens=512)
+    summary_response = await tokenize_and_generate(chat_history,temperature=settings['temperature'],max_new_tokens=512)
     propositions = summary_response.split('.')
 
     # Filter out empty strings
@@ -1362,17 +1404,76 @@ async def check_context_sufficiency(proposition,context_dict):
 
 #############
 
+async def brainstorm(user_topic):
+
+    settings = cl.user_session.get('settings')
+
+    # Select Random Node
+    if(du.check_if_node_exists(user_topic)):
+        node = user_topic
+    else:
+        node = du.get_random_node()
+    print(f"Randomly selected {node}")
+    async with cl.Step(f"Brainstorming about {node}",icon="lightbulb",default_open=True) as step:
+
+
+        # Use all edges coming into a single node
+        #node_info = du.get_node_info(node)
+        #props_dict = dict()
+        #props_dict['local_context'] = '\n'.join([node_info['summary']]+[n[3] for n in node_info['edge_info']])
+
+        # Use all neighbors of a node
+        neighbors = du.graph_multihop(node,2)
+        print(neighbors)
+        props_dict = dict()
+        props_dict['topic'] = node
+        props_dict['local_context'] = ''
+        for n in neighbors:
+            node_info = du.get_node_info(n)
+            props_dict['local_context'] += node_info['summary']+'\n'
+
+
+        print(props_dict['local_context'])
+        # Generate an LLM Output
+        history = []
+        history = prompts.get_brainstorming_prompt(props_dict,history)
+        print(history[-1]['content'])
+        brainstormed_json = await tokenize_and_generate(history,max_new_tokens=1024,temperature=settings['temperature'],template=ReasonedResponse)
+        idea = ReasonedResponse.model_validate_json(brainstormed_json)
+
+        actions = [cl.Action(
+            name="show_reasoning",
+            icon="message-circle-question-mark",
+            payload={'content':idea.scratchpad},
+            label="Show Reasoning"
+            ),
+            cl.Action(
+            name="show_node_info",
+            icon="question-mark",
+            payload={'node_name':node_info['node_name']},
+            label="Show Context"
+            )]
+
+    await cl.Message(content=idea.answer,actions=actions).send()
+
+    # Log User Response
+
+    # Save Datapoint (Optional)
+
 @cl.step(name='Retrieve Context')
 async def retrieve_context(topic,entity_threshold=0.25,rag_threshold=0.5,k=10):
 
+    settings = cl.user_session.get('settings')
     print(topic)
     topic_with_context = await add_entity_context(topic,entity_threshold)
     print(topic_with_context)
-    context_text,context_edges = await retrieve_graph_rag(topic_with_context,threshold=rag_threshold,k=k)
+    context_text,context_edges = await retrieve_graph_rag(topic_with_context,threshold=settings['rag_threshold'],k=k)
 
     return context_text,context_edges
 
 async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,template=None, use_chat_template=True):
+
+    settings = cl.user_session.get("settings")
 
     synthesis_prompt = tokenizer.apply_chat_template(
                                 chat_history,
@@ -1388,7 +1489,7 @@ async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,
         _sync_generate,
         synthesis_prompt, 
         max_new_tokens, 
-        temperature, 
+        settings['temperature'], 
         template
     )
 
@@ -1547,10 +1648,7 @@ async def on_settings_update(settings: dict):
 
     cl.user_session.set("settings", settings)
 
-    get_idea_history = settings['Get_Idea_History']
-
-    if(get_idea_history):
-        await show_saved_messages_panel()
+    print(cl.user_session.get("settings"))
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -1574,6 +1672,32 @@ async def on_chat_start():
 
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(mlx_executor, _sync_load_models)
+
+    settings = await cl.ChatSettings(
+        [
+            Slider(
+                id="temperature",
+                label="Creativity",
+                description="Higher values encourage inventing new ideas. Lower values encourage following the given information",
+                initial=0.4,
+                min=0.1,
+                max=0.9,
+                step=0.05,
+            ),
+
+            Slider(
+                id="rag_threshold",
+                label="Selectiveness",
+                description="Higher values encourage being more selective about the retrieved knowledge. Lower values encourage gathering more, less relevant knowledge.",
+                initial=0.5,
+                min=0.1,
+                max=0.9,
+                step=0.05,
+            ),
+        ]
+    ).send()
+
+    cl.user_session.set("settings", settings)
 
     #await create_knowledge_graph()
     #await cl.make_async(du.reload_faiss_dataset)()
@@ -1622,6 +1746,8 @@ async def on_message(user_message: cl.Message):
     elif(selected_mode=='View'):
         #await show_similar_edges(user_message.content)
         await show_node_info(user_message.content)
+    elif(selected_mode=='Brainstorm'):
+        await brainstorm(user_message.content)
 
     elif(selected_mode=='Metadata'):
         await update_metadata(user_message)

@@ -47,18 +47,17 @@ def get_node_summary_prompt(args_dict, history=[]):
 		history.append(process_prompt(prompts['node_summary_prompt_new']['user'],args_dict))
 	return history
 
-# was simple_summary
 def get_text_decomposition_prompt(args_dict,history=[]):
 	# topics, text
 	assert 'topics' in args_dict.keys()
 	assert 'text' in args_dict.keys()
+	assert 'background_knowledge' in args_dict.keys()
 
 	history.append(process_prompt(prompts['text_decomposition_prompt']['system']))
 	history.append(process_prompt(prompts['text_decomposition_prompt']['user'],args_dict))
 
 	return history
 
-# was generation_prompt
 def get_reasoned_generation_prompt(args_dict,history=[]):
 
 	assert 'user_query' in args_dict.keys()
@@ -66,6 +65,16 @@ def get_reasoned_generation_prompt(args_dict,history=[]):
 
 	history.append(process_prompt(prompts['reasoned_answer_prompt']['system']))
 	history.append(process_prompt(prompts['reasoned_answer_prompt']['user'],args_dict))
+
+	return history
+
+def get_brainstorming_prompt(args_dict,history=[]):
+
+	assert 'topic' in args_dict.keys()
+	assert 'local_context' in args_dict.keys()
+
+	history.append(process_prompt(prompts['brainstorming_prompt']['system']))
+	history.append(process_prompt(prompts['brainstorming_prompt']['user'],args_dict))
 
 	return history
 

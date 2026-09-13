@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import itertools
 import difflib
 import time
+import random
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 _orig_getattr = torch.nn.Module.__getattr__
@@ -106,6 +107,8 @@ class DatastoreUtilities():
         for node in self.nodes_to_add:
             self.knowledge_graph.nodes[node]['added'] = int(time.time())
 
+        self.reload_faiss_dataset()
+
         print("FAISS datastore successfully created and saved!")
 
     def reload_faiss_dataset(self):
@@ -178,19 +181,41 @@ class DatastoreUtilities():
 
         return str(self.edge_key-1)
 
+    def remove_edge(self,head,tail,key):
+        if(self.knowledge_graph.has_edge(head,tail,key=key)):
+            self.knowledge_graph.remove_edge(head,tail,key=key)
+
     def add_node(self,node,summary=None):
         # Add a node to the graph
         if(not(self.knowledge_graph.has_node(node))):
-            self.knowledge_graph.add_node(node,updated=int(time.time()),added=-int(time.time()))
+            self.knowledge_graph.add_node(node,updated=int(time.time()),added=-int(time.time()),summary="")
             if(summary):
                 self.set_node_summary(node,summary)
-            else:
-                self.set_node_summary(node,"")
         else:
             if(summary):
                 self.set_node_summary(node,summary)
                 self.knowledge_graph.nodes[node]['updated'] = int(time.time())
                 
+    def remove_node(self,node):
+        # Cleanly remove a node from the knowledge graph
+
+        print(self.knowledge_graph)
+        if(self.knowledge_graph.has_node(node)):
+            current_edges = list(self.knowledge_graph.edges([node],keys=True,data=True))
+            for idx in range(len(current_edges)):
+                #print(current_edges[idx])
+                if(not(current_edges[idx][1]==node)):
+                    # Make the current edge self loop onto tail
+                    edge = list(current_edges[idx])
+                    edge[0] = edge[1]
+                    self.knowledge_graph.update(edges=[tuple(edge)])
+                else:
+                    # Otherwise delete the edge altogether
+                    self.knowledge_graph.remove_edge(current_edges[idx][0],current_edges[idx][1],key=current_edges[idx][2])
+
+            self.knowledge_graph.remove_node(node)
+
+        print(self.knowledge_graph)
 
     def get_all_nodes(self):
         # Return a list of all node names
@@ -207,6 +232,26 @@ class DatastoreUtilities():
         # Return a list of nodes that have been updated, but not added to the FAISS dataset
         return [node[0] for node in self.knowledge_graph.nodes(data=True) if node[1]['updated']>node[1]['added']]
 
+    def get_random_node(self):
+        all_nodes = self.get_all_nodes()
+        return random.choice(all_nodes)
+
+    def get_neighbors(self,node):
+        return [n for n in self.knowledge_graph.neighbors(node)]
+
+    def graph_multihop(self,node,n_hops=1,neighborhood=[]):
+        
+        if(len(neighborhood)==0):
+            neighborhood = [node]
+
+        if(n_hops>0):
+            node_neighbors = self.knowledge_graph.neighbors(node)
+            for neighbor in node_neighbors:
+                if(not(neighbor in neighborhood)):
+                    neighborhood.append(neighbor)
+                    new_set = self.graph_multihop(neighbor,n_hops=(n_hops-1),neighborhood=neighborhood)
+        return neighborhood
+            
     def check_if_node_exists(self,node):
         return self.knowledge_graph.has_node(node)
 
@@ -331,27 +376,6 @@ class DatastoreUtilities():
         else:
             return False
 
-    def remove_node(self,node):
-        # Cleanly remove a node from the knowledge graph
-
-        print(self.knowledge_graph)
-        if(self.knowledge_graph.has_node(node)):
-            current_edges = list(self.knowledge_graph.edges([node],keys=True,data=True))
-            for idx in range(len(current_edges)):
-                #print(current_edges[idx])
-                if(not(current_edges[idx][1]==node)):
-                    # Make the current edge self loop onto tail
-                    edge = list(current_edges[idx])
-                    edge[0] = edge[1]
-                    self.knowledge_graph.update(edges=[tuple(edge)])
-                else:
-                    # Otherwise delete the edge altogether
-                    self.knowledge_graph.remove_edge(current_edges[idx][0],current_edges[idx][1],key=current_edges[idx][2])
-
-            self.knowledge_graph.remove_node(node)
-
-        print(self.knowledge_graph)
-
     # TODO ENDS
 
     def find_topics_in_text(self,text):
@@ -450,18 +474,19 @@ class DatastoreUtilities():
         query_vector = self.embed_text(query)
         scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=k)
 
-        story_graph = self.knowledge_graph
-
         seed_results = []
         for i in range(len(scores)):
-            print(scores[i],":",examples['text'][i])
             if(scores[i] >= threshold and len(examples['text'][i].split(':')[-1].strip())>0):
                 seed_results.append({'topic':examples['topic'][i],'text':examples['text'][i]})
+
+        for result in seed_results:
+            print(f"{result['topic']} : {result['text']}")
 
         retrieved_context = []
         edge_paths = []
         if(len(seed_results)>1):
             nodes = [s['topic'].strip() for s in seed_results]
+            print(nodes)
 
             # Get paths between all nodes first and resolve before extracting context
             node_pairs = [(nodes[idx],nodes[jdx]) for idx in range(1,len(nodes)) for jdx in range(idx) if not(idx==jdx)]
@@ -469,8 +494,8 @@ class DatastoreUtilities():
             # Ignore sub-paths
             all_paths = []
             for source,target in node_pairs:
-                if nx.has_path(story_graph, source, target):
-                    all_paths.append(nx.shortest_path(story_graph, source=source, target=target))
+                if nx.has_path(self.knowledge_graph, source, target):
+                    all_paths.append(nx.shortest_path(self.knowledge_graph, source=source, target=target))
 
             all_paths = sorted(all_paths,key=len,reverse=True)
 
@@ -489,13 +514,20 @@ class DatastoreUtilities():
                 if(len(path)>1):
                     for path_idx in range(len(path)-1):
                         head,tail = path[path_idx:path_idx+2]
-                        edge_paths+=[(head,tail,key,edge_dict['desc']) for key,edge_dict in story_graph.get_edge_data(head,tail).items()]
-                        knowledge_chain += [edge_data['desc'].strip() for edge_data in story_graph.get_edge_data(head,tail).values()]
+                        edge_paths+=[(head,tail,key,edge_dict['desc']) for key,edge_dict in self.knowledge_graph.get_edge_data(head,tail).items()]
+                        knowledge_chain += [edge_data['desc'].strip() for edge_data in self.knowledge_graph.get_edge_data(head,tail).values()]
 
                 knowledge_chain += [self.knowledge_graph.nodes[tail]['summary']]
                 retrieved_context.append(' '.join(knowledge_chain))    
         else:
-            retrieved_context = [seed_results[0]['text'].strip()]
+            node = seed_results[0]['topic'].strip()
+            retrieved_context = [self.knowledge_graph.nodes[node]['summary']]
+            retrieved_context += [edge_dict['desc'] for edge_dict in self.knowledge_graph.get_edge_data(node,node).values()]
+            edge_paths += [(node,node,key,edge_dict['desc']) for key,edge_dict in self.knowledge_graph.get_edge_data(node,node).items()]
+            for neighbor in self.knowledge_graph.neighbors(node):
+                retrieved_context += [self.knowledge_graph.nodes[neighbor]['summary']]
+                retrieved_context += [edge_dict['desc'] for edge_dict in self.knowledge_graph.get_edge_data(node,neighbor).values()]
+                edge_paths += [(node,neighbor,key,edge_dict['desc']) for key,edge_dict in self.knowledge_graph.get_edge_data(node,neighbor).items()]
 
         return retrieved_context, edge_paths
 

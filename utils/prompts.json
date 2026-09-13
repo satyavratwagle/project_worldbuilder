@@ -49,8 +49,9 @@
 					"role": 
 						"system", 
 					"content": 
-						["Your job is to describe the given text with the help of the provided context.",
-						"Your descriptions descriptions MUST explicitly describe topics provided by the user.",				
+						["Your job is to describe the given topics with the help of the provided text.",
+						"Your descriptions MUST explicitly describe topics provided by the user.",
+						"Do NOT respond with the descriptions of the provided secondary knowledge.",				
 						"Your response MUST include descriptions of ALL topics.",
 						"Each sentence MUST start with the name of a topic.",
 						"No more than five (5) sentences should begin with the same words.",
@@ -70,9 +71,10 @@
 					"role": 
 						"user", 
 					"content": 
-						["Describe the following topics in the given text with the help of the following context.",
-						"Topics to focus on : [TOPICS]\n",
-						"\n --- TEXT STARTS ---\n[TEXT]\n --- TEXT ENDS ---"]
+						["Describe the following topics in the given text with the help of the following context.\n",
+						"\n --- SECONDARY KNOWLEDGE STARTS ---\n[BACKGROUND_KNOWLEDGE]\n --- SECONDARY KNOWLEDGE ENDS ---",
+						"\n --- TEXT STARTS ---\n[TEXT]\n --- TEXT ENDS ---\n",
+						"\nTopics to focus on : [TOPICS]\n"]
 				}			
 		},
 	"reasoned_answer_prompt":
@@ -95,6 +97,28 @@
 					"content": 
 						["User Query: [USER_QUERY]\n\n",
 						"--- LOCAL CONTEXT BEGINS ---\n[LOCAL_CONTEXT]\n--- LOCAL CONTEXT ENDS ---\n\n"]
+				}			
+		},
+	"brainstorming_prompt":
+		{
+			"system":
+				{
+					"role": 
+						"system", 
+					"content": 
+						["You are a brainstorming assistant for fictional worldbuilding. Your job is to come up with new, plausible ideas about related to the given topic based on the given context.",
+						"Always respond with the basis and reasoning of your idea in verbose form in the 'scratchpad' field.",
+						"Your reasoning must ONLY be based on the given context.",
+						"Respond with a novel idea related to the given topic that does not appear in the context based on your reasoning in the 'answer' field.",
+						"Do NOT include any conversational preamble or text. ",
+						"Your response must start immediately with the character '{'."]
+				},
+			"user":
+				{
+					"role": 
+						"user", 
+					"content": 
+						["\n\n--- CONTEXT BEGINS ---\n[LOCAL_CONTEXT]\n--- CONTEXT ENDS ---\n\nTOPIC OF IDEA: [TOPIC]\n"]
 				}			
 		}
 

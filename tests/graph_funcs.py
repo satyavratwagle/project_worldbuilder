@@ -25,11 +25,9 @@ du = DatastoreUtilities(config)
 
 STORE_DIR = f"{config['data_dir']}/FAISS_store/"
 
-for edge in du.knowledge_graph.edges(keys=True,data=True):
-    du.knowledge_graph.edges[edge[0],edge[1],edge[2]]['parsed'] = False
-    break
-    
-du.save_graph()
+
+topics = ['Mahamun','Archipelago','Gng']
+print('\n'.join([summary for summary in du.get_node_summaries(topics) if summary]))
 
 if(False):
     dataset = datasets.load_from_disk(os.path.join(STORE_DIR, "worldbuilding_dataset"))
