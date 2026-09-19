@@ -14,6 +14,7 @@ function SentenceLink({ sentence, targetWords, onWordClick }) {
   const escapedWords = sortedWords.map(w => w.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'));
   const regex = new RegExp(`\\b(${escapedWords.join('|')})\\b`, 'g');
   const parts = sentence.split(regex);
+  console.log(props.wiki)
 
   return (
     <p>
@@ -102,13 +103,6 @@ export default function GraphInfo() {
     });
   }, [props.fields, values]);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setTimeLeft((t) => (t > 0 ? t - 1 : 0));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
   const handleChange = (id, val) => {
     setValues((v) => ({ ...v, [id]: val }));
   };
@@ -128,14 +122,25 @@ export default function GraphInfo() {
         <span style={{display: 'flex', alignItems: 'center', border: "1px solid #666666", 'border-radius':'8px', padding:'4px'}} onClick={() => handleDeleteNode(props.title)} className="col-span-1 cursor-pointer underline text-sm font-tiny text-muted-background justify-center">{"Delete Node"}</span>
         <CardDescription className="col-span-2"><span onClick={() => handleNodeChange(props.title,props.subtitle)} className="cursor-pointer">{props.subtitle || ""}</span></CardDescription>
       </CardHeader>
+
       <CardContent style={{display: 'grid', gridTemplateColumns: '440px 20px', gap: '10px', 'column-gap': '4px', width: '100%'}} className="space-y-1">
-        {props.edges.map(([head, tail, key,text], index) => (
+        <div style={{border: "2px solid #666666", 'border-radius':'8px', padding:'10px'}} className="col-span-2 flex-col space-y-2">
+          {Object.entries(props.wiki).map(([key, value]) =>(
+              <div>
+                  <div className="text-lg font-bold">{key.charAt(0).toUpperCase() + key.slice(1)}</div>
+                  <p className="text-sm font-medium text-muted-foreground">{value}</p>
+              </div>
+            ))
+          }
+        </div>
+        <hr style={{border: "10px"}} className="col-span-2"/>
+        {props.edges.map(([head, tail, key,text, endpoints], index) => (
           <React.Fragment key={index}>
             <div>
-              <div style={{padding: "8px", 'border-radius': '16px', display: 'flex', alignItems: 'center'}} className="col-span-1 text-left">
+              <div style={{padding: "8px", 'border-radius': '16px', display: 'flex', alignItems: 'center'}} className="col-span-1 text-left text-sm text-muted-foreground">
                 <SentenceLink 
                   sentence={text} 
-                  targetWords={[head,tail]} 
+                  targetWords={[endpoints[0],endpoints[1]].filter(word=>!(word==props.title))} 
                   onWordClick={(word) => handleClick(word)} 
                 /></div>
           </div>

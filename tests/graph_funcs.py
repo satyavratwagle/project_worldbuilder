@@ -26,23 +26,7 @@ du = DatastoreUtilities(config)
 STORE_DIR = f"{config['data_dir']}/FAISS_store/"
 
 
-topics = ['Mahamun','Archipelago','Gng']
-print('\n'.join([summary for summary in du.get_node_summaries(topics) if summary]))
+for edge in du.knowledge_graph.edges(keys=True,data=True):
+    print(edge)
 
-if(False):
-    dataset = datasets.load_from_disk(os.path.join(STORE_DIR, "worldbuilding_dataset"))
-    dataset.load_faiss_index("embeddings", os.path.join(STORE_DIR, "worldbuilding_dataset.faiss"))
-
-    #print([doc['topic'] for doc in dataset])
-    embed_model = SentenceTransformer("BAAI/bge-m3")
-    du.load_embedding_model(embed_model,dataset)
-
-#new_edges = du.find_new_edges()
-#print(new_edges)
-
-#dataset,index = du.update_faiss_dataset()
-#du.overwrite_faiss_dataset(dataset,index)
-
-#context,edges = du.get_graph_rag_context("When volcanos explode, Ambar clouds are blown into the sky. They hurt the Locana.")
-#for e in edges:
-#    print(e)
+#du.save_graph()

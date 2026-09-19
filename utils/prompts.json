@@ -21,25 +21,54 @@
 					"\n A summary of [NODE_NAME] is as follows :"]
 			}
 		},
-	"node_summary_prompt_new":
+	"node_summary_prompt":
 		{"system":
 			{
 				"role": 
 					"system", 
 				"content": 
-					["Your job is to summarize the given description of the given topic.",
-					"Your response must include the important information given in the description.",
-					"Your response must NOT be longer than three (3) sentences.",
-					"Do NOT include any conversational preamble or text."]
+					["[SYSTEM ROLE AND GUARDRAILS]",
+					"You are a summarizing assistant for fictional lore. Your job is to summarize the description of a given topic in AT MOST THREE (3) sentences.",
+					"- Your response must include all of the important points in the given description.",
+					"- Your response must NOT be longer than three (3) sentences.",
+					"- Do NOT include any conversational preamble or text."]
 			},
 		"user":
 			{
 				"role": 
 					"user", 
 				"content": 
-					["Topic : [NODE_NAME]",
-					"\n--- DESCRIPTION OF [NODE_NAME] STARTS ---\n[NODE_DESCRIPTION]\n--- DESCRIPTION OF [NODE_NAME] ENDS ---\n",
-					"\n A summary of [NODE_NAME] is as follows :"]
+					{
+					"node_description":
+						["\n[DESCRIPTION OF (NODE_NAME)]\n<description>\n(NODE_DESCRIPTION)\n</description>\n"],
+					"node_name":
+						["\n[TOPIC TO SUMMARIZE]\n<topic>\n(NODE_NAME)\n</topic>\n\n A summary of (NODE_NAME) is as follows :"]
+					} 
+			}
+		},
+	"node_wiki_prompt":
+		{"system":
+			{
+				"role": 
+					"system", 
+				"content": 
+					["[SYSTEM ROLE AND GUARDRAILS]",
+					"You are a summarizing assistant for fictional lore. Your job is to summarize the given description of the given topic IN AT MOST THREE (3) sentences.",
+					"- Your response must include ALL the important information given in the description.",
+					"- Your response must NOT be longer than three (3) sentences.",
+					"- Do NOT include any conversational preamble or text."]
+			},
+		"user":
+			{
+				"role": 
+					"user", 
+				"content": 
+					{
+					"node_description":
+						["\n[DESCRIPTION OF (NODE_PROPERTY) of (NODE_NAME)]\n<description>\n(NODE_DESCRIPTION)\n</description>\n"],
+					"node_name":
+						["\n[TOPIC TO SUMMARIZE]\n<topic>\n(NODE_PROPERTY) of (NODE_NAME)\n</topic>\n\n A summary of (NODE_PROPERTY) of (NODE_NAME) is as follows :"]
+					}
 			}
 		},
 	"text_decomposition_prompt":
@@ -49,21 +78,23 @@
 					"role": 
 						"system", 
 					"content": 
-						["Your job is to describe the given topics with the help of the provided text.",
-						"Your descriptions MUST explicitly describe topics provided by the user.",
-						"Do NOT respond with the descriptions of the provided secondary knowledge.",				
-						"Your response MUST include descriptions of ALL topics.",
-						"Each sentence MUST start with the name of a topic.",
-						"No more than five (5) sentences should begin with the same words.",
-						"Each sentence in your response should start with the subject followed by the verb and then the object of the sentence.",
-						"Each sentence in your response must be short.",
-						"Each sentence in your response must not be more than eight (8) words long.",
-						"You must NOT use conjunctions in your response.",
-						"You must NEVER end a sentence with a verb.",
-						"You must maintain the tense of the original text in your response.",
-						"You must NOT use the newline character in your response.",
-						"You must ONLY use information provided by the user in your response. Do NOT extrapolate or invent new information.",
-						"Do NOT include any conversational preamble or text."]
+						["[SYSTEM ROLE AND GUARDRAILS]",
+						"You are a data extraction assistant for fictional lore. Your job is to extract relationships between the given topics contained in the given description.",
+						"- Your response MUST explicitly describe topics provided by the user.",				
+						"- Your response MUST include descriptions of ALL topics.",
+						"- Each sentence MUST start with the name of a topic.",
+						"- You may only use the background knowledge as a logical basis for your response.",
+						"- Your responses must NOT contain information present in the background knowledge.",
+						"- No more than five (5) sentences should begin with the same words.",
+						"- Each sentence in your response should start with the subject followed by the verb and then the object of the sentence.",
+						"- Each sentence in your response must be short.",
+						"- Each sentence in your response must not contain more than eight (8) words.",
+						"- You must NOT use conjunctions in your response.",
+						"- You must NEVER end a sentence with a verb.",
+						"- You must maintain the tense of the original text in your response.",
+						"- You must NOT use the newline character in your response.",
+						"- You must ONLY use information provided by the user in your response. Do NOT extrapolate or invent new information.",
+						"- Do NOT include any conversational preamble or text."]
 
 				},
 			"user":
@@ -71,10 +102,14 @@
 					"role": 
 						"user", 
 					"content": 
-						["Describe the following topics in the given text with the help of the following context.\n",
-						"\n --- SECONDARY KNOWLEDGE STARTS ---\n[BACKGROUND_KNOWLEDGE]\n --- SECONDARY KNOWLEDGE ENDS ---",
-						"\n --- TEXT STARTS ---\n[TEXT]\n --- TEXT ENDS ---\n",
-						"\nTopics to focus on : [TOPICS]\n"]
+						{
+							"background_knowledge":
+								["\n[BACKGROUND KNOWLEDGE]<background>\n(BACKGROUND_KNOWLEDGE)\n</background>"],
+							"background_knowledge":
+								["\n[DESCRIPTION]<description>\n(TEXT)\n</description>"],
+							"user_query":
+								["\n[TOPICS]\n<topics>\n(TOPICS)\n</topics>\n"]
+						}
 				}			
 		},
 	"reasoned_answer_prompt":
@@ -84,19 +119,26 @@
 					"role": 
 						"system", 
 					"content": 
-						["You are a helpful assistant. You must answer the user query using ONLY the local context.",
-						"Always output your reasoning in verbose form in the 'scratchpad' field.",
-						"Output a descriptive answer based on your reasoning in the 'answer' field.",
-						"Do NOT include any conversational preamble or text. ",
-						"Your response must start immediately with the character '{'."]
+						["[SYSTEM ROLE AND GUARDRAILS]",
+						"You are a helpful brainstorming assistant for fictional lore.Your task is to answer user queries regarding a fictional world using the provided context.",
+						"- You must answer the user query using ONLY the local context and the conversation history.",
+						"- Always output your reasoning in verbose form in the 'scratchpad' field.",
+						"- You must always output a verbose answer based on your reasoning in the 'answer' field.",
+						"- You have access to the full conversation history. If a user asks a follow-up query or refers to a previous topic (using words like 'it', 'that', 'the previous list', or 'expand on that'), you must explicitly look back at your prior assistant answers, build upon them, and reference what you stated earlier (e.g., 'As I mentioned earlier regarding...').",
+						"- Do NOT include any conversational preamble or text. ",
+						"- Your response must start immediately with the character '{'."]
 				},
 			"user":
 				{
 					"role": 
 						"user", 
 					"content": 
-						["User Query: [USER_QUERY]\n\n",
-						"--- LOCAL CONTEXT BEGINS ---\n[LOCAL_CONTEXT]\n--- LOCAL CONTEXT ENDS ---\n\n"]
+						{
+							"local_context":
+								["\n[CONTEXT BLOCK]\n<context>\n(LOCAL_CONTEXT)\n</context>\n\n"],
+							"user_query":
+								["\n[USER QUERY]\n<query>\n(USER_QUERY)\n</query>\n"]
+						}
 				}			
 		},
 	"brainstorming_prompt":
@@ -106,20 +148,62 @@
 					"role": 
 						"system", 
 					"content": 
-						["You are a brainstorming assistant for fictional worldbuilding. Your job is to come up with new, plausible ideas about related to the given topic based on the given context.",
-						"Always respond with the basis and reasoning of your idea in verbose form in the 'scratchpad' field.",
-						"Your reasoning must ONLY be based on the given context.",
-						"Respond with a novel idea related to the given topic that does not appear in the context based on your reasoning in the 'answer' field.",
-						"Do NOT include any conversational preamble or text. ",
-						"Your response must start immediately with the character '{'."]
+						["[SYSTEM ROLE AND GUARDRAILS]",
+						"You are a brainstorming assistant for fictional worldbuilding. Your job is to come up with new, plausible ideas about related to the given topic based on the given context.",
+						"- Always respond with the basis and reasoning of your idea in verbose form in the 'scratchpad' field.",
+						"- Your reasoning must ONLY be based on the given context and the conversation history.",
+						"- Respond with a novel idea related to the given topic that does not appear in the context based on your reasoning in the 'answer' field.",
+						"- You have access to the full conversation history. If a user asks a follow-up question or refers to a previous topic (using words like 'it', 'that', 'the previous list', or 'expand on that'), you must explicitly look back at your prior assistant answers, build upon them, and reference what you stated earlier (e.g., 'As I mentioned earlier regarding...').",
+						"- Do NOT include any conversational preamble or text. ",
+						"- Your response must start immediately with the character '{'."]
 				},
 			"user":
 				{
 					"role": 
-						"user", 
+						"user",
 					"content": 
-						["\n\n--- CONTEXT BEGINS ---\n[LOCAL_CONTEXT]\n--- CONTEXT ENDS ---\n\nTOPIC OF IDEA: [TOPIC]\n"]
+						{
+							"local_context":
+								["\n[CONTEXT BLOCK]\n<context>\n(LOCAL_CONTEXT)\n</context>\n"],
+							"topic":
+								["\n[TOPIC TO DESCRIBE]\n<topic>\n(TOPIC)\n</topic>\n"]
+						} 
+						
 				}			
-		}
+		},
+	"hypothesizing_prompt":
+		{
+			"system":
+				{
+					"role": 
+						"system", 
+					"content": 
+						["[SYSTEM ROLE AND GUARDRAILS]",
+						"You are a hypothesis generator for the rules of a fictional world. Your job is to derive reasonable hypotheses about the given topic and cite the supporting text from the given propositions.",
+						"- Respond with a list of at least five (5) hypotheses that do NOT appear in the given propositions.",
+						"- In the 'hypothesis' field: Respond with the hypothesis derived from the given propositions.",
+						"- In the 'proposition' field: Refer or cite the specific propositions from the given propositions that support your hypothesis.",
+						"- Each hypothesis must be supported by exactly one (1) proposition.",
+						"- Your hypotheses must ONLY be based on the given context and the conversation history.",
+						"- Each hypothesis must be a simple sentence.",
+						"- Do NOT extrapolate or invent new information. You may interpolate BETWEEN the propositions.",
+						"- You have access to the full conversation history. If a user asks a follow-up question or refers to a previous topic (using words like 'it', 'that', 'the previous list', or 'expand on that'), you must explicitly look back at your prior assistant answers, build upon them, and reference what you stated earlier (e.g., 'As I mentioned earlier regarding...').",
+						"- Do NOT include any conversational preamble or text. "]
+				},
+			"user":
+				{
+					"role": 
+						"user",
+					"content": 
+						{
+							"facts":
+								["\n[PROPOSITIONS]\n<propositions>\n(FACTS)\n</propositions>\n"],
+							"topic":
+								["\n[TOPIC]\n<topic>\n(TOPIC)\n</topic>\n"]
+						} 
+						
+				}			
+		},
+	"edge_classification_prompt":"Classify the text focusing ONLY on [TOPIC] using these specific definitions:\n[SCHEMA]"
 
 }

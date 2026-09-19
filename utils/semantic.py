@@ -19,6 +19,7 @@ import shutil
 import re
 from fastcoref import spacy_component
 from collections import deque
+from gliclass import GLiClassModel, ZeroShotClassificationPipeline
 
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
@@ -228,6 +229,14 @@ class SemanticTools():
 
         return resolved_output,cluster_text,doc
 
+    # Load Models
+    def load_zsc_model(self,model_id):
+        # Load Zero-Shot Classification Model
+        self.zsc_model = GLiClassModel.from_pretrained(model_id)
+        self.zsc_tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self.zsc_model.config.prompt_first = True
+        self.zsc_model.config.pooling_strategy = "avg"
+
     def load_extraction_model(self,extraction_model):
         self.extraction_model = extraction_model
 
@@ -235,6 +244,69 @@ class SemanticTools():
 
         self.nli_tokenizer = nli_tokenizer
         self.nli_model = nli_model
+
+    # Semantic Functions
+
+    def zero_shot_classification(self,texts,labels,context=None,threshold=0.8,prompt=None):
+        # Multi-class Zero-shot classification to generate tags
+        # texts (list(str)) : Text to classify
+        # labels (list)     : Labels to classify as
+        # threshold (float) : Threshold beyond which a label is considered True
+
+        # returns labels (list(list([label,score]))) : Tags for each string in texts.
+
+        '''pipeline = ZeroShotClassificationPipeline(self.zsc_model, self.zsc_tokenizer, classification_type='multi-label', device='mps')
+
+        if(prompt):
+            results = pipeline(texts, labels, prompt=prompt, threshold=threshold)
+        else:
+            results = pipeline(texts, labels, threshold=threshold)
+
+        return [[(score_tuple['label'],score_tuple['score']) for score_tuple in result] for result in results]
+        '''
+
+        if(context):
+            texts = texts+self.zsc_tokenizer.sep_token+"".join(context)
+
+        pipeline = ZeroShotClassificationPipeline(self.zsc_model, self.zsc_tokenizer, classification_type='multi-label', device='mps')
+        pipeline.pipe.sep_token = self.zsc_tokenizer.sep_token
+        #res = pipeline([texts],labels,threshold=0.0)
+
+
+        tokenized_inputs = pipeline.pipe.prepare_inputs([texts],labels,True,examples=None,prompt=None)
+        input_ids = tokenized_inputs["input_ids"][0]
+        sep_indices = (input_ids == self.zsc_tokenizer.sep_token_id).nonzero(as_tuple=True)[0].tolist()
+
+        outputs = self.zsc_model.model.encoder_model(
+                                        tokenized_inputs["input_ids"],
+                                        attention_mask=tokenized_inputs["attention_mask"],
+                                        output_attentions=True,
+                                        output_hidden_states=True,
+                                        return_dict=False
+                                    )
+        final_hidden_states = outputs[0]
+        #print(final_hidden_states.shape)
+
+        logits, loss, pooled_output, classes_embedding = self.zsc_model.model.process_encoder_output(tokenized_inputs["input_ids"],
+                                                                                                        tokenized_inputs['attention_mask'],
+                                                                                                        final_hidden_states,max_num_classes=len(labels))
+
+        _, _, text_token_embeddings, text_mask = self.zsc_model.model._extract_class_features(final_hidden_states, tokenized_inputs["input_ids"], tokenized_inputs["attention_mask"], len(labels))
+
+        filtered_hidden_states = text_token_embeddings#[:,sep_indices[0]:sep_indices[1],:]
+        manual_pooled_output = filtered_hidden_states
+        manual_pooled_output = self.zsc_model.model.pooler(filtered_hidden_states)
+        manual_pooled_output = self.zsc_model.model.text_projector(manual_pooled_output)
+        manual_pooled_output = self.zsc_model.model.dropout(manual_pooled_output)
+
+        scores = torch.sigmoid(torch.einsum("BD,BCD->BC", manual_pooled_output, classes_embedding)).detach().numpy()[0]
+
+        results = [[(labels[i],scores[i]) for i in range(len(labels))]]
+
+        return results
+
+        
+
 
     def check_context_entailment(self,contexts,queries):
 

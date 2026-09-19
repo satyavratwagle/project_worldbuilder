@@ -1,0 +1,61 @@
+{
+	"character":
+		{
+			"appearance":
+				"appearance, physical qualities, clothes, visual descriptions",
+			"personality":
+				"personality, temperament, psychological qualities, emotions, behavioral qualities",
+			"ability":
+				"abilities, technical proficiencies, talents, specializations",
+			"past":
+				"historical lore, past",
+			"relationship":
+				"relationships, bonds, family, friends, enemies, lovers"
+		},
+	"location":
+		{
+			"location":
+				"position",
+			"architecture":
+				"buildings",
+			"geography":
+				"geology, terrain, weather",
+			"population":
+				"human population",
+			"history":
+				"historical lore"
+		},
+	"faction":
+		{	
+			"structure":
+				"Internal hierarchy, leadership bodies, chain of command, branch organizations, administrative divisions, and membership requirements of [TOPIC].",
+			"ideology":
+				"Core beliefs, political philosophies, religious dogmas, core values, creeds, and long-term objectives or manifestos of [TOPIC].",
+			"influence":
+				"Territorial control, economic power, military might, political leverage, sway over other factions, and public reputation of [TOPIC].",
+			"history":
+				"Origins, founding events, past schisms, historical conflicts, former alliances, and major milestones in the organization's timeline of [TOPIC]."
+		},
+	"artifact":
+		{
+			"rules":
+				"Operational constraints, activation conditions, magical laws, systemic limitations, side effects, or forbidden uses governing how [TOPIC] functions.",
+			"applications":
+				"Practical uses, combat capabilities, magical effects, utility purposes, or specific tasks [TOPIC] can execute.",
+			"variants":
+				"Altered models, forged replicas, degraded versions, corrupted iterations, upgrades, or distinct types derived from [TOPIC].",
+			"history":
+				"Origin lore, the creator or forger, past owners, legendary events or battles associated with [TOPICd], and its journey through time."
+		},
+	"event":
+		{
+			"duration":
+				"The chronological length, timeframe, specific temporal period, or pacing over which [TOPIC] unfolds.",
+			"context":
+				"The long-term historical buildup, preceding plot threads, and underlying tensions that set the stage for [TOPIC].",
+			"process":
+				"The step-by-step progression, unfolding actions, tactical phases, or mechanisms through which [TOPIC] is executed.",
+			"aftermath":
+				"The direct consequences, immediate fallout, structural impacts, and long-term effects left in the wake of [TOPIC]."
+		}
+}
