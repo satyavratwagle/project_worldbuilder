@@ -46,10 +46,7 @@ async def on_message(user_message: cl.Message):
 
 		cl.user_session.set("awaiting_input_label",False)
 
-		print(updated_label)
-
-
-		
+		print(updated_label)		
 
 	else:
 		props = {

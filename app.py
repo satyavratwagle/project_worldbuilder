@@ -47,6 +47,7 @@ import gc
 import mlx.core as mx
 import psutil
 import difflib
+import time
 
 helpers = [ {"id":"Ideate", "icon":"lightbulb", "description":"Add ideas to knowledge base"},
             {"id":"Brainstorm", "icon":"lightbulb", "description":"Brainstorm for new ideas"},
@@ -262,7 +263,8 @@ async def show_checklist(entities,message='Select topics.',show_description=True
 
     element_msg = cl.AskElementMessage(
         content=message,
-        element=checklist_element
+        element=checklist_element,
+        timeout=360
     )
     # 3. Send the component attached to a chat message
     selection_response = await element_msg.send()
@@ -319,9 +321,9 @@ async def show_summaries_to_add(summaries,message='Select topics.',show_descript
 
     items_list = []
     for idx,entry in enumerate(summaries):
-        node,node_name,summary = entry
+        node,node_name,summary,wiki_key = entry
         if(len(summary.strip())>0):
-            items_list.append({"id":idx,"node":node,"node_name":node_name,"text":summary.strip()})
+            items_list.append({"id":idx,"node":node,"node_name":node_name,"text":summary.strip(),"wiki_key":wiki_key})
 
     
     props = {
@@ -346,7 +348,9 @@ async def show_summaries_to_add(summaries,message='Select topics.',show_descript
     for key in selection_response.keys():
         if(not(key=='submitted')):
             if(selection_response[key][1]):
-                summaries_to_add.append((selection_response[key][0],selection_response[key][1]))
+
+                # Add node name and key here
+                summaries_to_add.append((selection_response[key][0],selection_response[key][5],selection_response[key][1]))
                 print(selection_response[key])
 
 
@@ -917,7 +921,6 @@ async def summarize_nodes(graph_name='graph'):
                 selected_edge = tuple(response['payload']['edge_data'])
                 edges_to_delete = [edge for edge in similar_edges if not(edge==selected_edge)]
                 du.knowledge_graph.remove_edges_from(edges_to_delete)
-        du.save_graph()
 
         # Find new connections between existing edges.
         new_edges = du.find_new_edges()
@@ -925,58 +928,6 @@ async def summarize_nodes(graph_name='graph'):
         for head,tail,text in new_edges:
             await cl.Message(content=f"Found a connection between {head} and {tail}!\n> {text}").send()
         du.save_graph()
-
-    # Update the node summaries
-    all_node_data = du.get_all_node_data()
-    new_summaries = []
-    for node_id in all_node_data.keys():
-        unparsed_edges = du.get_unparsed_edges(node_id)
-        node_name = du.get_node_name(node_id)
-        print(node_id,len(unparsed_edges))
-
-        if(len(unparsed_edges)>0):
-            async with cl.Step(name=f'Updating Summary of {node_name}',icon="lightbulb") as step:
-                old_summary = du.get_node_summary(node_id)
-                new_information = ' '.join([edge[3]['desc'] for edge in unparsed_edges])
-
-                #print(f'Old Summary of {node_name} : {old_summary}')
-                #print(f'New Information about {node_name} : {new_information}')
-
-                history = []
-                props_dict = dict()
-                props_dict["node_name"]         = node_name
-                props_dict["node_description"]  = new_information
-                props_dict["existing_summary"]  = old_summary
-
-                #print(props_dict)
-                history = prompts.get_node_summary_prompt(props_dict,history)
-                #print(history)
-                new_summary = await tokenize_and_generate(history,temperature=0.3,max_new_tokens=128)
-
-                #await cl.Message(content=f"### {node_name}\n> {new_summary}").send()
-                #du.set_node_summary(node_id,new_summary)
-                new_summaries.append((node_id,node_name,new_summary))
-
-                print(f'New Summary of {node_name} : {new_summary}')
-                print()
-        else:
-            print(f'{node_name} has no new edges!')
-
-    # Allow user to update the summaries if needed.
-    summaries_to_add = await show_summaries_to_add(new_summaries)
-    print(summaries_to_add)
-
-
-    for node,summary in summaries_to_add:
-        print(node,summary)
-        node_name = du.get_node_name(node)
-        du.set_node_summary(node,summary)
-    
-        edge_data = all_node_data[node]
-        for head,tail,key,data in edge_data:
-            du.parse_edge(head,tail,key)
-
-    du.save_graph()
 
 async def assign_edge_labels(graph_name='graph'):
 
@@ -1029,49 +980,84 @@ async def assign_edge_labels(graph_name='graph'):
 
 async def update_node_wikis(graph_name='graph'):
 
+    new_summaries = []
     for node in du.get_all_nodes():
+        if(not(du.is_node_updated(node['id']))):
 
-        topic       = node['id']
-        topic_type  = du.knowledge_graph.nodes[node['id']]['type']
+            # Update the node wikis
+            unparsed_edges = du.get_unparsed_edges(node['id'])
+            print(node['id'],len(unparsed_edges))
 
-        schema = wiki_schema[topic_type.lower()]
-        schema_keys = list(schema.keys())
+            if(len(unparsed_edges)>0):
 
-        temp_wiki = dict()
-        temp_wiki['summary'] = du.knowledge_graph.nodes[node['id']]['wiki']['summary']
-        for key in schema.keys():
-            temp_wiki[key] = []
+                async with cl.Step(name=f'Updating Information about {node['name']}',icon="lightbulb") as step:
 
-        for edge in du.knowledge_graph.edges(topic,keys=True,data=True):
+                    # Create a temporary wiki to store the information
+                    temp_wiki = dict()
+                    temp_wiki['summary'] = ""
 
-            edge_data = edge[3]
-            print(edge_data)
-            # Assume only one tag per edge
-            temp_wiki[edge_data['tags'][topic][0]].append(edge_data['desc'])
 
-        print(node['id'])
-        print(temp_wiki)
-        print()
+                    schema = wiki_schema[du.knowledge_graph.nodes[node['id']]['type'].lower()]
+                    schema_keys = list(schema.keys())
 
-        # Use LLM to summarize temp_wiki if the number of entries are more than 1
+                    for key in schema.keys():
+                        temp_wiki[key] = []
 
-        for key in temp_wiki.keys():
+                    # Update the summary first
+                    new_information = ' '.join([edge[3]['desc'] for edge in du.knowledge_graph.edges(node['id'],keys=True,data=True)])
 
-            if(len(temp_wiki[key])>1 and not(key=='summary')):
-                props_dict = dict()
-                props_dict['node_name'] = node['name']
-                props_dict['node_description'] = " ".join(temp_wiki[key])
-                props_dict['node_property'] = key
+                    history = []
+                    props_dict = dict()
+                    props_dict["node_name"]         = node['name']
+                    props_dict["node_description"]  = new_information
 
-                history = []
-                history = prompts.get_node_wiki_prompt(props_dict,history)
-                print(history)
-                wiki_entry = await tokenize_and_generate(history,temperature=0.3,max_new_tokens=512)
-                print(wiki_entry)
-                print()
-                du.set_node_wiki_description(topic,key,wiki_entry)
-            elif(len(temp_wiki[key])==1):
-                du.set_node_wiki_description(topic,key,temp_wiki[key][0])
+                    history = prompts.get_node_summary_prompt(props_dict,history)
+                    new_summary = await tokenize_and_generate(history,temperature=0.3,max_new_tokens=128)
+
+                    new_summaries.append((node['id'],node['name'],new_summary,'summary'))
+
+                    print(f'New Summary of {node['name']} : {new_summary}')
+                    print()
+
+                    # topic = node['id']
+
+                    # Update each key in the wiki
+                    for key in temp_wiki.keys():
+
+                        wiki_information = [edge[3]['desc'] for edge in du.knowledge_graph.edges(node['id'],keys=True,data=True) if edge[3]['tags'][node['id']][0]==key]
+                        print(key," : ",wiki_information)
+
+                        if(len(wiki_information)>1):
+                            props_dict = dict()
+                            props_dict['node_name'] = node['name']
+                            props_dict['node_description'] = " ".join(wiki_information)
+                            props_dict['node_property'] = key
+
+                            history = []
+                            history = prompts.get_node_wiki_prompt(props_dict,history)
+                            wiki_entry = await tokenize_and_generate(history,temperature=0.3,max_new_tokens=512)
+
+                            new_summaries.append((node['id'],node['name'],wiki_entry,key))
+
+                        if(len(wiki_information)==1):
+                            new_summaries.append((node['id'],node['name'],wiki_information[0],key))
+
+            else:
+                print(f'{node['name']} has no new edges!')
+
+    # Allow user to update the summaries if needed.
+    summaries_to_add = await show_summaries_to_add(new_summaries)
+    print(summaries_to_add)
+
+
+    # CHANGE SUMMARIES TO INCLUDE THE KEY
+    for node_id,key,description in summaries_to_add:
+        print(node_id,key,description)
+        du.set_node_wiki_description(node_id,key,description)
+    
+        edge_data = du.get_edges_from(node_id)
+        for head,tail,key,data in edge_data:
+            du.parse_edge(head,tail,key)
 
     #du.save_graph()
 
@@ -1320,13 +1306,24 @@ async def hypothesize(user_topic):
 
         # Use all neighbors of a node
         neighbors = du.graph_multihop(node['id'],2)
-        print(neighbors)
+
+        print(neighbors[1])
+        print(du.knowledge_graph.get_edge_data(node['id'],neighbors[1]))
+        #summary = du.get_node_summary(node['id'])
         props_dict = dict()
-        props_dict['topic'] = node['name']
-        props_dict['facts'] = ''
-        for n in neighbors:
-            node_info = du.get_node_info(n)
-            props_dict['facts'] += "- "+"\n- ".join([node_info['wiki'][key] for key in node_info['wiki']])
+        props_dict['topic'] = node['name']+", "+du.knowledge_graph.nodes[du.get_node_id(neighbors[1])]['name']
+
+        propositions = "- "
+        node_info = du.get_node_info(node['id'])
+        propositions += node_info['wiki']['summary']+'\n- '
+        node_info = du.get_node_info(neighbors[1])
+        propositions += node_info['wiki']['summary']+'\n- '
+        propositions += '\n- '.join([item['desc'] for item in du.knowledge_graph.get_edge_data(node['id'],neighbors[1]).values()])
+
+
+        props_dict['facts'] = propositions#"\n- "+"\n- ".join(propositions)
+
+
 
         # Generate an LLM Output
         history = prompts.get_hypothesizing_prompt(props_dict,history)
@@ -1345,7 +1342,8 @@ async def hypothesize(user_topic):
     history.append({"role": "assistant", "content": hypotheses})
     cl.user_session.set("chat_history", history)
 
-    await cl.Message(content=hypotheses).send()
+    for deduction_set in hypotheses.deductions:
+        await cl.Message(content=f"{deduction_set.deduction} [BECAUSE] {deduction_set.reasoning}").send()
 
     # Log User Response
 
@@ -1543,6 +1541,10 @@ async def on_settings_update(settings: dict):
 async def on_chat_start():
 
     global mlx_executor 
+
+    for head,tail,key,edge_dict in du.knowledge_graph.edges(data=True,keys=True):
+        print(du.knowledge_graph.edges[head,tail,key])
+        #self.knowledge_graph.nodes[node]['updated'] = int(time.time()
 
     props = {"title":"",
                 "subtitle":"",

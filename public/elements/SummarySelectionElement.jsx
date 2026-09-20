@@ -13,7 +13,7 @@ export default function SummarySelectionElement() {
   const [checkedItems, setCheckedItems] = useState(() => {
     const init = {};
     (props.items || []).forEach((item) => {
-      init[item.id] = [item.node,item.text,true, false,item.node_name];
+      init[item.id] = [item.node,item.text,true, false,item.node_name,item.wiki_key];
     });
     return init;
   });
@@ -24,7 +24,7 @@ export default function SummarySelectionElement() {
     console.log(finalText)
     setCheckedItems((prev) => ({
       ...prev,
-      [id]: [prev[id][0],finalText,true,false,prev[id][4]],
+      [id]: [prev[id][0],finalText,true,false,prev[id][4],prev[id][5]],
     }));
     console.log(checkedItems)
     setText("")
@@ -36,7 +36,7 @@ export default function SummarySelectionElement() {
   const handleEditToggle = (id, state) => {
     setCheckedItems((prev) => ({
       ...prev,
-      [id]: [prev[id][0],prev[id][1],prev[id][2],state,prev[id][4]],
+      [id]: [prev[id][0],prev[id][1],prev[id][2],state,prev[id][4],prev[id][5]],
     }));
   };
 
@@ -44,7 +44,7 @@ export default function SummarySelectionElement() {
   const handleToggle = (id) => {
     setCheckedItems((prev) => ({
       ...prev,
-      [id]: [prev[id][0],prev[id][1],!prev[id][2],false,prev[id][4]],
+      [id]: [prev[id][0],prev[id][1],!prev[id][2],false,prev[id][4],prev[id][5]],
     }));
   };
 
@@ -52,7 +52,7 @@ export default function SummarySelectionElement() {
   const handleReset = () => {
     const init = {};
     (props.items || []).forEach((item) => {
-      init[item.id] = [item.node,item.text,true,false,item.node_name];
+      init[item.id] = [item.node,item.text,true,false,item.node_name,item.wiki_key];
     });
     setCheckedItems(init);
     setOpenDropdownId(null);
@@ -65,7 +65,7 @@ export default function SummarySelectionElement() {
     <Card id="dynamic-checklist" className="mt-4 w-full max-w-2xl grid grid-cols-1 gap-4">
       <CardHeader className="space-y-2">
         <p className="text-sm font-medium text-muted-foreground">
-          {"Please completetete all required items before submission."}
+          {props.topText || "Please completetete all required items before submission."}
         </p>
         <CardTitle>{props.Title || "Action Checklist"}</CardTitle>
         <CardDescription>Complete the steps outlined below. {timeLeft}s left</CardDescription>
@@ -73,7 +73,7 @@ export default function SummarySelectionElement() {
 
       <CardContent className="w-full pt-2">
         {props.items && props.items.length > 0 ? (
-          <div style={{display: 'grid', gridTemplateColumns: '20px 120px 300px', gap: '10px', 'column-gap': '4px', width: '100%'}} className="border-2 border-indigo-500 rounded-lg p-6 bg-card">
+          <div style={{display: 'grid', gridTemplateColumns: '20px 220px 350px', gap: '10px', 'column-gap': '4px', width: '100%'}} className="border-2 rounded-lg p-6 bg-card">
             {Object.entries(checkedItems).map(([id, item]) => {
 
               return(
@@ -89,8 +89,11 @@ export default function SummarySelectionElement() {
                   className="mt-1"/>
               </div>
 
-              <div style={{display: 'flex', alignItems: 'center', textAlign:'center'}} className="col-span-1 space-x-3 py-1 ">
-                {(<span className="text-base px-2 text-foreground " onClick={() => handleToggle(id)} >{checkedItems[id][4]}</span>)}
+              <div style={{display: 'flex', alignItems: 'center', textAlign:'center'}} className="border-2 col-span-1 space-x-3 py-1 ">
+                {(<span className="text-base px-2 text-foreground whitespace-pre-line" onClick={() => handleToggle(id)} >
+                  <strong>{checkedItems[id][4]}</strong>
+                  <br/>
+                ({checkedItems[id][5]})</span>)}
               </div>
 
               <div style={{display: 'flex', alignItems: 'center', textAlign:'center'}} className="col-span-1 space-x-3 py-1 ">

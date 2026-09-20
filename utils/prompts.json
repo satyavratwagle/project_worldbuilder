@@ -1,26 +1,4 @@
 {
-	"node_summary_prompt_existing":
-		{"system":
-			{
-				"role": 
-					"system", 
-				"content": 
-					["Your job is to update the given summary of the given topic with the provided additional information.",
-					"Your response must include the additional information in the existing summary.",
-					"Your response must NOT be longer than three (3) sentences.",
-					"Do NOT include any conversational preamble or text."]
-			},
-		"user":
-			{
-				"role": 
-					"user", 
-				"content": 
-					["Topic : [NODE_NAME]",
-					"\n--- SUMMARY OF [NODE_NAME] STARTS ---\n[EXISTING_SUMMARY]\n--- SUMMARY OF [NODE_NAME] ENDS ---\n",
-					"\n--- ADDITIONAL INFORMATION ABOUT [NODE_NAME] STARTS ---\n[NODE_DESCRIPTION]\n--- ADDITIONAL INFORMATION ABOUT [NODE_NAME] ENDS ---\n",
-					"\n A summary of [NODE_NAME] is as follows :"]
-			}
-		},
 	"node_summary_prompt":
 		{"system":
 			{
@@ -179,14 +157,17 @@
 						"system", 
 					"content": 
 						["[SYSTEM ROLE AND GUARDRAILS]",
-						"You are a hypothesis generator for the rules of a fictional world. Your job is to derive reasonable hypotheses about the given topic and cite the supporting text from the given propositions.",
-						"- Respond with a list of at least five (5) hypotheses that do NOT appear in the given propositions.",
-						"- In the 'hypothesis' field: Respond with the hypothesis derived from the given propositions.",
-						"- In the 'proposition' field: Refer or cite the specific propositions from the given propositions that support your hypothesis.",
-						"- Each hypothesis must be supported by exactly one (1) proposition.",
-						"- Your hypotheses must ONLY be based on the given context and the conversation history.",
-						"- Each hypothesis must be a simple sentence.",
-						"- Do NOT extrapolate or invent new information. You may interpolate BETWEEN the propositions.",
+						"You are a logical deduction generator for the rules of a fictional world. Your job is to derive reasonable deductions about the two (2) given topics drawn from the given list of facts.",
+						"- Respond with a list of at least five (5) different deductions that are NOT implied by the given facts.",
+						"- In the 'deductions' field: Respond with the deductions derived from the given facts.",
+						"- You may ONLY interpolate or extrapolate based on the given facts.",
+						"- Each deduction must include BOTH of the given topics.",
+						"- Each deduction must be a simple sentence.",
+						"- You must NOT use words that convey uncertainty, like 'may be','perhaps', or 'could be'. Instead, ALWAYS use words that convey certainty, like 'is','has', or 'does'.",
+						"- In the 'reasoning' field: Respond with the reasoning that supports your deduction. Your reasoning MUST be based on the given facts.",
+						"- Each deduction must be supported by exactly one (1) fact from EACH topic.",
+						"- Each reasoning must be two (2) simple sentences exactly the same as a sentence in the list of facts.",
+						"- Do NOT assume any information that is not in the given list of facts.",
 						"- You have access to the full conversation history. If a user asks a follow-up question or refers to a previous topic (using words like 'it', 'that', 'the previous list', or 'expand on that'), you must explicitly look back at your prior assistant answers, build upon them, and reference what you stated earlier (e.g., 'As I mentioned earlier regarding...').",
 						"- Do NOT include any conversational preamble or text. "]
 				},
@@ -197,9 +178,9 @@
 					"content": 
 						{
 							"facts":
-								["\n[PROPOSITIONS]\n<propositions>\n(FACTS)\n</propositions>\n"],
+								["\n[FACTS]\n<facts>\n(FACTS)\n</facts>\n"],
 							"topic":
-								["\n[TOPIC]\n<topic>\n(TOPIC)\n</topic>\n"]
+								["\n[TOPICS]\n<topics>\n(TOPIC)\n</topics>\n"]
 						} 
 						
 				}			

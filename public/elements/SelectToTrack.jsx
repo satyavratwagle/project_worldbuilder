@@ -122,10 +122,10 @@ export default function SelectToTrack() {
     }));
   };
 
-  const handleSelectOption = async (item, option) => {
+  const handleSelectOption = (id, option) => {
     setCheckedItems((prev) => ({
       ...prev,
-      [item.id]: [prev[item.id][0], option, true, false],
+      [id]: [prev[id][0], option, true, false],
     }));
     setOpenDropdownId(null);
   };
@@ -210,7 +210,7 @@ export default function SelectToTrack() {
                               <button
                                 key={optIdx}
                                 type="button"
-                                onClick={() => handleSelectOption(item, opt)}
+                                onClick={() => handleSelectOption(id, opt)}
                                 className="block w-full px-3 py-1.5 text-xs text-left text-gray-700 hover:bg-gray-100 truncate"
                               >
                                 {opt}

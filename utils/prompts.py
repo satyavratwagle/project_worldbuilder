@@ -62,15 +62,9 @@ def get_node_summary_prompt(args_dict, history=[]):
 
 	assert 'node_name' in args_dict.keys()
 	assert 'node_description' in args_dict.keys()
-	assert 'existing_summary' in args_dict.keys()
 
-	if(len(args_dict['existing_summary'])>0):
-		history.append(process_prompt(prompts['node_summary_prompt']['system']))
-		history.append(process_prompt(prompts['node_summary_prompt']['user'],args_dict))
-
-	else:
-		history.append(process_prompt(prompts['node_summary_prompt']['system']))
-		history.append(process_prompt(prompts['node_summary_prompt']['user'],args_dict))
+	history.append(process_prompt(prompts['node_summary_prompt']['system']))
+	history.append(process_prompt(prompts['node_summary_prompt']['user'],args_dict))
 	return history
 
 def get_text_decomposition_prompt(args_dict,history=[]):

@@ -50,11 +50,7 @@ class DU_Tests:
         self.du.save_graph()
 
 test = DU_Tests()
-#for i in range(111,120):
-#    test.add_test_node(f"testnode{i}","testtype1","test summary")
-#test.save_graph()
-#test.save_to_faiss()
-#print(test.du.knowledge_graph.nodes['marushar'])
-#text, conlist = test.du.get_graph_rag_context("Who is Mahamun?",threshold=0.5,k=10)
-print(test.du.graph_multihop("citta"))
-#print(text)
+for node in test.du.get_all_nodes():
+
+    edge_data = test.du.knowledge_graph.edges(node['id'],data=True)
+    print(any([test.du.knowledge_graph.nodes[node['id']]['updated']<e[-1]['updated'] for e in edge_data]))

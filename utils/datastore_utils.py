@@ -261,7 +261,8 @@ class DatastoreUtilities():
         tags_dict = dict()
         tags_dict[slugify_key(head)] = []
         tags_dict[slugify_key(tail)] = []
-        self.knowledge_graph.add_edge(slugify_key(head), slugify_key(tail),desc=text,parsed=False,key=str(self.edge_key),tags=tags_dict, endpoints=[head,tail])
+        time_now = int(time.time())
+        self.knowledge_graph.add_edge(slugify_key(head), slugify_key(tail),desc=text,parsed=False,key=str(self.edge_key),tags=tags_dict, updated=time_now, endpoints=[head,tail])
         self.edge_key += 1
 
         return str(self.edge_key-1)
@@ -303,6 +304,7 @@ class DatastoreUtilities():
     def set_edge_tags(self,edge,topic,tag):
         head,tail,key,metadata = edge
         self.knowledge_graph.edges[head,tail,key]['tags'][topic] = [tag]
+        self.knowledge_graph.edges[head,tail,key]['updated'] = int(time.time())
 
     def get_num_edges(self):
         # Return the number of edges in the graph
@@ -434,6 +436,10 @@ class DatastoreUtilities():
             node_descriptions[node['id']] = list(self.knowledge_graph.edges(node['id'],keys=True,data=True))
         return node_descriptions
 
+    def is_node_updated(self,node):
+        edge_data = self.knowledge_graph.edges(node,data=True)
+        return not(any([self.knowledge_graph.nodes[node]['updated']<e[-1]['updated'] for e in edge_data]))
+
     # UPDATE THIS
     def get_nodes_to_add_to_faiss(self):
         # Return a list of nodes that have been updated, but not added to the FAISS dataset
@@ -462,21 +468,6 @@ class DatastoreUtilities():
             self.knowledge_graph.nodes[node_id]['updated']  = int(time.time())
             self.knowledge_graph.nodes[node_id]['saved']    =  -int(time.time())
 
-    # GRAPH FUNCTIONS
-
-    def graph_multihop(self,node,n_hops=1,neighborhood=[]):
-
-        if(len(neighborhood)==0):
-            neighborhood = [node]
-
-        if(n_hops>0):
-            node_neighbors = self.knowledge_graph.neighbors(node)
-            for neighbor in node_neighbors:
-                if(not(neighbor in neighborhood)):
-                    neighborhood.append(neighbor)
-                    new_set = self.graph_multihop(neighbor,n_hops=(n_hops-1),neighborhood=neighborhood)
-        return neighborhood
-            
     def check_if_node_exists(self,node):
         return self.knowledge_graph.has_node(slugify_key(node))
 
@@ -523,9 +514,24 @@ class DatastoreUtilities():
         
     def get_node_summary(self,node):
         return self.knowledge_graph.nodes[node]['wiki']['summary'] if self.knowledge_graph.has_node(node) else None
+    
+    # GRAPH FUNCTIONS
+
+    def graph_multihop(self,node,n_hops=1,neighborhood=[]):
+
+        if(len(neighborhood)==0):
+            neighborhood = [node]
+
+        if(n_hops>0):
+            node_neighbors = self.knowledge_graph.neighbors(node)
+            for neighbor in node_neighbors:
+                if(not(neighbor in neighborhood)):
+                    neighborhood.append(neighbor)
+                    new_set = self.graph_multihop(neighbor,n_hops=(n_hops-1),neighborhood=neighborhood)
+        return neighborhood
 
     def get_unparsed_edges(self,node):
-        unparsed_edges = [edge for edge in self.knowledge_graph.edges(node,keys=True,data=True) if not(edge[3]['parsed'])]
+        unparsed_edges = [edge for edge in self.knowledge_graph.edges(node,keys=True,data=True) if self.knowledge_graph.nodes[node]['updated']<edge[3]['updated']]
         return unparsed_edges
 
     def get_node_summaries(self,nodes):
@@ -705,6 +711,7 @@ class DatastoreUtilities():
                     all_paths.append(nx.shortest_path(self.knowledge_graph, source=source, target=target))
 
             all_paths = sorted(all_paths,key=len,reverse=True)
+            print(all_paths)
 
             filtered_paths = []
             for path in all_paths:
