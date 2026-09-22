@@ -48,6 +48,8 @@ import mlx.core as mx
 import psutil
 import difflib
 import time
+import ollama
+import copy
 
 helpers = [ {"id":"Ideate", "icon":"lightbulb", "description":"Add ideas to knowledge base"},
             {"id":"Brainstorm", "icon":"lightbulb", "description":"Brainstorm for new ideas"},
@@ -77,6 +79,7 @@ punctuation_tuple = tuple(string.punctuation)
 
 # Engineering functions (synchronous)
 
+'''
 @lru_cache(maxsize=32)
 def get_or_create_generator(model, schema_class):
   return outlines.Generator(model,schema_class)
@@ -108,6 +111,21 @@ def _sync_generate(prompt, max_tokens, temperature, template):
         else:
             sampler = make_sampler(temp=temperature)
             return generator_model(prompt, sampler=sampler, max_tokens=max_tokens)
+'''
+
+def update_system_prompt(prompt_name):
+
+    system_prompt = copy.deepcopy(prompts_lookup[prompt_name]['system'])
+    system_prompt['content'] = '\n'.join(system_prompt['content'])
+
+    chat_history = cl.user_session.get("chat_history")
+    if(len(chat_history)>0):
+        chat_history[0] = system_prompt
+    else:
+        chat_history = [system_prompt]
+    cl.user_session.set("chat_history",chat_history)
+
+
 
 def create_json_dict(name,type):
 
@@ -140,73 +158,30 @@ async def update_graph_element(node_info):
     return graph_element
 
 @cl.cache
-def load_extraction_model():
-    #extraction_model_id = config["gliner_dir"]+'/checkpoint-1000'
-    extraction_model_id = "knowledgator/gliner-relex-large-v1.0"
-    extraction_model = GLiNER.from_pretrained(extraction_model_id)
-    #extraction_model.config.max_span_width = 
+def load_modules():
 
-    return extraction_model
+    du = DatastoreUtilities(config)
+    du.load_embedding_model()
 
+    sem = SemanticTools(config)
+    sem.load_extraction_model()
+    sem.load_nli_model()
+    sem.load_zsc_model()
+
+    return du, sem
+
+'''
 @cl.cache
 def load_models():    
 
-    #quant_config = Int8WeightOnlyConfig()
-    #quantization_config = TorchAoConfig(quant_type=quant_config)
-    #,quantization_config=quantization_config
-    #hf_model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="mps")
-    #tokenizer = AutoTokenizer.from_pretrained(model_id)
-    #model = outlines.from_transformers(hf_model, tokenizer)
-
-    mlx_model, tokenizer = mlx_lm.load(config['model_dir']+'/'+config['model_id'])
-    model = outlines.from_mlxlm(mlx_model, tokenizer)
-    generator_model = outlines.Generator(model)
-    #model = outlines.generate.regex(hf_modela, english_regex)
-
+    #mlx_model, tokenizer = mlx_lm.load(config['model_dir']+'/'+config['model_id'])
+    #model = outlines.from_mlxlm(mlx_model, tokenizer)
+    #generator_model = outlines.Generator(model)
     return model, tokenizer, generator_model
+'''
 
-@cl.cache
-def load_nli_models(): 
 
-    nli_model_id        = "cross-encoder/nli-deberta-v3-large"
-    nli_max_length = 512
-
-    # Load and update the configuration to accommodate larger token lengths
-    config = AutoConfig.from_pretrained(nli_model_id)
-    config.max_position_embeddings = nli_max_length
-    config.max_relative_positions = nli_max_length
-    
-    nli_tokenizer = AutoTokenizer.from_pretrained(nli_model_id)
-    nli_tokenizer.model_max_length = nli_max_length
-    nli_model = AutoModelForSequenceClassification.from_pretrained(nli_model_id,config=config)
-
-    return nli_model,nli_tokenizer
-
-#outline_model, tokenizer, generator_model = load_models()
-#embed_model = load_embedding_models()
-extraction_model  = load_extraction_model()
-
-du = DatastoreUtilities(config)
-du.load_embedding_model()
-
-sem = SemanticTools(config)
-sem.load_extraction_model(extraction_model)
-
-nli_model,nli_tokenizer = load_nli_models()
-sem.load_nli_model(nli_model,nli_tokenizer)
-sem.load_zsc_model("knowledgator/gliclass-modern-base-v3.0")
-
-# TOOLS
-
-available_tools = [{
-    "name": "retrieve_local_notes",
-    "description": "Looks up local context. Use this tool when the user context does not contain useful information to answer the query.",
-    "input_schema": {
-        "type": "object",
-        "properties": {"query": {"type": "string"}, "threshold": {"type": "float"}, "k": {"type": "int"}},
-        "required": ["query"]
-    }
-}]
+du,sem = load_modules()
 
 # Legacy
 async def get_most_relevant_file(query: str, threshold: float = 0.4, k = 1) -> str:
@@ -738,9 +713,12 @@ async def update_datastore(action: cl.Action):
 
 async def retrieve_graph_rag(query,threshold=0.4,k=10,hops=1):
 
-    retrieved_context_list,context_edges = du.get_graph_rag_context(query,threshold,k)
+    context,context_edges = du.get_graph_rag_context(query,threshold,k)
+    print('retrieve_graph_rag')
+    print(context)
+    print()
 
-    return '\n'.join(retrieved_context_list),context_edges
+    return context,context_edges
 
 #############
 
@@ -757,27 +735,6 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
         extracted_pos,doc = sem.extract_pos(og_text)
         head,relation,tail = sem.get_triplets(extracted_pos,doc)
         text,clusters,doc = sem.get_coref_clusters(og_text)
-
-        '''aliased_entities = []
-        for cluster in clusters:
-
-            temp_cluster = cluster+['Choose New','Skip']
-            response = await cl.AskActionMessage(
-                content = 'What alias should be used?',
-                actions = [cl.Action(name=name,payload={'alias':name},label=name) for name in temp_cluster],
-                timeout = 60).send()
-
-            if(response['name']=='Choose New'):
-                response = await cl.AskUserMessage(
-                content = 'Please provide a new Alias!',
-                timeout = 60).send()
-                aliased_entities.append((cluster,response['output']))
-            elif(not(response['name']=='Skip')):
-                aliased_entities.append((cluster,response['name']))
-
-        #await cl.Message(content=og_text).send()
-        resolved_text = sem.resolve_coreferences(og_text,aliased_entities)
-        await cl.Message(content=resolved_text).send()'''
 
         resolved_text = og_text
 
@@ -906,9 +863,9 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
 
             du.save_graph()
 
-async def summarize_nodes(graph_name='graph'):
+async def audit_graph(graph_name='graph'):
 
-    # Summarize a node based on the descriptions
+    # Identify new connections and resolve old ones.
 
     async with cl.Step(name="Finding New Connections",icon="lightbulb") as step:
         # Find similar edges and keep one.
@@ -916,7 +873,7 @@ async def summarize_nodes(graph_name='graph'):
         du.save_graph()
         for similar_edges in edges_to_resolve:
             if(len(similar_edges)>1):
-                actions=[cl.Action(name=edge[3], payload={"edge_data":edge}, label=f"{edge[0]} to {edge[1]} key {edge[2]} : {edge[3]}") for edge in similar_edges]
+                actions=[cl.Action(name=edge[3], payload={"edge_data":edge}, label=f"{edge[0]} to {edge[1]}: {edge[3]}") for edge in similar_edges]
                 response = await cl.AskActionMessage(content="Which description would you like to keep?",actions=actions,timeout=60).send()
                 selected_edge = tuple(response['payload']['edge_data'])
                 edges_to_delete = [edge for edge in similar_edges if not(edge==selected_edge)]
@@ -992,6 +949,9 @@ async def update_node_wikis(graph_name='graph'):
 
                 async with cl.Step(name=f'Updating Information about {node['name']}',icon="lightbulb") as step:
 
+                    chat_history = cl.user_session.get("chat_history")
+                    chat_history = []
+
                     # Create a temporary wiki to store the information
                     temp_wiki = dict()
                     temp_wiki['summary'] = ""
@@ -1012,17 +972,23 @@ async def update_node_wikis(graph_name='graph'):
                     props_dict["node_description"]  = new_information
 
                     history = prompts.get_node_summary_prompt(props_dict,history)
-                    new_summary = await tokenize_and_generate(history,temperature=0.3,max_new_tokens=128)
+                    cl.user_session.set("chat_history",history)
+                    update_system_prompt("node_summary_prompt")
 
-                    new_summaries.append((node['id'],node['name'],new_summary,'summary'))
+                    new_summary = await tokenize_and_generate(temperature=0.3,max_new_tokens=128)
 
-                    print(f'New Summary of {node['name']} : {new_summary}')
+                    new_summaries.append((node['id'],node['name'],new_summary.message.content,'summary'))
+
+                    print(f'New Summary of {node['name']} : {new_summary.message.content}')
                     print()
 
                     # topic = node['id']
 
                     # Update each key in the wiki
                     for key in temp_wiki.keys():
+
+                        chat_history = cl.user_session.get("chat_history")
+                        chat_history = []
 
                         wiki_information = [edge[3]['desc'] for edge in du.knowledge_graph.edges(node['id'],keys=True,data=True) if edge[3]['tags'][node['id']][0]==key]
                         print(key," : ",wiki_information)
@@ -1035,9 +1001,11 @@ async def update_node_wikis(graph_name='graph'):
 
                             history = []
                             history = prompts.get_node_wiki_prompt(props_dict,history)
-                            wiki_entry = await tokenize_and_generate(history,temperature=0.3,max_new_tokens=512)
+                            cl.user_session.set("chat_history",history)
+                            update_system_prompt("node_wiki_prompt")
+                            wiki_entry = await tokenize_and_generate(temperature=0.3,max_new_tokens=512)
 
-                            new_summaries.append((node['id'],node['name'],wiki_entry,key))
+                            new_summaries.append((node['id'],node['name'],wiki_entry.message.content,key))
 
                         if(len(wiki_information)==1):
                             new_summaries.append((node['id'],node['name'],wiki_information[0],key))
@@ -1056,7 +1024,8 @@ async def update_node_wikis(graph_name='graph'):
         du.set_node_wiki_description(node_id,key,description)
     
         edge_data = du.get_edges_from(node_id)
-        for head,tail,key,data in edge_data:
+        for edge in edge_data:
+            head,tail,key,data = edge
             du.parse_edge(head,tail,key)
 
     #du.save_graph()
@@ -1166,29 +1135,6 @@ async def create_schema_element(entity,label,schema,message="Please describe you
 
 #############
 
-async def decompose_text(text,topics=[],temperature=0.2):
-    # topics : list (List of topics to focus on)
-    settings = cl.user_session.get('settings')
-
-    background_info = '\n'.join([summary for summary in du.get_node_summaries(topics) if summary])
-
-    history = []
-
-    props_dict = dict()
-    props_dict['topics']                = '; '.join(topics)
-    props_dict['text']                  = text
-    props_dict['background_knowledge']  = background_info
-
-    chat_history = prompts.get_text_decomposition_prompt(props_dict,history=[])
-    print(chat_history)
-    summary_response = await tokenize_and_generate(chat_history,temperature=settings['temperature'],max_new_tokens=512)
-    propositions = summary_response.split('.')
-
-    # Filter out empty strings
-    propositions = ' '.join([p.strip()+'.' for p in propositions if len(p)>0])
-
-    return propositions
-
 @cl.step(name='Check Context Sufficiency')
 async def check_context_sufficiency(proposition,context_dict):
 
@@ -1227,9 +1173,40 @@ async def check_context_sufficiency(proposition,context_dict):
 
 #############
 
-# Core Functions
+# Core LLM Functions
 
 #############
+
+async def decompose_text(text,topics=[],temperature=0.2):
+    # topics : list (List of topics to focus on)
+
+    # Clear out chat history to avoid cross-contamination
+    chat_history = cl.user_session.get("chat_history")
+    chat_history = []
+    cl.user_session.set("chat_history",chat_history)
+
+    settings = cl.user_session.get('settings')
+
+    background_info = '\n'.join([summary for summary in du.get_node_summaries(topics) if summary])
+
+    props_dict = dict()
+    props_dict['topics']                = '; '.join(topics)
+    props_dict['text']                  = text
+    props_dict['background_knowledge']  = background_info
+
+    chat_history = prompts.get_text_decomposition_prompt(props_dict,history=chat_history)
+    print('Text Decomp Prompt')
+    print(chat_history)
+    print()
+    summary_response = await tokenize_and_generate(temperature=settings['temperature'],max_new_tokens=512)
+    print(summary_response)
+    output_text = summary_response.message.content
+    propositions = output_text.split('.')
+
+    # Filter out empty strings
+    propositions = ' '.join([p.strip()+'.' for p in propositions if len(p)>0])
+
+    return propositions
 
 async def brainstorm(user_topic):
 
@@ -1270,7 +1247,7 @@ async def brainstorm(user_topic):
         user_message = context_text+" "+user_topic
         history.append({"role":"user","content":user_message})
 
-    brainstormed_json = await tokenize_and_generate(history,max_new_tokens=1024,temperature=settings['temperature'],template=ReasonedResponse)
+    brainstormed_json = await tokenize_and_generate(max_new_tokens=1024,temperature=settings['temperature'],template=ReasonedResponse)
     idea = ReasonedResponse.model_validate_json(brainstormed_json)
 
     actions = [cl.Action(
@@ -1290,19 +1267,188 @@ async def brainstorm(user_topic):
 
     # Save Datapoint (Optional)
 
-async def hypothesize(user_topic):
+async def retrieve_context(topic,entity_threshold=0.25,rag_threshold=0.5,k=10):
 
     settings = cl.user_session.get('settings')
-    history = cl.user_session.get("chat_history")
+    #topic_with_context = await add_entity_context(topic,entity_threshold)
+    context_text,context_edges = await retrieve_graph_rag(topic,threshold=settings['rag_threshold'],k=k)
 
-    if(len(history)==0):
-        # Select Random Node
-        if(du.check_if_node_exists(user_topic)):
-            node = {"id":du.get_node_id(user_topic),"name":du.knowledge_graph.nodes[du.get_node_id(user_topic)]['name']}
-        else:
-            node = du.get_random_node()
-            print(f"Randomly selected {node}")
-        await cl.Message(content=f"Hypothesizing about {node['name']}").send()
+    return context_text,context_edges
+
+async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None, use_chat_template=True):
+
+    chat_history = cl.user_session.get("chat_history")
+
+    settings = cl.user_session.get("settings")
+
+    '''synthesis_prompt = tokenizer.apply_chat_template(
+                                chat_history,
+                                tokenize=False,
+                                add_generation_prompt=True
+                                )
+    
+    # This guarantees execution happens strictly on your single worker thread (mlx_executor)
+    answer = await loop.run_in_executor(
+        mlx_executor,
+        _sync_generate,
+        synthesis_prompt, 
+        max_new_tokens, 
+        settings['temperature'], 
+        template
+    )'''
+
+    msg = cl.Message(content="")
+
+    if(template):
+        response_stream = ollama.chat(
+                                    model='llama3.1:8b',
+                                    messages=chat_history,
+                                    #tools=tools_json,
+                                    options={
+                                                'temperature': settings['temperature'],      # Controls randomness (0.0 = deterministic, 1.0 = creative)
+                                                'num_predict': max_new_tokens       # Equivalent to max tokens (maximum tokens to generate)
+                                            },
+                                    format=template.model_json_schema()
+                                    )
+    else:
+        response_stream = ollama.chat(
+                                    model='llama3.1:8b',
+                                    messages=chat_history,
+                                    #tools=tools_json,
+                                    options={
+                                                'temperature': settings['temperature'],      # Controls randomness (0.0 = deterministic, 1.0 = creative)
+                                                'num_predict': max_new_tokens       # Equivalent to max tokens (maximum tokens to generate)
+                                            },
+                                    )
+
+        
+
+    return response_stream
+    
+async def reason_and_answer(message):
+
+    # Retrieve Base Context
+    context_text,context_edges = await retrieve_context(message.content)
+
+    props_dict = dict()
+    props_dict['user_query'] = message.content
+    props_dict['local_context'] = context_text
+
+    chat_history = cl.user_session.get("chat_history")
+    chat_history = prompts.get_reasoned_generation_prompt(props_dict,chat_history)
+
+    response = await tokenize_and_generate(max_new_tokens=1024,temperature=0.3,template=ReasonedResponse)
+
+    #response = ReasonedResponse.model_validate_json(json_answer)
+
+    '''actions = [cl.Action(
+            name="show_reasoning",
+            icon="message-circle-question-mark",
+            payload={'content':response.scratchpad},
+            label="Show Reasoning"
+            ),
+            cl.Action(
+            name="show_context",
+            icon="question-mark",
+            payload={'context_edges':context_edges},
+            label="Show Context"
+            )]'''
+
+    #await cl.Message(content=response.answer,actions=actions).send()
+
+#############
+
+# TOOLS LIST
+
+#############
+
+async def choose_and_use_tool(user_message):
+
+    chat_history = cl.user_session.get("chat_history")
+    settings = cl.user_session.get("settings")
+
+    if(len(chat_history)==0):
+        update_system_prompt("reasoned_answer_prompt")
+
+    chat_history.append({
+                            'role': 'user', 
+                            'content': f"{user_message.content}"
+                        })
+
+    cl.user_session.set("chat_history",chat_history)
+
+    response = ollama.chat(
+                            model='llama3.1:8b',
+                            messages=chat_history,
+                            #tools=tools_json,
+                            options={
+                                        'temperature': 0.3,      # Controls randomness (0.0 = deterministic, 1.0 = creative)
+                                        'num_predict': 512       # Equivalent to max tokens (maximum tokens to generate)
+                                    },
+                            tools = tools_list
+                            )
+
+    if response.message.tool_calls:
+        for tool in response.message.tool_calls:
+            print(f"Tool called: {tool.function.name}")
+            print(f"Arguments: {tool.function.arguments}")
+
+            function_name = tool.function.name
+            function_args = tool.function.arguments
+
+            if function_name in available_tools:
+                tool_to_call = available_tools[function_name]
+                response_stream = await tool_to_call(**function_args)
+                return response_stream
+
+async def respond_with_tool_output(tool_output):
+
+    chat_history = cl.user_session.get("chat_history")
+    settings = cl.user_session.get('settings')
+
+    chat_history.append({
+                            "role": "tool",
+                            "content": tool_output,
+                        })
+                        
+    # 5. Second API call: Send history back so the model can read the tool output and reply to user
+    print("\nSending tool output back to the model for final response...")
+    final_response_stream = ollama.chat(
+        model='llama3.1:8b',
+        messages=chat_history,
+        options={
+                    'temperature': settings['temperature'],      # Controls randomness (0.0 = deterministic, 1.0 = creative)
+                    'num_predict': 512       # Equivalent to max tokens (maximum tokens to generate)
+                },
+        stream = True
+    )
+
+    return final_response_stream
+
+
+
+@cl.step(type="tool",name="Local Context to Answer Question")
+async def default_tool(user_message):
+    context_text,context_edges = await retrieve_context(user_message)
+    update_system_prompt('reasoned_answer_prompt')
+    response_stream = await respond_with_tool_output(context_text)
+    return response_stream
+
+
+async def hypothesize(user_topic):
+
+    # Switch out system prompt
+    update_system_prompt('brainstorming_prompt')
+
+    # Select Random Node
+    if(du.check_if_node_exists(user_topic)):
+        node = {"id":du.get_node_id(user_topic),"name":du.knowledge_graph.nodes[du.get_node_id(user_topic)]['name']}
+    else:
+        node = du.get_random_node()
+        print(f"Randomly selected {node}")
+
+
+    with cl.Step(name=f"Hypothesizing about {node['name']}",icon="lightbulb") as step:
 
         # Use all neighbors of a node
         neighbors = du.graph_multihop(node['id'],2)
@@ -1321,214 +1467,45 @@ async def hypothesize(user_topic):
         propositions += '\n- '.join([item['desc'] for item in du.knowledge_graph.get_edge_data(node['id'],neighbors[1]).values()])
 
 
-        props_dict['facts'] = propositions#"\n- "+"\n- ".join(propositions)
+        props_dict['facts'] = propositions
+        response_stream = await respond_with_tool_output(propositions)
+        return response_stream
 
+@cl.step(type="tool",name="Elaborate")
+async def elaborate(topic_description):
 
+    head = du.get_relevant_nodes(topic_description,k=1, threshold=0.4)[0]
 
-        # Generate an LLM Output
-        history = prompts.get_hypothesizing_prompt(props_dict,history)
-    else:
-        context_text,context_edges = await retrieve_context(user_topic)
-        user_message = context_text+" "+user_topic
-        history.append({"role":"user","content":user_message})
+    with cl.Step(name=f"Elaborating upon {head}",icon="lightbulb") as step:
+        nodes = du.graph_multihop(head)
+        paths = du.find_all_unique_paths_from(head,nodes)
+        context = du.extract_path_info(paths)
+        context_text = du.format_path_context(context)
+        response_stream = await respond_with_tool_output(context_text)
+        return response_stream
 
-    print(history)
-    hypotheses_json = await tokenize_and_generate(history,max_new_tokens=1024,temperature=settings['temperature'],template=HypothesisList)
-    print(hypotheses_json)
-    hypotheses = HypothesisList.model_validate_json(hypotheses_json)
-    print(hypotheses)
-    print()
-
-    history.append({"role": "assistant", "content": hypotheses})
-    cl.user_session.set("chat_history", history)
-
-    for deduction_set in hypotheses.deductions:
-        await cl.Message(content=f"{deduction_set.deduction} [BECAUSE] {deduction_set.reasoning}").send()
-
-    # Log User Response
-
-    # Save Datapoint (Optional)
-
-@cl.step(name='Retrieve Context')
-async def retrieve_context(topic,entity_threshold=0.25,rag_threshold=0.5,k=10):
-
-    settings = cl.user_session.get('settings')
-    #topic_with_context = await add_entity_context(topic,entity_threshold)
-    context_text,context_edges = await retrieve_graph_rag(topic,threshold=settings['rag_threshold'],k=k)
-
-    return context_text,context_edges
-
-async def tokenize_and_generate(chat_history,max_new_tokens=256,temperature=0.6,template=None, use_chat_template=True):
-
-    settings = cl.user_session.get("settings")
-
-    synthesis_prompt = tokenizer.apply_chat_template(
-                                chat_history,
-                                tokenize=False,
-                                add_generation_prompt=True
-                                )
-
-    loop = asyncio.get_running_loop()
-    
-    # This guarantees execution happens strictly on your single worker thread (mlx_executor)
-    answer = await loop.run_in_executor(
-        mlx_executor,
-        _sync_generate,
-        synthesis_prompt, 
-        max_new_tokens, 
-        settings['temperature'], 
-        template
-    )
-
-    '''answer = await asyncio.to_thread(_sync_generate,
-        synthesis_prompt, 
-        max_new_tokens, 
-        temperature, 
-        template
-    )'''
-
-    '''answer = _sync_generate(
-        synthesis_prompt, 
-        max_new_tokens, 
-        temperature, 
-        template
-    )'''
-
-    return answer
-
-async def identify_additional_context(user_input,context_text):
-        synthesis_history = [
-                            {"role": "system", "content": f"You are a helpful writing assistant. You must answer with at least 3 and at most 5 additional questions that will help answer the user query with local context. You cannot ask the user query as a question. Your response must be in the form of bullet points using the bullet marker '*'"},
-                            {"role": "user", "content": f"User Query: {user_input}\n\nLocal Context :\n{context_text}"},
-                            ]
-
-        additional_queries = await tokenize_and_generate(synthesis_history,temperature=0.3)
-        questions = re.findall(r'\*\s([^\n]+)',additional_queries)
-
-        is_answered = False
-        for question in questions:
-            context_text,answered = await get_context_from_user(question,context_text)
-            is_answered = is_answered or answered
-            print(answered,is_answered)
-
-
-        return context_text,is_answered
-
-async def get_context_from_user(question,context_text):
-
-    res = await cl.AskActionMessage(
-                content=question,
-                actions=[
-                    cl.Action(name="answer", payload={"value": "answer"}, label="Answer"),
-                    cl.Action(name="skip", payload={"value": "skip"}, label="Skip"),],
-                    ).send()
-
-    answered = False
-    if res and res.get("payload").get("value") == "answer":
-        answer = await cl.AskUserMessage(content=q, timeout=120).send()
-
-        await cl.Message(content=answer['output'],actions=persistent_actions).send()
-        context_text += f' {answer['output']}'
-
-        # Sending an action button within a chatbot message (NOT NEEDED)
-        actions = [
-            cl.Action(
-                name="add_to_knowledge_base",
-                icon="plus-sign",
-                payload={"idea":answer['output']},
-                label="Add to Knowledge Base"
-            )
-        ]
-
-        await delete_last_message()
-
-        answered = True
-
-    return context_text,answered
-
-async def check_idea_for_contradictions(message,contradiction_threshold=0.9):
-
-    # DO NOT USE AS IS
-
-    hypothesis_topics = du.find_topics_in_text(message.content)
-    hypothesis_context = du.get_node_summaries(hypothesis_topics)
-
-    # Decompose user text
-    history = []
-    history = prompts.get_decomposition_prompt(message.content,hypothesis_topics,history)
-    response = await tokenize_and_generate(history,max_new_tokens=256,temperature=0.3)
-    decomposition = [statement.strip() for statement in response.split('.')]
-    print(response)
-
-    # Get relevant context chains
-    context_text = du.get_graph_rag_context(message.content,0.5,5)
-
-    found_contradiction = False
-    for hypothesis in decomposition:
-        for premise_list in context_text:
-            for premise in premise_list.split('.'):
-                if(len(hypothesis)>0 and len(premise)>0):
-
-                    premise_topics = [topic for topic in du.find_topics_in_text(message.content) if not(topic in hypothesis_topics)]
-                    premise_context = du.get_node_summaries(premise_topics)
-                    print(premise)
-
-                    context = ' '.join(hypothesis_context)
-
-                    # Get entailment scores between pairs
-                    probs = sem.get_entailment_probs(premise,hypothesis,context)
-                    print(probs)
-
-                    if(probs[0]>contradiction_threshold):
-
-                        if(not(found_contradiction)):
-                            await cl.Message(content=f"Found the following lore that conflicts with your ideas!").send()
-                            found_contradiction = True
-
-                        
-                        await cl.Message(content=f"{premise}").send()
-
-                    # Keep track of relelvance of user text and chain
-
-                    # If contradiction, respond
-    
-@cl.step(name='Local Context to Reason and Answer')
-async def reason_and_answer(message):
-
-    # Retrieve Base Context
-    context_text,context_edges = await retrieve_context(message.content)
-
-    props_dict = dict()
-    props_dict['user_query'] = message.content
-    props_dict['local_context'] = context_text
-
-    chat_history = cl.user_session.get("chat_history")
-    chat_history = prompts.get_reasoned_generation_prompt(props_dict,chat_history)
-
-    json_answer = await tokenize_and_generate(chat_history,max_new_tokens=1024,temperature=0.3,template=ReasonedResponse)
-
-    response = ReasonedResponse.model_validate_json(json_answer)
-
-    actions = [cl.Action(
-            name="show_reasoning",
-            icon="message-circle-question-mark",
-            payload={'content':response.scratchpad},
-            label="Show Reasoning"
-            ),
-            cl.Action(
-            name="show_context",
-            icon="question-mark",
-            payload={'context_edges':context_edges},
-            label="Show Context"
-            )]
-
-    await cl.Message(content=response.answer,actions=actions).send()
 
 #############
 
 # MAIN APP START
 
 #############
+
+with open('utils/tools.json', "r", encoding="utf-8") as f:
+    tools = json.load(f)
+
+with open('utils/prompts.json', "r", encoding="utf-8") as f:
+    prompts_lookup = json.load(f)
+
+tools_list = [tool_desc for tool_desc in tools.values()]
+print(tools_list)
+print()
+
+available_tools = {
+    "hypothesize":hypothesize,
+    "elaborate":elaborate,
+    "default_tool":default_tool,
+}
 
 @cl.on_settings_update
 async def on_settings_update(settings: dict):
@@ -1540,11 +1517,7 @@ async def on_settings_update(settings: dict):
 @cl.on_chat_start
 async def on_chat_start():
 
-    global mlx_executor 
-
-    for head,tail,key,edge_dict in du.knowledge_graph.edges(data=True,keys=True):
-        print(du.knowledge_graph.edges[head,tail,key])
-        #self.knowledge_graph.nodes[node]['updated'] = int(time.time()
+    #global mlx_executor 
 
     props = {"title":"",
                 "subtitle":"",
@@ -1559,11 +1532,11 @@ async def on_chat_start():
     cl.user_session.set("graph_element", graph_element)
     cl.user_session.set("chat_history", [])
     
-    mx.metal.clear_cache()
-    mlx_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    #mx.metal.clear_cache()
+    #mlx_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(mlx_executor, _sync_load_models)
+    #loop = asyncio.get_running_loop()
+    #await loop.run_in_executor(mlx_executor, _sync_load_models)
 
     settings = await cl.ChatSettings(
         [
@@ -1619,7 +1592,7 @@ async def on_message(user_message: cl.Message):
             await get_gist(user_message)
     elif(selected_mode=='Update'):
 
-        await summarize_nodes('lore_graph')
+        await audit_graph('lore_graph')
         await assign_edge_labels('lore_graph')
         await update_node_wikis('lore_graph')
         await save_to_faiss()
@@ -1695,18 +1668,37 @@ async def on_message(user_message: cl.Message):
             cl.user_session.set("awaiting_input_node", False)
 
         else:
-            if not user_message.elements:
-                await reason_and_answer(user_message)
-                #await extract_knowledge_graph(user_message.content,'test')
-                #await cl.Message(content='What are you trying to do?').send()
-                
-            else:
-                file = user_message.elements[0]
-                text = io_utils.get_text(file.path)
-                resolved_text = sem.resolve_coreferences(text)
-                chunks = resolved_text.split('\n\n')
-                #chunks = pre.get_chunks(resolved_text,300)
-     
+
+            #result = await elaborate(user_message.content)
+            #print(result)
+
+            if(True):
+
+                final_response_stream = await choose_and_use_tool(user_message)
+                content = ""
+
+                msg = cl.Message(content="")
+                for chunk in final_response_stream:
+                    print(chunk.message.content, end='', flush=True)
+                    await msg.stream_token(chunk.message.content)
+                    content += chunk.message.content
+
+                    if chunk.get('done', False):
+                        prompt_tokens = chunk.get('prompt_eval_count',0)
+                        output_tokens = chunk.get('eval_count',0)
+                        print('Input prompt length is currently',prompt_tokens+output_tokens)
+
+                await msg.update()
+
+                chat_history = cl.user_session.get("chat_history")
+
+                chat_history.append({
+                                        "role": "assistant",
+                                        "content": content,
+                                    })
+
+                cl.user_session.set("chat_history",chat_history)
+
 @cl.on_chat_end
 async def end_chat():
     #await update_datastore()

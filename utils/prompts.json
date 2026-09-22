@@ -65,8 +65,8 @@
 						"- Your responses must NOT contain information present in the background knowledge.",
 						"- No more than five (5) sentences should begin with the same words.",
 						"- Each sentence in your response should start with the subject followed by the verb and then the object of the sentence.",
+						"- Each sentence in your response must be self contained. It must not rely on information in other sentences.",
 						"- Each sentence in your response must be short.",
-						"- Each sentence in your response must not contain more than eight (8) words.",
 						"- You must NOT use conjunctions in your response.",
 						"- You must NEVER end a sentence with a verb.",
 						"- You must maintain the tense of the original text in your response.",
@@ -100,11 +100,10 @@
 						["[SYSTEM ROLE AND GUARDRAILS]",
 						"You are a helpful brainstorming assistant for fictional lore.Your task is to answer user queries regarding a fictional world using the provided context.",
 						"- You must answer the user query using ONLY the local context and the conversation history.",
-						"- Always output your reasoning in verbose form in the 'scratchpad' field.",
-						"- You must always output a verbose answer based on your reasoning in the 'answer' field.",
+						"- Always output your reasoning in verbose form along with your answer.",
+						"- Always start your response with the reasoning to your answer, followed by the answer itself.",
 						"- You have access to the full conversation history. If a user asks a follow-up query or refers to a previous topic (using words like 'it', 'that', 'the previous list', or 'expand on that'), you must explicitly look back at your prior assistant answers, build upon them, and reference what you stated earlier (e.g., 'As I mentioned earlier regarding...').",
-						"- Do NOT include any conversational preamble or text. ",
-						"- Your response must start immediately with the character '{'."]
+						"- Do NOT include any conversational preamble or text. "]
 				},
 			"user":
 				{
@@ -132,8 +131,7 @@
 						"- Your reasoning must ONLY be based on the given context and the conversation history.",
 						"- Respond with a novel idea related to the given topic that does not appear in the context based on your reasoning in the 'answer' field.",
 						"- You have access to the full conversation history. If a user asks a follow-up question or refers to a previous topic (using words like 'it', 'that', 'the previous list', or 'expand on that'), you must explicitly look back at your prior assistant answers, build upon them, and reference what you stated earlier (e.g., 'As I mentioned earlier regarding...').",
-						"- Do NOT include any conversational preamble or text. ",
-						"- Your response must start immediately with the character '{'."]
+						"- Do NOT include any conversational preamble or text. "]
 				},
 			"user":
 				{

@@ -50,7 +50,4 @@ class DU_Tests:
         self.du.save_graph()
 
 test = DU_Tests()
-for node in test.du.get_all_nodes():
-
-    edge_data = test.du.knowledge_graph.edges(node['id'],data=True)
-    print(any([test.du.knowledge_graph.nodes[node['id']]['updated']<e[-1]['updated'] for e in edge_data]))
+test.du.get_relevant_nodes("What lies to the north of Irnazogr?")

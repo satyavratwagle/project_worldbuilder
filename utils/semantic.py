@@ -2,7 +2,7 @@ import torch
 from gliner import GLiNER
 import utils.preprocessing as pre
 import numpy as np
-from transformers import AutoModelForSequenceClassification,AutoTokenizer,pipeline
+from transformers import AutoModelForSequenceClassification,AutoTokenizer,pipeline,AutoConfig
 from sentence_transformers import SentenceTransformer
 import datasets
 import networkx as nx
@@ -42,6 +42,8 @@ def print_memory_usage(step):
 class SemanticTools():
 
     def __init__(self,config):
+
+        self.config = config
         self.store_path = config['data_dir']
         self.coreference_model = FCoref(device='cpu')
         self.jsonstore_dir = f'{self.store_path}/json_store'
@@ -230,20 +232,28 @@ class SemanticTools():
         return resolved_output,cluster_text,doc
 
     # Load Models
-    def load_zsc_model(self,model_id):
+    def load_zsc_model(self):
         # Load Zero-Shot Classification Model
-        self.zsc_model = GLiClassModel.from_pretrained(model_id)
-        self.zsc_tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self.zsc_model = GLiClassModel.from_pretrained(self.config['zero_shot_classification_model'])
+        self.zsc_tokenizer = AutoTokenizer.from_pretrained(self.config['zero_shot_classification_model'])
         self.zsc_model.config.prompt_first = True
         self.zsc_model.config.pooling_strategy = "avg"
 
-    def load_extraction_model(self,extraction_model):
-        self.extraction_model = extraction_model
+    def load_extraction_model(self):
+        self.extraction_model = GLiNER.from_pretrained(self.config['ner_extraction_model'])
 
-    def load_nli_model(self,nli_model,nli_tokenizer):
+    def load_nli_model(self):
 
-        self.nli_tokenizer = nli_tokenizer
-        self.nli_model = nli_model
+        nli_max_length = 512
+
+        # Load and update the configuration to accommodate larger token lengths
+        config = AutoConfig.from_pretrained(self.config['nli_model'])
+        config.max_position_embeddings = nli_max_length
+        config.max_relative_positions = nli_max_length
+        
+        self.nli_tokenizer = AutoTokenizer.from_pretrained(self.config['nli_model'])
+        self.nli_tokenizer.model_max_length = nli_max_length
+        self.nli_model = AutoModelForSequenceClassification.from_pretrained(self.config['nli_model'],config=config)
 
     # Semantic Functions
 
@@ -304,9 +314,6 @@ class SemanticTools():
         results = [[(labels[i],scores[i]) for i in range(len(labels))]]
 
         return results
-
-        
-
 
     def check_context_entailment(self,contexts,queries):
 

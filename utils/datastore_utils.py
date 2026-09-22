@@ -440,7 +440,6 @@ class DatastoreUtilities():
         edge_data = self.knowledge_graph.edges(node,data=True)
         return not(any([self.knowledge_graph.nodes[node]['updated']<e[-1]['updated'] for e in edge_data]))
 
-    # UPDATE THIS
     def get_nodes_to_add_to_faiss(self):
         # Return a list of nodes that have been updated, but not added to the FAISS dataset
         # Decompose a node into wiki keys and check if the ids are in the dataset.
@@ -513,9 +512,115 @@ class DatastoreUtilities():
         return slugify_key(node)
         
     def get_node_summary(self,node):
-        return self.knowledge_graph.nodes[node]['wiki']['summary'] if self.knowledge_graph.has_node(node) else None
+        return self.knowledge_graph.nodes[slugify_key(node)]['wiki']['summary'] if self.knowledge_graph.has_node(slugify_key(node)) else ""
     
     # GRAPH FUNCTIONS
+
+    def get_relevant_nodes(self,query,k=10, threshold=0.4):
+
+        query_vector = self.embed_text(query)
+        scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=k)
+
+        relevant_nodes = []
+        for i in range(len(scores)):
+            if(scores[i] >= threshold and len(examples['text'][i].split(':')[-1].strip())>0):
+                #print(f"{scores[i]} : {examples['node_id'][i]} - {examples['text'][i]}")
+                relevant_nodes.append(examples['node_id'][i])
+
+        relevant_nodes = list(set(relevant_nodes))
+
+        return relevant_nodes
+
+    def extract_relevant_edge_info(self,query,node,threshold=0.7):
+
+        node = slugify_key(node)
+        print(node)
+
+        documents = []
+        
+        for edge in self.knowledge_graph.edges(node,keys=True,data=True):
+            documents.append({"text":edge[3]['desc']})
+
+        edge_dataset = Dataset.from_list(documents)
+        edge_dataset, cosine_index = self.calculate_faiss_index(edge_dataset)
+        edge_dataset.add_faiss_index(
+                column="embeddings", 
+                custom_index=cosine_index
+            )
+
+        query_vector = self.embed_text(query)
+        scores, examples = edge_dataset.get_nearest_examples("embeddings", query_vector, k=20)
+
+        relevant_edge_info = []
+        for i in range(len(scores)):
+            if(scores[i] >= threshold and len(examples['text'][i].split(':')[-1].strip())>0):
+                relevant_edge_info.append(examples['text'][i])
+
+        return relevant_edge_info
+
+    def find_all_unique_paths(self,nodes):
+        all_paths = []
+        for idx in range(len(nodes)):
+            for jdx in range(len(nodes)):
+                if(not(idx==jdx)):
+                    path = self.find_path(nodes[idx],nodes[jdx])
+                    if(path):
+                        all_paths.append(path)
+
+        all_paths = sorted(all_paths,key=len,reverse=True)
+
+        filtered_paths = []
+        for path in all_paths:
+            if(not(any([self.check_subpath(path,c_path) for c_path in filtered_paths]))):
+                filtered_paths.append(path)
+        filtered_paths = sorted(filtered_paths,key=len,reverse=True)
+
+        return filtered_paths
+
+    def find_all_unique_paths_from(self,head,nodes):
+
+        all_paths = []
+        for idx in range(len(nodes)):
+            if(not(nodes[idx]==head)):
+                path = self.find_path(head,nodes[idx])
+                if(path):
+                    all_paths.append(path)
+
+        all_paths = sorted(all_paths,key=len,reverse=True)
+
+        filtered_paths = []
+        for path in all_paths:
+            if(not(any([self.check_subpath(path,c_path) for c_path in filtered_paths]))):
+                filtered_paths.append(path)
+        filtered_paths = sorted(filtered_paths,key=len,reverse=True)
+
+        return filtered_paths
+
+    def extract_path_info(self,paths):
+
+        added_nodes = []
+        added_relations = []
+        paths_info = []
+
+        for path in paths:
+            for idx in range(len(path)-1):
+                # Extract head info
+                if(not(path[idx] in added_nodes)):
+                    paths_info.append(('node',path[idx],self.get_node_summary(path[idx])))
+                    added_nodes.append(path[idx])
+
+                # Extract relation info
+                if(not(f"{path[idx]}_and_{path[idx+1]}" in added_relations) and not(f"{path[idx+1]}_and_{path[idx]}" in added_relations)):
+                    edge_info = "\n".join([edge[3] for edge in self.get_edge(path[idx],path[idx+1])])
+                    paths_info.append(('edge',f"{path[idx]}_and_{path[idx+1]}",edge_info))
+                    added_relations.append(f"{path[idx]}_and_{path[idx+1]}")
+
+                # Extract tail info
+                if(not(path[idx+1] in added_nodes)):
+                    paths_info.append(('node',path[idx+1],self.get_node_summary(path[idx+1])))
+                    added_nodes.append(path[idx+1])
+
+        return paths_info
 
     def graph_multihop(self,node,n_hops=1,neighborhood=[]):
 
@@ -549,6 +654,9 @@ class DatastoreUtilities():
 
     def find_path(self,source,target):
 
+        source = slugify_key(source)
+        target = slugify_key(target)
+
         path = None
         if(self.knowledge_graph.has_node(source) and self.knowledge_graph.has_node(target)):
             if nx.has_path(self.knowledge_graph, source, target):
@@ -567,7 +675,12 @@ class DatastoreUtilities():
                 sub_path = path1
 
             n = len(sub_path)
-            return any(sub_path == main_path[i : i + n] for i in range(len(main_path) - n + 1))
+
+            paths_regular = any(sub_path == main_path[i : i + n] for i in range(len(main_path) - n + 1))
+
+            reversed_subpath = sub_path[::-1]
+            paths_inverted = any(reversed_subpath == main_path[i : i + n] for i in range(len(main_path) - n + 1))
+            return any([paths_regular,paths_inverted])
         else:
             return False
 
@@ -674,78 +787,34 @@ class DatastoreUtilities():
 
     # RAG FUNCTIONS
 
-    def get_graph_rag_context(self,query,threshold=0.4,k=10,hops=1):
+    def get_graph_rag_context(self,query,threshold=0.4,k=10):
         #def get_graph_rag_context(self,query,graph,documents_lookup,threshold=0.4,k=10,hops=1):
 
         # need self.knowledge_graph, self.documents_lookup
 
         print(query)
-
-        query_vector = self.embed_text(query)
-        scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=k)
-
-        seed_results = []
-        for i in range(len(scores)):
-            if(scores[i] >= threshold and len(examples['text'][i].split(':')[-1].strip())>0):
-                seed_results.append({feature:examples[feature][i] for feature in self.dataset.features.keys() if not(feature=='embeddings')})
-
-        nodes_in_results = list(set([result['node_id'] for result in seed_results]))
-        for result in seed_results:
-            print(result)
-            #print(f"{result['topic']} : {result['text']}")
+        nodes_in_results = self.get_relevant_nodes(query,threshold=threshold,k=k)
 
         retrieved_context = []
         edge_paths = []
 
         if(len(nodes_in_results)>1):
-            nodes = list(set([s['node_id'].strip() for s in seed_results]))
-            print(nodes)
+            
+            edge_paths = self.find_all_unique_paths(nodes_in_results)
+            retrieved_context = self.extract_path_info(edge_paths)
 
-            # Get paths between all nodes first and resolve before extracting context
-            node_pairs = [(nodes[idx],nodes[jdx]) for idx in range(1,len(nodes)) for jdx in range(idx) if not(idx==jdx)]
-
-            # Ignore sub-paths
-            all_paths = []
-            for source,target in node_pairs:
-                if nx.has_path(self.knowledge_graph, source, target):
-                    all_paths.append(nx.shortest_path(self.knowledge_graph, source=source, target=target))
-
-            all_paths = sorted(all_paths,key=len,reverse=True)
-            print(all_paths)
-
-            filtered_paths = []
-            for path in all_paths:
-                if(not(any([any([self.check_subpath(path,c_path),self.check_subpath(path[::-1],c_path)]) for c_path in filtered_paths]))):
-                    filtered_paths.append(path)
-            filtered_paths = sorted(filtered_paths,key=len,reverse=True)
-            print(filtered_paths)
-
-            for path in filtered_paths:
-
-                head,tail = path[0],path[-1]
-                knowledge_chain = [self.get_node_summary(head)]
-
-                if(len(path)>1):
-                    for path_idx in range(len(path)-1):
-                        head,tail = path[path_idx:path_idx+2]
-                        edge_paths+=[(head,tail,key,edge_dict['desc']) for key,edge_dict in self.knowledge_graph.get_edge_data(head,tail).items()]
-                        knowledge_chain += [edge_data['desc'].strip() for edge_data in self.knowledge_graph.get_edge_data(head,tail).values()]
-
-                if(not(head==tail)):
-                    knowledge_chain += [self.get_node_summary(tail)]
-                print(knowledge_chain)
-                retrieved_context.append(' '.join(knowledge_chain))   
         elif(len(nodes_in_results)==0):
             retrieved_context = []
             edge_paths = [] 
         else:
             # If there is only one node in the results
-            node = seed_results[0]['node_id'].strip()
-            retrieved_context = [self.knowledge_graph.nodes[node]['wiki']['summary']]
-            retrieved_context += list(set([result['text'] for result in seed_results]))
-            edge_paths += [(r['node_id'],r['node_id'],r['tag'],r['text']) for r in seed_results]
+            node = nodes_in_results[0]
+            retrieved_context = [('node',node,self.get_node_summary(node))]
+            edge_paths += [node]
+
+        context_text = self.format_path_context(retrieved_context)
             
-        return retrieved_context, edge_paths
+        return context_text, edge_paths
 
     def embed_text(self,text):
         return self.text_embedding_model.encode(text, normalize_embeddings=True)
@@ -762,6 +831,15 @@ class DatastoreUtilities():
 
         return cosine_sim
 
+    def format_path_context(self,paths):
+        context_text = ""
+        for p in paths:
+            if(p[0]=='node'):
+                context_text += f"<context_about_{p[1]}>\n{p[2]}\n</context_about_{p[1]}>\n\n"
+            if(p[0]=='edge'):
+                context_text += f"<relationship_between_{p[1]}>\n{p[2]}\n</relationship_between_{p[1]}>\n\n"
+
+        return context_text
     # May not need functions beyond this.
     def get_most_relevant_file(self,query,threshold,k):
 

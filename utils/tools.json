@@ -1,0 +1,68 @@
+{
+    "hypothesize":
+    {
+        "type": "function",
+        "function": 
+        {
+            "name": "hypothesize",
+            "description": "Generate new hypotheses about a given topic. Use ONLY when the user requests you to brainstorm, generate novel, new ideas or hypotheses.",
+            "parameters": 
+            {
+                "type": "object",
+                "properties": 
+                {
+                    "user_topic": 
+                        {
+                            "type": "str", 
+                            "description": "The name of the topic specified by the user."
+                        }
+                },
+                "required": ["user_topic"]
+            }
+        }
+    },
+    "elaborate":
+    {
+        "type": "function",
+        "function": 
+        {
+            "name": "elaborate",
+            "description": "Get more context about a given topic. Use ONLY when the user requests you to elaborate upon a topic, add more context or dive deeper into a topic.",
+            "parameters": 
+            {
+                "type": "object",
+                "properties": 
+                {
+                    "topic_description": 
+                        {
+                            "type": "str", 
+                            "description": "A description of the topic specified by the user."
+                        }
+                },
+                "required": ["topic_description"]
+            }
+        }
+    },
+    "default_tool":
+    {
+        "type": "function",
+        "function": 
+        {
+            "name": "default_tool",
+            "description": "Call this ONLY if the user's request can be answered using your internal knowledge and does not require external data or tools.",
+            "parameters": 
+            {
+                "type": "object",
+                "properties": 
+                {
+                    "user_message": 
+                        {
+                            "type": "str", 
+                            "description": "The user query verbatim."
+                        }
+                },
+                "required": ["user_message"]
+            }
+        }
+    }
+}
