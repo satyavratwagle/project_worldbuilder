@@ -5,19 +5,19 @@
         "function": 
         {
             "name": "hypothesize",
-            "description": "Generate new hypotheses about a given topic. Use ONLY when the user requests you to brainstorm, generate novel, new ideas or hypotheses.",
+            "description": "Generate new hypotheses that build upon the given user idea. Use ONLY when the user requests you to brainstorm, generate novel, new ideas or hypotheses.",
             "parameters": 
             {
                 "type": "object",
                 "properties": 
                 {
-                    "user_topic": 
+                    "user_idea": 
                         {
                             "type": "str", 
-                            "description": "The name of the topic specified by the user."
+                            "description": "The idea given by the user."
                         }
                 },
-                "required": ["user_topic"]
+                "required": ["user_idea"]
             }
         }
     },

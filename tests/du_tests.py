@@ -10,8 +10,9 @@ class DU_Tests:
         with open('config.json', "r", encoding="utf-8") as f:
             config = json.load(f)
 
+
         self.du = DatastoreUtilities(config)
-        #self.du.load_embedding_model()
+        self.du.load_embedding_model()
 
     def save_to_faiss(self):
         # WARNING : THIS TEST WILL OVERWRITE THE OLD DATASET. MAKE A COPY OF THE OLD DATASET IF NEEDED.
@@ -49,5 +50,30 @@ class DU_Tests:
     def save_graph(self):
         self.du.save_graph()
 
-test = DU_Tests()
-test.du.get_relevant_nodes("What lies to the north of Irnazogr?")
+t = DU_Tests()
+
+t.du.add_node("Satya","person",["Satyavrat Rajaram Wagle","Purdue University"])
+t.du.add_node("Anu","person",["Anupreeta Agate","CMU"])
+#t.du.save_graph()
+
+#dataset,index = t.du.filter_dataset()
+#t.du.overwrite_faiss_dataset(dataset,index)
+
+# Rerun the script here - Checking if completely new nodes can be added.
+#t.du.add_node("Seattle","location",["We vibin here","In US","This place aint so bad cuh.","Bruh wasdis"])
+#t.du.add_node("China","location",["nihao xinga","we vibin here too"])
+#print(t.du.knowledge_graph)
+#t.du.save_graph()
+
+#dataset,index = t.du.filter_dataset()
+#t.du.overwrite_faiss_dataset(dataset,index)
+
+# Rerun the script here - Checking if new added summaries to nodes are picked up
+#t.du.add_node("Anu","person",["Dawg this suum new"])
+#t.du.add_node("Seattle","person",["Blud we shortnin"])
+
+#t.du.remove_node('india')
+#t.du.save_graph()
+
+dataset,index = t.du.filter_dataset()
+t.du.overwrite_faiss_dataset(dataset,index)

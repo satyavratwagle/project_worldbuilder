@@ -1,5 +1,6 @@
 import chainlit as cl
 from chainlit.input_widget import Slider
+from chainlit import make_async
 import asyncio
 import json
 import torch
@@ -26,7 +27,7 @@ import utils.json_schema as sch
 import utils.preprocessing as pre
 from utils.io_utils import IO_Utils
 from utils.pydantic_schema import ReasonedResponse,HypothesisList
-from utils.datastore_utils import DatastoreUtilities
+from utils.datastore_utils import DatastoreUtilities, slugify_key
 
 from gliner import GLiNER
 from transformers import AutoModelForCausalLM,AutoModelForSequenceClassification,TorchAoConfig,AutoTokenizer,BartTokenizer, BartForConditionalGeneration
@@ -125,8 +126,6 @@ def update_system_prompt(prompt_name):
         chat_history = [system_prompt]
     cl.user_session.set("chat_history",chat_history)
 
-
-
 def create_json_dict(name,type):
 
     json_dict = dict()
@@ -150,7 +149,6 @@ async def update_graph_element(node_info):
     graph_element.props['title'] = node_info['node_name']
     graph_element.props['subtitle'] = node_info['node_type']
     graph_element.props['edges'] = node_info['edge_info']
-    graph_element.props['wiki'] = node_info['wiki']
     print(graph_element.props)
     cl.user_session.set("graph_element", graph_element)
     await graph_element.update()
@@ -180,7 +178,7 @@ def load_models():
     return model, tokenizer, generator_model
 '''
 
-
+#du = DatastoreUtilities(config)
 du,sem = load_modules()
 
 # Legacy
@@ -706,10 +704,16 @@ async def on_show_node_info(action: cl.Action):
 @cl.action_callback("update_faiss")
 async def update_datastore(action: cl.Action):
 
-    async with cl.Step(name="Saving Knowledge Base",default_open=True) as step:
-        dataset,index = du.update_faiss_dataset()    
-        du.overwrite_faiss_dataset(dataset,index)
-        du.reload_faiss_dataset()
+    msg = cl.Message(content="Updating Knowledge Base...")
+
+    await msg.send()
+
+    dataset,index = await make_async(du.filter_dataset)()
+    await make_async(du.overwrite_faiss_dataset)(dataset,index)
+
+    msg.content = "Knowledge Base Updated!"
+
+    await msg.update()
 
 async def retrieve_graph_rag(query,threshold=0.4,k=10,hops=1):
 
@@ -886,149 +890,64 @@ async def audit_graph(graph_name='graph'):
             await cl.Message(content=f"Found a connection between {head} and {tail}!\n> {text}").send()
         du.save_graph()
 
-async def assign_edge_labels(graph_name='graph'):
+async def summarize_nodes():
 
-    async with cl.Step(name="Categorizing Information",icon="lightbulb") as step:
-
-        '''
-        UNUSED
-        def process_wiki_schema(src_dict,topic=None):
-            wiki_dict = copy.deepcopy(src_dict)
-            if(topic):
-                for key,value in wiki_dict.items():
-                    wiki_dict[key] = wiki_dict[key].replace(f'[TOPIC]',topic)
-            return wiki_dict
-        '''
-
-        for node in du.get_all_nodes():
-
-            topic       = node['id']
-            topic_type  = du.knowledge_graph.nodes[node['id']]['type']
-            topic_summary = du.knowledge_graph.nodes[node['id']]['wiki']['summary']
-
-            schema = wiki_schema[topic_type.lower()]
-            labels = [f"{schema[key]}" for key in schema.keys()]
-            schema_keys = list(schema.keys())
-
-            node_wiki = dict()
-            for key in schema.keys():
-                node_wiki[key] = []
-            
-            print()
-            print(node['name'])
-            for edge in du.knowledge_graph.edges(node['id'],keys=True,data=True):
-
-                edge_text = edge[3]['desc']
-                results = sem.zero_shot_classification(edge_text,labels,context=[topic_summary],threshold=0.0)
-
-                # Get best label
-                best_idx = [r[1] for r in results[0]].index(max([r[1] for r in results[0]]))
-                #print(best_idx)
-                node_wiki[schema_keys[best_idx]].append(edge_text)
-                du.set_edge_tags(edge,topic,schema_keys[best_idx])
-
-                print(du.knowledge_graph.edges[edge[0],edge[1],edge[2]])
-
-                #print(results)
-                #print(f"{edge_text} :",[f"{r[0]} : {r[1]:.3f}" for r in results[0]])
-                #print()
-
-        du.save_graph()
-
-async def update_node_wikis(graph_name='graph'):
-
-    new_summaries = []
     for node in du.get_all_nodes():
-        if(not(du.is_node_updated(node['id']))):
 
-            # Update the node wikis
-            unparsed_edges = du.get_unparsed_edges(node['id'])
-            print(node['id'],len(unparsed_edges))
+        # Check if the node needs to be updated
+        if(du.has_new_edges(node['id'])):
 
-            if(len(unparsed_edges)>0):
+            du.reset_node_summary(node['id'])
+            edge_info_clusters = du.cluster_edge_info(node['id'])
+            node_info = du.get_node_info(node['id'])
 
-                async with cl.Step(name=f'Updating Information about {node['name']}',icon="lightbulb") as step:
+            message = cl.Message(content=f"## {node['name']}")
+            await message.send()
 
-                    chat_history = cl.user_session.get("chat_history")
-                    chat_history = []
+            summaries = ""
+            for cluster_text in edge_info_clusters:
 
-                    # Create a temporary wiki to store the information
-                    temp_wiki = dict()
-                    temp_wiki['summary'] = ""
+                print(node['name'])
+                print(cluster_text)
 
+                history = []
+                props_dict = dict()
+                props_dict["node_name"]         = node['name']
+                props_dict["node_description"]  = f"Name: {node['name']}\nType : {node_info['node_type']}\n\n[DESCRIPTION]\n"+cluster_text
 
-                    schema = wiki_schema[du.knowledge_graph.nodes[node['id']]['type'].lower()]
-                    schema_keys = list(schema.keys())
+                history = prompts.get_node_summary_prompt(props_dict,history)
+                cl.user_session.set("chat_history",history)
 
-                    for key in schema.keys():
-                        temp_wiki[key] = []
+                response = await tokenize_and_generate(temperature=0.3,max_new_tokens=256)
+                du.add_to_node_summary(node['id'],response.message.content)
+                summaries += response.message.content+'\n\n'
 
-                    # Update the summary first
-                    new_information = ' '.join([edge[3]['desc'] for edge in du.knowledge_graph.edges(node['id'],keys=True,data=True)])
-
-                    history = []
-                    props_dict = dict()
-                    props_dict["node_name"]         = node['name']
-                    props_dict["node_description"]  = new_information
-
-                    history = prompts.get_node_summary_prompt(props_dict,history)
-                    cl.user_session.set("chat_history",history)
-                    update_system_prompt("node_summary_prompt")
-
-                    new_summary = await tokenize_and_generate(temperature=0.3,max_new_tokens=128)
-
-                    new_summaries.append((node['id'],node['name'],new_summary.message.content,'summary'))
-
-                    print(f'New Summary of {node['name']} : {new_summary.message.content}')
-                    print()
-
-                    # topic = node['id']
-
-                    # Update each key in the wiki
-                    for key in temp_wiki.keys():
-
-                        chat_history = cl.user_session.get("chat_history")
-                        chat_history = []
-
-                        wiki_information = [edge[3]['desc'] for edge in du.knowledge_graph.edges(node['id'],keys=True,data=True) if edge[3]['tags'][node['id']][0]==key]
-                        print(key," : ",wiki_information)
-
-                        if(len(wiki_information)>1):
-                            props_dict = dict()
-                            props_dict['node_name'] = node['name']
-                            props_dict['node_description'] = " ".join(wiki_information)
-                            props_dict['node_property'] = key
-
-                            history = []
-                            history = prompts.get_node_wiki_prompt(props_dict,history)
-                            cl.user_session.set("chat_history",history)
-                            update_system_prompt("node_wiki_prompt")
-                            wiki_entry = await tokenize_and_generate(temperature=0.3,max_new_tokens=512)
-
-                            new_summaries.append((node['id'],node['name'],wiki_entry.message.content,key))
-
-                        if(len(wiki_information)==1):
-                            new_summaries.append((node['id'],node['name'],wiki_information[0],key))
-
-            else:
-                print(f'{node['name']} has no new edges!')
-
-    # Allow user to update the summaries if needed.
-    summaries_to_add = await show_summaries_to_add(new_summaries)
-    print(summaries_to_add)
+                message.content = f"## {node['name']}\n{summaries}"
+                await message.update()
 
 
-    # CHANGE SUMMARIES TO INCLUDE THE KEY
-    for node_id,key,description in summaries_to_add:
-        print(node_id,key,description)
-        du.set_node_wiki_description(node_id,key,description)
-    
-        edge_data = du.get_edges_from(node_id)
-        for edge in edge_data:
-            head,tail,key,data = edge
-            du.parse_edge(head,tail,key)
+                print()
 
-    #du.save_graph()
+            # Add a definition to the nodes as well.
+
+            print("Defining...")
+            print("\n".join(du.get_node_summary(node['id'])))
+
+            history = []
+            props_dict = dict()
+            props_dict["node_name"]         = node['name']
+            props_dict["node_description"]  = f"Type : {node_info['node_type']}\n\n[DESCRIPTION]\n"+"\n".join(du.get_node_summary(node['id']))
+
+            history = prompts.get_node_definition_prompt(props_dict,history)
+            cl.user_session.set("chat_history",history)
+
+            response = await tokenize_and_generate(temperature=0.3,max_new_tokens=256)
+            du.set_node_definition(node['id'],response.message.content)
+
+            message.content=f"## {node['name']}\n{response.message.content}"
+            await message.update()
+
+            print()
 
 async def save_to_faiss():
 
@@ -1187,12 +1106,19 @@ async def decompose_text(text,topics=[],temperature=0.2):
 
     settings = cl.user_session.get('settings')
 
-    background_info = '\n'.join([summary for summary in du.get_node_summaries(topics) if summary])
+    definitions = []
+    for topic in topics:
+        definition = du.get_node_definition(topic)
+        if(definition):
+            definitions.append(definition)
+    background_info = '\n'.join(definitions)
+    print('BACKGROUND')
+    print(background_info)
 
     props_dict = dict()
     props_dict['topics']                = '; '.join(topics)
     props_dict['text']                  = text
-    props_dict['background_knowledge']  = background_info
+    props_dict['definitions']  = background_info
 
     chat_history = prompts.get_text_decomposition_prompt(props_dict,history=chat_history)
     print('Text Decomp Prompt')
@@ -1234,8 +1160,7 @@ async def brainstorm(user_topic):
         props_dict['topic'] = node['name']
         props_dict['local_context'] = ''
         for n in neighbors:
-            node_info = du.get_node_info(n)
-            props_dict['local_context'] += '\n'.join([node_info['wiki'][key] for key in node_info['wiki']])+'\n\n'
+            props_dict['local_context'] += '\n'.join([s for s in du.get_node_summary(n)])
 
 
         print(props_dict['local_context'])
@@ -1298,6 +1223,8 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
     )'''
 
     msg = cl.Message(content="")
+
+    print(chat_history)
 
     if(template):
         response_stream = ollama.chat(
@@ -1425,53 +1352,35 @@ async def respond_with_tool_output(tool_output):
 
     return final_response_stream
 
-
-
-@cl.step(type="tool",name="Local Context to Answer Question")
 async def default_tool(user_message):
     context_text,context_edges = await retrieve_context(user_message)
     update_system_prompt('reasoned_answer_prompt')
     response_stream = await respond_with_tool_output(context_text)
     return response_stream
 
-
-async def hypothesize(user_topic):
+async def hypothesize(user_idea):
 
     # Switch out system prompt
     update_system_prompt('brainstorming_prompt')
 
-    # Select Random Node
-    if(du.check_if_node_exists(user_topic)):
-        node = {"id":du.get_node_id(user_topic),"name":du.knowledge_graph.nodes[du.get_node_id(user_topic)]['name']}
-    else:
-        node = du.get_random_node()
-        print(f"Randomly selected {node}")
+    nodes = du.get_relevant_nodes(user_idea,k=5, threshold=0.4)
 
+    with cl.Step(name=f"Hypothesizing about {user_idea}",icon="lightbulb") as step:
 
-    with cl.Step(name=f"Hypothesizing about {node['name']}",icon="lightbulb") as step:
+        neighbors = []
+        for node in nodes:
+            # Use all neighbors of a node
+            neighbors += du.graph_multihop(node,1)
 
-        # Use all neighbors of a node
-        neighbors = du.graph_multihop(node['id'],2)
+        neighborhood_context = du.get_context_from_neighborhood(neighbors)
 
-        print(neighbors[1])
-        print(du.knowledge_graph.get_edge_data(node['id'],neighbors[1]))
-        #summary = du.get_node_summary(node['id'])
         props_dict = dict()
-        props_dict['topic'] = node['name']+", "+du.knowledge_graph.nodes[du.get_node_id(neighbors[1])]['name']
-
-        propositions = "- "
-        node_info = du.get_node_info(node['id'])
-        propositions += node_info['wiki']['summary']+'\n- '
-        node_info = du.get_node_info(neighbors[1])
-        propositions += node_info['wiki']['summary']+'\n- '
-        propositions += '\n- '.join([item['desc'] for item in du.knowledge_graph.get_edge_data(node['id'],neighbors[1]).values()])
-
-
-        props_dict['facts'] = propositions
-        response_stream = await respond_with_tool_output(propositions)
+        props_dict['topic'] = user_idea
+        props_dict['local_context'] = neighborhood_context
+        full_prompt = prompts.get_brainstorming_prompt(props_dict,[])
+        response_stream = await respond_with_tool_output(full_prompt[-1]['content'])
         return response_stream
 
-@cl.step(type="tool",name="Elaborate")
 async def elaborate(topic_description):
 
     head = du.get_relevant_nodes(topic_description,k=1, threshold=0.4)[0]
@@ -1593,8 +1502,8 @@ async def on_message(user_message: cl.Message):
     elif(selected_mode=='Update'):
 
         await audit_graph('lore_graph')
-        await assign_edge_labels('lore_graph')
-        await update_node_wikis('lore_graph')
+        #await assign_edge_labels('lore_graph')
+        await summarize_nodes()
         await save_to_faiss()
 
         #await summarize_nodes('lore_graph')

@@ -24,16 +24,17 @@
 					} 
 			}
 		},
-	"node_wiki_prompt":
+	"node_definition_prompt":
 		{"system":
 			{
 				"role": 
 					"system", 
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
-					"You are a summarizing assistant for fictional lore. Your job is to summarize the given description of the given topic IN AT MOST THREE (3) sentences.",
-					"- Your response must include ALL the important information given in the description.",
-					"- Your response must NOT be longer than three (3) sentences.",
+					"You are a summarizing assistant for fictional lore. Your job is to provide a definition of the given topic with the help of the given description IN EXACTLY ONE (1) sentence.",
+					"- Your response must include ALL the important information specified in the given description.",
+					"- Your response must NOT be longer than one (1) sentence.",
+					"- Your response must begin with the name of the given topic.",
 					"- Do NOT include any conversational preamble or text."]
 			},
 		"user":
@@ -43,9 +44,9 @@
 				"content": 
 					{
 					"node_description":
-						["\n[DESCRIPTION OF (NODE_PROPERTY) of (NODE_NAME)]\n<description>\n(NODE_DESCRIPTION)\n</description>\n"],
+						["\n[DESCRIPTION OF (NODE_NAME)]\n<description>\n(NODE_DESCRIPTION)\n</description>\n"],
 					"node_name":
-						["\n[TOPIC TO SUMMARIZE]\n<topic>\n(NODE_PROPERTY) of (NODE_NAME)\n</topic>\n\n A summary of (NODE_PROPERTY) of (NODE_NAME) is as follows :"]
+						["\n[TOPIC TO DEFINE]\n<topic>\n(NODE_NAME)\n</topic>\n\n The definition of (NODE_NAME) is as follows :"]
 					}
 			}
 		},
@@ -61,8 +62,7 @@
 						"- Your response MUST explicitly describe topics provided by the user.",				
 						"- Your response MUST include descriptions of ALL topics.",
 						"- Each sentence MUST start with the name of a topic.",
-						"- You may only use the background knowledge as a logical basis for your response.",
-						"- Your responses must NOT contain information present in the background knowledge.",
+						"- You may ONLY use the given definitions as references for your response. You must NEVER include any information from the given definitions in your response.",
 						"- No more than five (5) sentences should begin with the same words.",
 						"- Each sentence in your response should start with the subject followed by the verb and then the object of the sentence.",
 						"- Each sentence in your response must be self contained. It must not rely on information in other sentences.",
@@ -72,7 +72,8 @@
 						"- You must maintain the tense of the original text in your response.",
 						"- You must NOT use the newline character in your response.",
 						"- You must ONLY use information provided by the user in your response. Do NOT extrapolate or invent new information.",
-						"- Do NOT include any conversational preamble or text."]
+						"- Do NOT include any conversational preamble or text.",
+						"- CRITICAL : Your responses must NEVER repeat ANY information present in the given definitions AT ALL."]
 
 				},
 			"user":
@@ -81,9 +82,9 @@
 						"user", 
 					"content": 
 						{
-							"background_knowledge":
-								["\n[BACKGROUND KNOWLEDGE]<background>\n(BACKGROUND_KNOWLEDGE)\n</background>"],
-							"background_knowledge":
+							"definitions":
+								["\n[DEFINITIONS]<definitions>\n(GNG)\n</definitions>"],
+							"descriptions":
 								["\n[DESCRIPTION]<description>\n(TEXT)\n</description>"],
 							"user_query":
 								["\n[TOPICS]\n<topics>\n(TOPICS)\n</topics>\n"]
@@ -126,7 +127,7 @@
 						"system", 
 					"content": 
 						["[SYSTEM ROLE AND GUARDRAILS]",
-						"You are a brainstorming assistant for fictional worldbuilding. Your job is to come up with new, plausible ideas about related to the given topic based on the given context.",
+						"You are a brainstorming assistant for fictional worldbuilding. Your job is to come up with new, plausible ideas that build upon the given user idea based on the given context.",
 						"- Always respond with the basis and reasoning of your idea in verbose form in the 'scratchpad' field.",
 						"- Your reasoning must ONLY be based on the given context and the conversation history.",
 						"- Respond with a novel idea related to the given topic that does not appear in the context based on your reasoning in the 'answer' field.",

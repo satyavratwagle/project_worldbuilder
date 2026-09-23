@@ -25,6 +25,8 @@ import itertools
 import difflib
 import time
 import random
+from sklearn.metrics import silhouette_score
+from sklearn.cluster import KMeans
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 _orig_getattr = torch.nn.Module.__getattr__
@@ -61,6 +63,7 @@ class DatastoreUtilities():
             # kg_to_ds_path should indicate the knowledge graph version contained in the current FAISS dataset and the ones not tracked
             kg2ds = dict()
             kg2ds['datastore_version'] = None
+            kg2ds['datastore_last_saved'] = 0
             kg2ds['unsaved_versions'] = []
             self.kg2ds_map = kg2ds
         else:
@@ -69,13 +72,6 @@ class DatastoreUtilities():
 
 
         # First check for the knowledge graph
-        if(len(self.kg2ds_map['unsaved_versions'])>0):
-            # Check if graphs exist. If not, remove them from the map
-            versions_to_remove = []
-            for idx,kg_version in enumerate(self.kg2ds_map['unsaved_versions']):
-                if(not(os.path.exists(f"{self.knowledge_graph_prefix}{kg_version}.gml"))):
-                    versions_to_remove.append(kg_version)
-            [self.kg2ds_map['unsaved_versions'].remove(version) for version in versions_to_remove]
 
         if(len(self.kg2ds_map['unsaved_versions'])>0 and os.path.exists(f"{self.knowledge_graph_prefix}{self.kg2ds_map['unsaved_versions'][-1]}.gml")):
             # load the latest knowledge graph
@@ -106,6 +102,9 @@ class DatastoreUtilities():
         with open(config['kg_to_ds_map'], "w") as f:
             json.dump(self.kg2ds_map, f, indent=4)
 
+        alias_pattern = rf"\b({'|'.join(re.escape(alias[1]['name']) for alias in self.knowledge_graph.nodes(data=True))})\b"
+        self.node_finder = re.compile(alias_pattern, flags=re.IGNORECASE)
+
         # CLEAN UP OLD KNOWLEDGE GRAPHS
             
     # FAISS DATASET FUNCTIONS
@@ -114,42 +113,102 @@ class DatastoreUtilities():
         # Create a dataset from a set of nodes 
         # Use get_index if generating dataset for the first time.
 
-        with open('config.json', "r", encoding="utf-8") as f:
-            self.config = json.load(f)
-
         documents = []
         for node in nodes:
-            for key in node[1]['wiki'].keys():
-                documents.append({'topic':node[1]['name'],
+            update_time = int(time.time())
+            for key,statement in enumerate(self.get_node_summary(node[0])):
+                documents.append({
+                                    'topic':node[1]['name'],
                                     'type':node[1]['type'],
-                                    'tag':key,
                                     'node_id':node[0],
                                     'id' : f"{node[0]}-{key}",
-                                    'text':node[1]['wiki'][key]})
+                                    'text':statement
+                                })
 
         graph_dataset = Dataset.from_list(documents)
 
-        cosine_index = None
-        if(get_index):
-            graph_dataset,cosine_index = self.calculate_faiss_index(graph_dataset)
+        return graph_dataset
 
-        return graph_dataset,cosine_index
+    def filter_dataset(self):
+
+        def embed_text(batch):
+            # Return a dictionary mapping to your target index string key
+            return {"embeddings": self.text_embedding_model.encode(batch["text"], normalize_embeddings=True)}
+
+        self.save_graph()
+        nodes_to_add = self.get_nodes_to_add_to_faiss()
+
+        if(self.dataset):
+            nodes_to_remove = [row['node_id'] for row in self.dataset if not(self.knowledge_graph.has_node(row['node_id']))]
+        else:
+            nodes_to_remove = []
+
+        if(len(nodes_to_add)>0 or len(nodes_to_remove)>0):
+
+            if(self.dataset):
+
+                nodes_to_remove = list(set(nodes_to_remove))
+
+                # Create a new dataset based on the new dataset
+                new_dataset = self.create_dataset_from_nodes(nodes_to_add)
+                print("NEW DATASET SIZE : ",len(new_dataset))
+                for row in new_dataset:
+                    print(f"{row['id']} - {row['node_id']} : {row['text']}")
+                print()
+
+                # Add embeddings to new dataset
+                new_dataset = new_dataset.map(embed_text, batched=True, batch_size=8)
+
+                print("CURRENT DATASET SIZE : ",len(self.dataset))
+                # Filter out data from existing dataset coming from the same nodes
+                if "embeddings" in self.dataset.list_indexes():
+                    self.dataset.drop_index(index_name="embeddings")
+                filtered_dataset = self.dataset
+                for node in nodes_to_add:
+                    filtered_dataset = filtered_dataset.filter(lambda example: example["node_id"] != node[0])
+
+                # Check if all nodes in filtered_dataset are in the current knowledge graph
+                for node in nodes_to_remove:
+                    filtered_dataset = filtered_dataset.filter(lambda example: example["node_id"] != node)
+
+
+                print("FILTERED DATASET SIZE : ",len(filtered_dataset))
+
+                for row in filtered_dataset:
+                    print(f"{row['id']} - {row['node_id']} : {row['text']}")
+                print()
+
+                updated_dataset = concatenate_datasets([filtered_dataset,new_dataset])
+                print("UPDATED DATASET SIZE : ",len(updated_dataset))
+
+            else:
+                updated_dataset = self.create_dataset_from_nodes(nodes_to_add)
+                updated_dataset = updated_dataset.map(embed_text, batched=True, batch_size=8)
+
+            embedding_dim = self.text_embedding_model.get_embedding_dimension()
+            cosine_index = faiss.IndexFlatIP(embedding_dim)
+
+            return updated_dataset, cosine_index
+
+        else:
+
+            return None, None
 
     def overwrite_faiss_dataset(self,new_dataset,cosine_index,temp_name='_temp'):
-
-        if(self.datastore_save_flag):
+        
+        if(new_dataset):
             temp_dataset_path = f"{self.config['data_dir']}/FAISS_store/{temp_name}"
             temp_faiss_path = f"{self.config['data_dir']}/FAISS_store/{temp_name}.faiss"
 
+            new_dataset.info.description = str(int())
+
             # Save to temporary location
             new_dataset.save_to_disk(temp_dataset_path)
-            new_dataset.add_faiss_index(
-                column="embeddings", 
-                custom_index=cosine_index
-            )
+            new_dataset.add_faiss_index(column="embeddings", custom_index=cosine_index, index_name="faiss_cosine")
+
             if os.path.exists(temp_faiss_path):
                 os.remove(temp_faiss_path)
-            new_dataset.save_faiss_index("embeddings", temp_faiss_path)
+            new_dataset.save_faiss_index("faiss_cosine", temp_faiss_path)
 
             # Delete old dataset if exists
             for folder in os.listdir(f"{self.config['data_dir']}/FAISS_store/"):
@@ -163,18 +222,23 @@ class DatastoreUtilities():
 
             self.kg2ds_map['datastore_version'] = self.kg_loaded_version
             self.kg2ds_map['unsaved_versions'] = [self.kg_loaded_version]
+
+            # Keep only the latest graph
+            for graph in os.listdir(f"{self.config['graph_dir']}"):
+                if(not(graph==f"{self.ds_name}_{self.kg_loaded_version}.gml")):
+                    os.remove(f"{self.config['graph_dir']}/{graph}")
+
+            self.kg2ds_map['datastore_last_saved'] = int(time.time())
+
             with open(self.kg_to_ds_path, "w") as f:
                 json.dump(self.kg2ds_map, f, indent=4)
 
             # Add timestamp to nodes
-            for node in self.nodes_to_add:
-                self.knowledge_graph.nodes[node[0]]['saved'] = int(time.time())
-
             self.reload_faiss_dataset()
 
             print("FAISS datastore successfully created and saved!")
         else:
-            print("No new data to be saved!")
+            print("No new data to be added!")
 
     def reload_faiss_dataset(self):
 
@@ -188,12 +252,15 @@ class DatastoreUtilities():
         else:
             self.dataset = None
         print(self.dataset)
+        for row in self.dataset:
+            print(f"{row['id']} - {row['node_id']} : {row['text']}")
 
+    '''
     def calculate_faiss_index(self,dataset):
 
         def embed_text(batch):
-                # Return a dictionary mapping to your target index string key
-                return {"embeddings": self.text_embedding_model.encode(batch["text"], normalize_embeddings=True)}
+            # Return a dictionary mapping to your target index string key
+            return {"embeddings": self.text_embedding_model.encode(batch["text"], normalize_embeddings=True)}
                 
         embedding_dim = self.text_embedding_model.get_embedding_dimension()
         cosine_index = faiss.IndexFlatIP(embedding_dim)
@@ -253,7 +320,8 @@ class DatastoreUtilities():
         else:
             print("No new data found in knowledge graph!")
             return None, None
-        
+    '''
+
     # EDGE FUNCTIONS
 
     def add_edge(self,head,tail,text):
@@ -378,26 +446,21 @@ class DatastoreUtilities():
 
     # NODE FUNCTIONS
 
-    def add_node(self,node,type,summary=""):
+    def add_node(self,node,type,summary=[],definition=""):
 
-        print()
         # Add a node to the graph
         if(not(self.knowledge_graph.has_node(slugify_key(node)))):
 
-            node_wiki = dict()
-            node_wiki['summary'] = summary
             self.knowledge_graph.add_node(slugify_key(node),
                                             updated=int(time.time()),
-                                            saved=-int(time.time()),
                                             name=node,
                                             type=type,
-                                            wiki=node_wiki)
-            if(summary):
-                self.set_node_summary(node,summary)
-        else:
-            if(summary):
-                self.set_node_summary(node,summary)
-                self.knowledge_graph.nodes[node]['updated'] = int(time.time())
+                                            summary=summary,
+                                            definition="")
+
+        if(len(summary)>0):
+            assert type(summary)==list
+            self.knowledge_graph.nodes[node]['summary'] = summary
                 
     def get_node_name(self,node_id):
         print(node_id)
@@ -444,13 +507,15 @@ class DatastoreUtilities():
         # Return a list of nodes that have been updated, but not added to the FAISS dataset
         # Decompose a node into wiki keys and check if the ids are in the dataset.
 
+        with open(self.kg_to_ds_path, "r", encoding="utf-8") as f:
+            self.kg2ds_map = json.load(f)
+
         if(not(self.dataset)):
             return [node for node in self.knowledge_graph.nodes(data=True)]
         else:
             nodes_in_dataset = set(self.dataset['id'])
-
-            print([node for node in self.knowledge_graph.nodes(data=True) if not(node[0] in nodes_in_dataset)])
-            return [node for node in self.knowledge_graph.nodes(data=True) if not(node[0] in nodes_in_dataset)]
+            print([node for node in self.knowledge_graph.nodes(data=True) if node[1]['updated']>self.kg2ds_map['datastore_last_saved']])
+            return [node for node in self.knowledge_graph.nodes(data=True) if node[1]['updated']>self.kg2ds_map['datastore_last_saved']]
 
     def get_random_node(self):
         all_nodes = self.get_all_nodes()
@@ -465,25 +530,53 @@ class DatastoreUtilities():
         for node_data in self.get_all_nodes():
             node_id = node_data['id']
             self.knowledge_graph.nodes[node_id]['updated']  = int(time.time())
-            self.knowledge_graph.nodes[node_id]['saved']    =  -int(time.time())
 
     def check_if_node_exists(self,node):
         return self.knowledge_graph.has_node(slugify_key(node))
 
-    def set_node_summary(self,node,summary):
+    def has_new_edges(self,node):
 
-        if self.knowledge_graph.has_node(node):
-            self.knowledge_graph.nodes[node]['wiki']['summary'] = summary
-            self.knowledge_graph.nodes[node]['updated'] = int(time.time())
-            print("Set Summary : ",self.knowledge_graph.nodes[node])
-            return True
+        needs_update = any([edge[3]['updated']>self.knowledge_graph.nodes[node]['updated'] for edge in self.get_edges_from(node)])
 
-        return False
+        return needs_update
 
-    def set_node_wiki_description(self,node_id,key,description):
-        if self.knowledge_graph.has_node(node_id):
-            self.knowledge_graph.nodes[node_id]['wiki'][key] = description
-            self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
+    def cluster_edge_info(self,node):
+
+        node = slugify_key(node)
+
+        all_edge_desc = [edge[3]['desc'] for edge in self.get_edges_from(node)]
+
+        edge_embeddings = self.text_embedding_model.encode(all_edge_desc, normalize_embeddings=True)
+
+        if(len(edge_embeddings)>1):
+            best_k = 2
+            best_score = -1
+            for num_clusters in range(2,min((6,len(edge_embeddings)))):
+                skm = KMeans(n_clusters=num_clusters, init='k-means++', n_init=10, random_state=42)
+                skm.fit(edge_embeddings)
+
+                labels = skm.labels_
+                score = silhouette_score(edge_embeddings, labels, metric='cosine')
+
+                if score > best_score:
+                    best_score = score
+                    best_k = num_clusters
+
+            skm = KMeans(n_clusters=best_k, init='k-means++', n_init=10, random_state=42)
+            skm.fit(edge_embeddings)
+            labels = skm.labels_
+
+            edge_clusters = [[] for i in range(best_k)]
+
+            for idx,l in enumerate(labels):
+                edge_clusters[l].append(all_edge_desc[idx])
+        else:
+            edge_clusters = [[all_edge_desc[0]]]
+
+        for idx in range(len(edge_clusters)):
+            edge_clusters[idx] = "\n".join(edge_clusters[idx])
+
+        return edge_clusters
 
     def get_node_info(self,node):
 
@@ -498,8 +591,8 @@ class DatastoreUtilities():
             all_info['id'] = node
             all_info['node_name'] = self.knowledge_graph.nodes[node]['name']
             all_info['node_type'] = self.knowledge_graph.nodes[node]['type']
-            all_info['summary'] = "" # Remove this later
-            all_info['wiki'] = self.knowledge_graph.nodes[node]['wiki']
+            all_info['summary'] = self.knowledge_graph.nodes[node]['summary']
+            all_info['definition'] = self.knowledge_graph.nodes[node]['definition']
             all_info['edge_info'] = []
             for neighbor in neighbors:
                 all_info['edge_info'] += self.get_edge(node, neighbor)
@@ -510,24 +603,67 @@ class DatastoreUtilities():
 
     def get_node_id(self,node):
         return slugify_key(node)
-        
+
+    def set_node_definition(self,node, definition):
+        node = slugify_key(node)
+
+        if self.knowledge_graph.has_node(node):
+            self.knowledge_graph.nodes[node]['definition'] = definition
+            self.knowledge_graph.nodes[node]['updated'] = int(time.time())
+            print(f"Set Definition of {node} : ",self.knowledge_graph.nodes[node]['definition'])
+            return True
+
+        return False
+
+    def get_node_definition(self,node):
+        node = slugify_key(node)
+
+        if self.knowledge_graph.has_node(node):
+            return self.knowledge_graph.nodes[node]['definition']
+
+    def reset_node_summary(self,node):
+
+        node = slugify_key(node)
+
+        if self.knowledge_graph.has_node(node):
+            self.knowledge_graph.nodes[node]['summary'] = []
+            self.knowledge_graph.nodes[node]['updated'] = int(time.time())
+            return True
+
+        return False
+
+    def add_to_node_summary(self,node,summary):
+
+        node = slugify_key(node)
+
+        if self.knowledge_graph.has_node(node):
+            self.knowledge_graph.nodes[node]['summary'].append(summary)
+            self.knowledge_graph.nodes[node]['updated'] = int(time.time())
+            print(f"Set Summary of {node} : ",self.knowledge_graph.nodes[node]['summary'])
+            return True
+
+        return False
+    
     def get_node_summary(self,node):
-        return self.knowledge_graph.nodes[slugify_key(node)]['wiki']['summary'] if self.knowledge_graph.has_node(slugify_key(node)) else ""
+        return self.knowledge_graph.nodes[slugify_key(node)]['summary'] if self.knowledge_graph.has_node(slugify_key(node)) else []
     
     # GRAPH FUNCTIONS
 
     def get_relevant_nodes(self,query,k=10, threshold=0.4):
 
+        # Check literal mentions of any node names.
+        relevant_nodes = [slugify_key(name) for name in list(set(self.node_finder.findall(query))) if len(name)>0]
+
         query_vector = self.embed_text(query)
         scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=k)
 
-        relevant_nodes = []
         for i in range(len(scores)):
             if(scores[i] >= threshold and len(examples['text'][i].split(':')[-1].strip())>0):
                 #print(f"{scores[i]} : {examples['node_id'][i]} - {examples['text'][i]}")
                 relevant_nodes.append(examples['node_id'][i])
 
         relevant_nodes = list(set(relevant_nodes))
+        print("Relevant Nodes : ",relevant_nodes)
 
         return relevant_nodes
 
@@ -605,9 +741,16 @@ class DatastoreUtilities():
         for path in paths:
             for idx in range(len(path)-1):
                 # Extract head info
-                if(not(path[idx] in added_nodes)):
-                    paths_info.append(('node',path[idx],self.get_node_summary(path[idx])))
+
+                if(idx==0):
+                    # The first node is crucial, so more information is given about it.
+                    paths_info.append(('node',path[idx],'\n'.join(self.get_node_summary(path[idx]))))
                     added_nodes.append(path[idx])
+                else:
+                    # Add definitions for the rest of the node
+                    if(not(path[idx] in added_nodes)):
+                        paths_info.append(('node',path[idx],self.get_node_definition(path[idx])))
+                        added_nodes.append(path[idx])
 
                 # Extract relation info
                 if(not(f"{path[idx]}_and_{path[idx+1]}" in added_relations) and not(f"{path[idx+1]}_and_{path[idx]}" in added_relations)):
@@ -616,9 +759,14 @@ class DatastoreUtilities():
                     added_relations.append(f"{path[idx]}_and_{path[idx+1]}")
 
                 # Extract tail info
-                if(not(path[idx+1] in added_nodes)):
-                    paths_info.append(('node',path[idx+1],self.get_node_summary(path[idx+1])))
+                if(idx+1==len(path)):
+                    # The final node is crucial, so more information is given about it.
+                    paths_info.append(('node',path[idx+1],'\n'.join(self.get_node_summary(path[idx+1]))))
                     added_nodes.append(path[idx+1])
+                else:
+                    if(not(path[idx+1] in added_nodes)):
+                        paths_info.append(('node',path[idx+1],self.get_node_definition(path[idx+1])))
+                        added_nodes.append(path[idx+1])
 
         return paths_info
 
@@ -720,24 +868,8 @@ class DatastoreUtilities():
         else:
             most_recent_graph = None
 
-        if(not(nx.utils.misc.graphs_equal(self.knowledge_graph,most_recent_graph))):
+        if(True):
             print("Saving Graph!")
-            if(draw_figure):
-                fig = plt.figure(figsize=(10, 10))
-                pos = nx.spring_layout(G, seed=42) # Positions nodes cleanly
-
-                # Draw nodes and edges
-                nx.draw_networkx_nodes(G, pos, node_size=700, node_color='lightblue')
-                nx.draw_networkx_edges(G, pos, edge_color='gray', arrows=True, arrowsize=20)
-                nx.draw_networkx_labels(G, pos, font_size=10, font_family='sans-serif')
-
-                # Draw edge labels (the snake_case relations)
-                edge_labels = nx.get_edge_attributes(G, 'relation')
-                nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=8)
-
-                plt.axis('off')
-                plt.savefig(f'{config['graph_dir']}/assets/{name}')
-
             # Clean up old graphs
             # 1 day = 86400 seconds
 
@@ -787,6 +919,14 @@ class DatastoreUtilities():
 
     # RAG FUNCTIONS
 
+    def get_context_from_neighborhood(self,neighborhood):
+
+        neighborhood_context = [('node',node,self.get_node_definition(node)) for node in list(set(neighborhood))]
+        formatted_context = self.format_path_context(neighborhood_context)
+
+        return formatted_context
+
+
     def get_graph_rag_context(self,query,threshold=0.4,k=10):
         #def get_graph_rag_context(self,query,graph,documents_lookup,threshold=0.4,k=10,hops=1):
 
@@ -809,7 +949,7 @@ class DatastoreUtilities():
         else:
             # If there is only one node in the results
             node = nodes_in_results[0]
-            retrieved_context = [('node',node,self.get_node_summary(node))]
+            retrieved_context = [('node',node,'\n'.join(self.get_node_summary(node)))]
             edge_paths += [node]
 
         context_text = self.format_path_context(retrieved_context)

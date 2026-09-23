@@ -45,15 +45,14 @@ class PromptParser:
 	def assert_keys(self,args_dict):
 		assert all([required_key in args_dict.keys() for required_key in self.required_keys])
 
-def get_node_wiki_prompt(args_dict, history=[]):
+def get_node_definition_prompt(args_dict, history=[]):
 	# Required args node_name, node_description, existing summary
 
 	assert 'node_name' in args_dict.keys()
 	assert 'node_description' in args_dict.keys()
-	assert 'node_property' in args_dict.keys()
 
-	history.append(process_prompt(prompts['node_wiki_prompt']['system']))
-	history.append(process_prompt(prompts['node_wiki_prompt']['user'],args_dict))
+	history.append(process_prompt(prompts['node_definition_prompt']['system']))
+	history.append(process_prompt(prompts['node_definition_prompt']['user'],args_dict))
 	print(history[-1]['content'])
 	return history
 
@@ -71,7 +70,7 @@ def get_text_decomposition_prompt(args_dict,history=[]):
 	# topics, text
 	assert 'topics' in args_dict.keys()
 	assert 'text' in args_dict.keys()
-	assert 'background_knowledge' in args_dict.keys()
+	assert 'definitions' in args_dict.keys()
 
 	history.append(process_prompt(prompts['text_decomposition_prompt']['system']))
 	history.append(process_prompt(prompts['text_decomposition_prompt']['user'],args_dict))
