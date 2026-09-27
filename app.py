@@ -716,7 +716,7 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
 
     if(template):
         response_stream = ollama.chat(
-                                    model='llama3.1:8b',
+                                    model=config['model_id'],
                                     messages=chat_history,
                                     #tools=tools_json,
                                     options={
@@ -728,7 +728,7 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
         response_stream = template.model_validate_json(response_stream.message.content)
     else:
         response_stream = ollama.chat(
-                                    model='llama3.1:8b',
+                                    model=config['model_id'],
                                     messages=chat_history,
                                     #tools=tools_json,
                                     options={
@@ -763,7 +763,7 @@ async def choose_and_use_tool(user_message):
     cl.user_session.set("chat_history",chat_history)
 
     response = ollama.chat(
-                            model='llama3.1:8b',
+                            model=config['model_id'],
                             messages=chat_history,
                             #tools=tools_json,
                             options={
@@ -801,7 +801,7 @@ async def respond_with_tool_output(tool_output):
     # 5. Second API call: Send history back so the model can read the tool output and reply to user
     print("\nSending tool output back to the model for final response...")
     final_response_stream = ollama.chat(
-        model='llama3.1:8b',
+        model=config['model_id'],
         messages=chat_history,
         options={
                     'temperature': settings['temperature'],      # Controls randomness (0.0 = deterministic, 1.0 = creative)
