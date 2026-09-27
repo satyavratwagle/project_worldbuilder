@@ -45,6 +45,15 @@ class PromptParser:
 	def assert_keys(self,args_dict):
 		assert all([required_key in args_dict.keys() for required_key in self.required_keys])
 
+def get_tool_use_prompt(args_dict, history=[]):
+	# Required args node_name, node_description, existing summary
+
+	assert 'query' in args_dict.keys()
+
+	history.append(process_prompt(prompts['tool_use_prompt']['system']))
+	history.append(process_prompt(prompts['tool_use_prompt']['user'],args_dict))
+	return history
+
 def get_node_definition_prompt(args_dict, history=[]):
 	# Required args node_name, node_description, existing summary
 
@@ -60,7 +69,10 @@ def get_node_summary_prompt(args_dict, history=[]):
 	# Required args node_name, node_description, existing summary
 
 	assert 'node_name' in args_dict.keys()
-	assert 'node_description' in args_dict.keys()
+	assert 'location' in args_dict.keys()
+	assert 'process' in args_dict.keys()
+	assert 'attribute' in args_dict.keys()
+	assert 'time_period' in args_dict.keys()
 
 	history.append(process_prompt(prompts['node_summary_prompt']['system']))
 	history.append(process_prompt(prompts['node_summary_prompt']['user'],args_dict))
@@ -70,7 +82,6 @@ def get_text_decomposition_prompt(args_dict,history=[]):
 	# topics, text
 	assert 'topics' in args_dict.keys()
 	assert 'text' in args_dict.keys()
-	assert 'definitions' in args_dict.keys()
 
 	history.append(process_prompt(prompts['text_decomposition_prompt']['system']))
 	history.append(process_prompt(prompts['text_decomposition_prompt']['user'],args_dict))
@@ -88,6 +99,26 @@ def get_reasoned_generation_prompt(args_dict,history=[]):
 	history.append(process_prompt(prompts['reasoned_answer_prompt']['user'],args_dict))
 
 	print(history[-1]['content'])
+
+	return history
+
+def get_triplet_extraction_prompt(args_dict,history=[]):
+
+	assert 'text' in args_dict.keys()
+	assert 'topics' in args_dict.keys()
+
+	history.append(process_prompt(prompts['triplet_extraction_prompt']['system']))
+	history.append(process_prompt(prompts['triplet_extraction_prompt']['user'],args_dict))
+
+	return history
+
+def get_query_evaluation_prompt(args_dict,history=[]):
+
+	assert 'context' in args_dict.keys()
+	assert 'query' in args_dict.keys()
+
+	history.append(process_prompt(prompts['query_evaluation_prompt']['system']))
+	history.append(process_prompt(prompts['query_evaluation_prompt']['user'],args_dict))
 
 	return history
 

@@ -1,4 +1,27 @@
 {
+	"tool_use_prompt":
+		{"system":
+			{
+				"role": 
+					"system", 
+				"content": 
+					["[SYSTEM ROLE AND GUARDRAILS]",
+					"You are an assistant with access to tools.",
+					"When a user asks a query that requires real-time data or specific actions, call the appropriate tool.",
+					"Never guess parameter values if they are missing; ask the user instead.",
+					"\n[LIST OF AVAILABLE TOOLS]",
+					"1. get_rag_context : Use this ONLY when the user queries about information that is not available in your internal database"]
+			},
+		"user":
+			{
+				"role": 
+					"user", 
+				"content": 
+					{
+						"query":["<user_query>\n(QUERY)\n</user_query>"]
+					} 
+			}
+		},	
 	"node_summary_prompt":
 		{"system":
 			{
@@ -6,9 +29,9 @@
 					"system", 
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
-					"You are a summarizing assistant for fictional lore. Your job is to summarize the description of a given topic in AT MOST THREE (3) sentences.",
-					"- Your response must include all of the important points in the given description.",
-					"- Your response must NOT be longer than three (3) sentences.",
+					"You are a summarizing assistant for fictional lore. Your job is to summarize EACH ENTRY of the description of a given topic in AT MOST THREE (3) sentences.",
+					"- The complete summary must include all of the important points in the given description.",
+					"- The individual summary of each entry must NOT be longer than three (3) sentences.",
 					"- Do NOT include any conversational preamble or text."]
 			},
 		"user":
@@ -17,8 +40,14 @@
 					"user", 
 				"content": 
 					{
-					"node_description":
-						["\n[DESCRIPTION OF (NODE_NAME)]\n<description>\n(NODE_DESCRIPTION)\n</description>\n"],
+					"location":
+						["\n[DESCRIPTION OF (NODE_NAME)]\n(LOCATION)\n"],
+					"process":
+						["\n(PROCESS)\n"],
+					"attribute":
+						["\n(ATTRIBUTE)\n"],
+					"time_peroid":
+						["\n(TIME_PERIOD)\n"],
 					"node_name":
 						["\n[TOPIC TO SUMMARIZE]\n<topic>\n(NODE_NAME)\n</topic>\n\n A summary of (NODE_NAME) is as follows :"]
 					} 
@@ -58,23 +87,17 @@
 						"system", 
 					"content": 
 						["[SYSTEM ROLE AND GUARDRAILS]",
-						"You are a data extraction assistant for fictional lore. Your job is to extract relationships between the given topics contained in the given description.",
-						"- Your response MUST explicitly describe topics provided by the user.",				
-						"- Your response MUST include descriptions of ALL topics.",
-						"- Each sentence MUST start with the name of a topic.",
-						"- You may ONLY use the given definitions as references for your response. You must NEVER include any information from the given definitions in your response.",
-						"- No more than five (5) sentences should begin with the same words.",
-						"- Each sentence in your response should start with the subject followed by the verb and then the object of the sentence.",
-						"- Each sentence in your response must be self contained. It must not rely on information in other sentences.",
-						"- Each sentence in your response must be short.",
-						"- You must NOT use conjunctions in your response.",
-						"- You must NEVER end a sentence with a verb.",
-						"- You must maintain the tense of the original text in your response.",
-						"- You must NOT use the newline character in your response.",
-						"- You must ONLY use information provided by the user in your response. Do NOT extrapolate or invent new information.",
-						"- Do NOT include any conversational preamble or text.",
-						"- CRITICAL : Your responses must NEVER repeat ANY information present in the given definitions AT ALL."]
-
+						"1. You are an advanced text simplification engine specialized for fictional lore.",
+						"2. Your task is to read the provided description and simplify it into small, atomic sentences related to the user topics.",
+						"3. In the 'atomic_sentence' field, you must respond with an atomic sentence AT MOST ten (10) words long ONLY related to the user topics.",
+						"4. Each atomic sentence must have EXACTLY one subject, one verb and one object.",				
+						"5. The subject of each atomic sentence MUST come before the object and the verb.",
+						"6. You must cover all information provided in the given description.",
+						"7. You must ONLY use information in the description to inform your response. Do NOT extrapolate or invent new information.",
+						"8. You must NOT use conjunctions such as 'and','also','with' or 'but' in your response.",
+						"9. In the 'topics' field, you must respond with the subject of the 'atomic_sentence'. The subject MUST be one of the user topics.",
+						"10. In the 'labels' field, you MUST ALWAYS respond with a label for the 'atomic_sentence' from one of the following labels: 'location','process','attribute','time period' based on the nature of the sentence.",
+						"11. NEVER include any conversational preamble or text."]
 				},
 			"user":
 				{
@@ -82,14 +105,35 @@
 						"user", 
 					"content": 
 						{
-							"definitions":
-								["\n[DEFINITIONS]<definitions>\n(GNG)\n</definitions>"],
 							"descriptions":
-								["\n[DESCRIPTION]<description>\n(TEXT)\n</description>"],
+								["\n[DESCRIPTION]\n<description>\n(TEXT)\n</description>\n"],
 							"user_query":
-								["\n[TOPICS]\n<topics>\n(TOPICS)\n</topics>\n"]
+								["\n[USER TOPICS]\n<user_topics>\n(TOPICS)\n</user_topics>\n"]
 						}
 				}			
+		},
+	"query_evaluation_prompt":
+		{
+			"system":
+				{
+					"role":"system",
+					"content":["[SYSTEM ROLE AND GUARDRAILS]",
+								"Your task is to determine whether the provided user context is sufficient to fully answer the user query and categorize the information needed to answer the user query.",
+								"1. In the 'genre' field, you must respond with the category of information needed to answer the user query.",
+								"2. In the 'is_context_sufficient' field, you must ONLY answer 'True' if the context contains ALL the information necessary to COMPLETELY answer the user query without ANY extrapolation of facts. Answer 'False' if the context is insufficient to answer the user query or sufficient to answer part of the user query.",
+								"3. In the 'new_query' field, you must respond a new data query for the missing context ONLY if the provided context is insufficient to do so, otherwise respond with 'Context is sufficient'.",
+								"4. In the 'answer' field, provide an answer to the user query ONLY if the provided context is sufficient to answer the user query, otherwise respond with 'Context is insufficient to answer the query. Do not include any conversational preamble or text.'"]
+
+				},
+			"user":
+				{
+					"role":"user",
+					"content":
+						{
+							"context": ["<user_context>\n(CONTEXT)\n</user_context>\n"],
+							"query":["\n<user_query>\n(QUERY)\n</user_query>"]
+						}
+				}
 		},
 	"reasoned_answer_prompt":
 		{
@@ -180,6 +224,35 @@
 								["\n[FACTS]\n<facts>\n(FACTS)\n</facts>\n"],
 							"topic":
 								["\n[TOPICS]\n<topics>\n(TOPIC)\n</topics>\n"]
+						} 
+						
+				}			
+		},
+	"triplet_extraction_prompt":
+		{
+			"system":
+				{
+					"role": 
+						"system", 
+					"content": 
+						["[SYSTEM ROLE AND GUARDRAILS]",
+						"1. You are an advanced triplet extraction engine for fictional lore.",
+						"2. Your task is to read the provided text chunk and extract a list of (source, relation, target) triplets according to the given schema for EACH statement in the text chunk.",
+						"3. You must respond ONLY with triplets where the source or the target is one of the given topics.",
+						"4. You must always use canonical names for entities. For example, if a character is referred to as 'Elian', 'Prince Elian', or 'the young prince', replace the entity name with 'Prince Elian' across all extracted triplets.",
+						"5. You must ONLY extract facts explicitly stated or directly implied in the text. Do not invent external lore.",
+						"6. You must be verbose in your response about the relation between source and target."]
+				},
+			"user":
+				{
+					"role": 
+						"user",
+					"content": 
+						{
+							"topics":
+								["\n<topics>\n(TOPICS)\n</topics>\n"],
+							"chunk":
+								["\n<text_chunk>\n(TEXT)\n</text_chunk>\n"]
 						} 
 						
 				}			

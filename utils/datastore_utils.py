@@ -2,31 +2,20 @@ import torch
 from gliner import GLiNER
 import utils.preprocessing as pre
 import numpy as np
-from transformers import AutoModelForSequenceClassification,AutoTokenizer
 from sentence_transformers import SentenceTransformer
 import datasets
 import networkx as nx
 from datasets import Dataset,concatenate_datasets
 import faiss
 import os
-from rank_bm25 import BM25Okapi
 import json
-from fastcoref import FCoref
-import spacy
-import psutil
-import gc
-import shutil
 import re
-import ahocorasick
 from pathlib import Path
 from datetime import datetime, date
 import matplotlib.pyplot as pltk
-import itertools
 import difflib
 import time
 import random
-from sklearn.metrics import silhouette_score
-from sklearn.cluster import KMeans
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 _orig_getattr = torch.nn.Module.__getattr__
@@ -102,6 +91,11 @@ class DatastoreUtilities():
         with open(config['kg_to_ds_map'], "w") as f:
             json.dump(self.kg2ds_map, f, indent=4)
 
+        # REMOVE THIS!
+        for node in self.knowledge_graph.nodes(data=True):
+            if(not('name' in node[1].keys())):
+                self.knowledge_graph.nodes[node[0]]['name'] = 'bruh'
+
         alias_pattern = rf"\b({'|'.join(re.escape(alias[1]['name']) for alias in self.knowledge_graph.nodes(data=True))})\b"
         self.node_finder = re.compile(alias_pattern, flags=re.IGNORECASE)
 
@@ -116,7 +110,9 @@ class DatastoreUtilities():
         documents = []
         for node in nodes:
             update_time = int(time.time())
+            print(node)
             for key,statement in enumerate(self.get_node_summary(node[0])):
+                print(key,statement)
                 documents.append({
                                     'topic':node[1]['name'],
                                     'type':node[1]['type'],
@@ -130,6 +126,7 @@ class DatastoreUtilities():
         return graph_dataset
 
     def filter_dataset(self):
+        print('filter_dataset')
 
         def embed_text(batch):
             # Return a dictionary mapping to your target index string key
@@ -137,6 +134,7 @@ class DatastoreUtilities():
 
         self.save_graph()
         nodes_to_add = self.get_nodes_to_add_to_faiss()
+        print(nodes_to_add)
 
         if(self.dataset):
             nodes_to_remove = [row['node_id'] for row in self.dataset if not(self.knowledge_graph.has_node(row['node_id']))]
@@ -324,13 +322,15 @@ class DatastoreUtilities():
 
     # EDGE FUNCTIONS
 
-    def add_edge(self,head,tail,text):
+    def add_edge(self,head,tail,text,edge_label=""):
         # Add an edge to the graph
-        tags_dict = dict()
-        tags_dict[slugify_key(head)] = []
-        tags_dict[slugify_key(tail)] = []
         time_now = int(time.time())
-        self.knowledge_graph.add_edge(slugify_key(head), slugify_key(tail),desc=text,parsed=False,key=str(self.edge_key),tags=tags_dict, updated=time_now, endpoints=[head,tail])
+        self.knowledge_graph.add_edge(slugify_key(head), 
+                                        slugify_key(tail),
+                                        desc=text,
+                                        key=str(self.edge_key),
+                                        label=edge_label.lower(), 
+                                        updated=time_now)
         self.edge_key += 1
 
         return str(self.edge_key-1)
@@ -344,10 +344,7 @@ class DatastoreUtilities():
 
     def get_edge(self,head,tail):
         # Get all edges between a head and tail node
-        return [(head,tail,k,v['desc'],v['endpoints']) for k,v in self.knowledge_graph.adj[head][tail].items()]
-
-    def parse_edge(self,head,tail,key):
-        self.knowledge_graph.edges[head,tail,key]['parsed'] = True
+        return [(head,tail,k,v['desc'],v['label'],[self.get_node_name(head),self.get_node_name(tail)]) for k,v in self.knowledge_graph.adj[head][tail].items()]
 
     def get_relevant_edges(self,text,threshold=0.8):
         # All relevant edges are structured as list((node,tail,info))
@@ -369,9 +366,9 @@ class DatastoreUtilities():
 
         return all_info
 
-    def set_edge_tags(self,edge,topic,tag):
+    def set_edge_label(self,edge,topic,label):
         head,tail,key,metadata = edge
-        self.knowledge_graph.edges[head,tail,key]['tags'][topic] = [tag]
+        self.knowledge_graph.edges[head,tail,key]['label'] = label
         self.knowledge_graph.edges[head,tail,key]['updated'] = int(time.time())
 
     def get_num_edges(self):
@@ -444,9 +441,18 @@ class DatastoreUtilities():
         print(self.knowledge_graph)
         return edges_log
 
+    def format_edge_data(self,head,tail,key):
+
+        return f"- {self.knowledge_graph.edges[head,tail,key]["label"]} : {self.knowledge_graph.edges[head,tail,key]["desc"]}"
+
     # NODE FUNCTIONS
 
-    def add_node(self,node,type,summary=[],definition=""):
+    def add_node(self,node,type,summary=None,definition=""):
+
+        if(summary):
+            assert type(summary)==dict
+        else:
+            summary = dict()
 
         # Add a node to the graph
         if(not(self.knowledge_graph.has_node(slugify_key(node)))):
@@ -458,8 +464,7 @@ class DatastoreUtilities():
                                             summary=summary,
                                             definition="")
 
-        if(len(summary)>0):
-            assert type(summary)==list
+        if(len(summary.keys())>0):
             self.knowledge_graph.nodes[node]['summary'] = summary
                 
     def get_node_name(self,node_id):
@@ -536,46 +541,29 @@ class DatastoreUtilities():
 
     def has_new_edges(self,node):
 
-        needs_update = any([edge[3]['updated']>self.knowledge_graph.nodes[node]['updated'] for edge in self.get_edges_from(node)])
+        needs_update = any([edge[3]['updated']>=self.knowledge_graph.nodes[node]['updated'] for edge in self.get_edges_from(node)])
 
         return needs_update
 
     def cluster_edge_info(self,node):
 
+        print('cluster_edge_info')
         node = slugify_key(node)
 
-        all_edge_desc = [edge[3]['desc'] for edge in self.get_edges_from(node)]
+        all_edge_desc   = [edge[3]['desc'] for edge in self.get_edges_from(node)]
+        all_edge_labels = list(set([edge[3]['label'] for edge in self.get_edges_from(node)]))
 
-        edge_embeddings = self.text_embedding_model.encode(all_edge_desc, normalize_embeddings=True)
+        edge_clusters = dict()
+        print(node)
+        for label in all_edge_labels:
 
-        if(len(edge_embeddings)>1):
-            best_k = 2
-            best_score = -1
-            for num_clusters in range(2,min((6,len(edge_embeddings)))):
-                skm = KMeans(n_clusters=num_clusters, init='k-means++', n_init=10, random_state=42)
-                skm.fit(edge_embeddings)
+            info_list = [edge[3]['desc'] for edge in self.get_edges_from(node) if edge[3]['label']==label]
+            if(len(info_list)>0):
+                edge_clusters[label] = ' '.join(info_list)
 
-                labels = skm.labels_
-                score = silhouette_score(edge_embeddings, labels, metric='cosine')
+        print(edge_clusters)
 
-                if score > best_score:
-                    best_score = score
-                    best_k = num_clusters
-
-            skm = KMeans(n_clusters=best_k, init='k-means++', n_init=10, random_state=42)
-            skm.fit(edge_embeddings)
-            labels = skm.labels_
-
-            edge_clusters = [[] for i in range(best_k)]
-
-            for idx,l in enumerate(labels):
-                edge_clusters[l].append(all_edge_desc[idx])
-        else:
-            edge_clusters = [[all_edge_desc[0]]]
-
-        for idx in range(len(edge_clusters)):
-            edge_clusters[idx] = "\n".join(edge_clusters[idx])
-
+        print("\n\n---\n\n")
         return edge_clusters
 
     def get_node_info(self,node):
@@ -604,17 +592,6 @@ class DatastoreUtilities():
     def get_node_id(self,node):
         return slugify_key(node)
 
-    def set_node_definition(self,node, definition):
-        node = slugify_key(node)
-
-        if self.knowledge_graph.has_node(node):
-            self.knowledge_graph.nodes[node]['definition'] = definition
-            self.knowledge_graph.nodes[node]['updated'] = int(time.time())
-            print(f"Set Definition of {node} : ",self.knowledge_graph.nodes[node]['definition'])
-            return True
-
-        return False
-
     def get_node_definition(self,node):
         node = slugify_key(node)
 
@@ -626,18 +603,18 @@ class DatastoreUtilities():
         node = slugify_key(node)
 
         if self.knowledge_graph.has_node(node):
-            self.knowledge_graph.nodes[node]['summary'] = []
+            self.knowledge_graph.nodes[node]['summary'] = dict()
             self.knowledge_graph.nodes[node]['updated'] = int(time.time())
             return True
 
         return False
 
-    def add_to_node_summary(self,node,summary):
+    def add_to_node_summary(self,node,summary,topic):
 
         node = slugify_key(node)
 
         if self.knowledge_graph.has_node(node):
-            self.knowledge_graph.nodes[node]['summary'].append(summary)
+            self.knowledge_graph.nodes[node]['summary'][topic] = summary
             self.knowledge_graph.nodes[node]['updated'] = int(time.time())
             print(f"Set Summary of {node} : ",self.knowledge_graph.nodes[node]['summary'])
             return True
@@ -647,7 +624,67 @@ class DatastoreUtilities():
     def get_node_summary(self,node):
         return self.knowledge_graph.nodes[slugify_key(node)]['summary'] if self.knowledge_graph.has_node(slugify_key(node)) else []
     
-    # GRAPH FUNCTIONS
+    def format_node_data(self,node,edge_filters=None):
+
+        node = slugify_key(node)
+
+        if self.knowledge_graph.has_node(node):
+            node_summary = self.knowledge_graph.nodes[node]['summary']
+
+        formatted_summary = ''
+        for key,value in node_summary.items():
+
+            if(edge_filters):
+                if(key in edge_filters):
+                    formatted_summary += f"- {key} : {value}\n"
+            else:
+                formatted_summary += f"- {key} : {value}\n"
+
+        return formatted_summary
+
+    def explore_neighborhood(self,node,neighborhood=[],n_hops=1,edge_filters=None):
+
+        if(edge_filters):
+            def filter_function(u, v, k):
+                return self.knowledge_graph.edges[u,v,k]["label"] in edge_filters
+
+            neighborhood_graph = nx.subgraph_view(self.knowledge_graph, filter_edge=filter_function)
+        else:
+            neighborhood_graph = self.knowledge_graph
+
+        node = slugify_key(node)
+
+        if(n_hops>0):
+            node_neighbors = self.knowledge_graph.neighbors(node)
+            for neighbor in node_neighbors:
+                if(not((node,neighbor) in neighborhood) and not((neighbor,node) in neighborhood)):
+                    neighborhood.append((node,neighbor))
+                    new_set = self.explore_neighborhood(neighbor,n_hops=(n_hops-1),neighborhood=neighborhood,edge_filters=edge_filters)
+
+        return neighborhood
+
+    def find_path_between(self,head,tail,edge_filters=None):
+
+        source = slugify_key(source)
+        target = slugify_key(target)
+
+        path = None
+
+        if(self.knowledge_graph.has_node(source) and self.knowledge_graph.has_node(target)):
+            if(edge_filters):
+
+                def filter_function(u, v, k):
+                    return self.knowledge_graph.edges[u,v,k]["label"] in edge_filters
+
+                filtered_graph = nx.subgraph_view(self.knowledge_graph, filter_edge=filter_function)
+
+                if nx.has_path(filtered_graph, source, target):
+                    path = nx.shortest_path(filtered_graph, source=source, target=target)
+            else:
+                if nx.has_path(self.knowledge_graph, source, target):
+                    path = nx.shortest_path(self.knowledge_graph, source=source, target=target)
+
+        return path
 
     def get_relevant_nodes(self,query,k=10, threshold=0.4):
 
@@ -694,12 +731,22 @@ class DatastoreUtilities():
 
         return relevant_edge_info
 
-    def find_all_unique_paths(self,nodes):
+    def find_all_unique_paths(self,nodes, edge_filters=None):
+
+        if(edge_filters):
+            def filter_function(u, v, k):
+                return self.knowledge_graph.edges[u,v,k]["label"] in edge_filters
+
+            filtered_graph = nx.subgraph_view(self.knowledge_graph, filter_edge=filter_function)
+        else:
+            filtered_graph = self.knowledge_graph
+
+
         all_paths = []
         for idx in range(len(nodes)):
             for jdx in range(len(nodes)):
                 if(not(idx==jdx)):
-                    path = self.find_path(nodes[idx],nodes[jdx])
+                    path = self.find_path(nodes[idx],nodes[jdx],filtered_graph=filtered_graph)
                     if(path):
                         all_paths.append(path)
 
@@ -770,19 +817,6 @@ class DatastoreUtilities():
 
         return paths_info
 
-    def graph_multihop(self,node,n_hops=1,neighborhood=[]):
-
-        if(len(neighborhood)==0):
-            neighborhood = [node]
-
-        if(n_hops>0):
-            node_neighbors = self.knowledge_graph.neighbors(node)
-            for neighbor in node_neighbors:
-                if(not(neighbor in neighborhood)):
-                    neighborhood.append(neighbor)
-                    new_set = self.graph_multihop(neighbor,n_hops=(n_hops-1),neighborhood=neighborhood)
-        return neighborhood
-
     def get_unparsed_edges(self,node):
         unparsed_edges = [edge for edge in self.knowledge_graph.edges(node,keys=True,data=True) if self.knowledge_graph.nodes[node]['updated']<edge[3]['updated']]
         return unparsed_edges
@@ -800,15 +834,18 @@ class DatastoreUtilities():
         
         return similar_pairs
 
-    def find_path(self,source,target):
+    def find_path(self,source,target,filtered_graph=None):
 
         source = slugify_key(source)
         target = slugify_key(target)
 
+        if(not(filtered_graph)):
+            filtered_graph = self.knowledge_graph
+
         path = None
-        if(self.knowledge_graph.has_node(source) and self.knowledge_graph.has_node(target)):
-            if nx.has_path(self.knowledge_graph, source, target):
-                path = nx.shortest_path(self.knowledge_graph, source=source, target=target)
+        if(filtered_graph.has_node(source) and filtered_graph.has_node(target)):
+            if nx.has_path(filtered_graph, source, target):
+                path = nx.shortest_path(filtered_graph, source=source, target=target)
 
         return path
 
@@ -832,18 +869,33 @@ class DatastoreUtilities():
         else:
             return False
 
-    # TODO ENDS
+    def export_graph(self):
 
-    def find_topics_in_text(self,text):
+        # Export all node and edge info
 
-        topics = self.get_all_nodes()
+        graph_data = dict()
 
-        alias_pattern = rf"\b({'|'.join(re.escape(alias) for alias in topics)})\b"
-        alias_finder = re.compile(alias_pattern, flags=re.IGNORECASE)
+        edges= []
+        for edge in self.knowledge_graph.edges(data=True,keys=True):
+            edge_data = dict()
+            edge_data['head'] = edge[0]
+            edge_data['tail'] = edge[1]
+            edge_data['key'] = edge[2]
+            edge_data['text'] = edge[3]['desc']
+            edges.append(edge_data)
+        
+        nodes = dict()
+        for node in self.knowledge_graph.nodes(data=True):
+            
+            nodes[node[0]] = dict()
+            nodes[node[0]]['name'] = node[1]['name']
+            nodes[node[0]]['type'] = node[1]['type']
 
-        topics_in_text = [name for name in list(set(alias_finder.findall(text))) if len(name)>0]
+        graph_data['nodes'] = nodes
+        graph_data['edges'] = edges
 
-        return topics_in_text
+        with open(f"{self.config['data_dir']}/graph_json_{self.kg2ds_map['unsaved_versions'][-1]}.json", "w") as f:
+            json.dump(graph_data, f, indent=4)
 
     def save_graph(self,draw_figure=False):
 
@@ -919,15 +971,103 @@ class DatastoreUtilities():
 
     # RAG FUNCTIONS
 
-    def get_context_from_neighborhood(self,neighborhood):
+    def get_context_from_paths(self,paths,edge_filters=None):
 
-        neighborhood_context = [('node',node,self.get_node_definition(node)) for node in list(set(neighborhood))]
-        formatted_context = self.format_path_context(neighborhood_context)
+        path_data_to_format = []
+        nodes_added = []
+        context = ""
+        for path in paths:
+            
+            for idx in range(len(path)-1):
+                head = path[idx]
+                tail = path[idx+1]
+
+                if(not(head in nodes_added)):
+                    path_data_to_format.append(('node',self.format_node_data(head,None),self.get_node_name(head)))
+                    nodes_added.append(head)
+
+                relevant_edges = []
+                for edge in self.get_edge(head,tail):
+                    head,tail,key,text,label = edge
+                    if(label in edge_filters):
+                        relevant_edges.append(self.format_edge_data(head,tail,key))
+
+                path_data_to_format.append(('edge','\n'.join(relevant_edges),self.get_node_name(head),self.get_node_name(tail)))
+
+
+                if(not(tail in nodes_added)):
+                    path_data_to_format.append(('node',self.format_node_data(tail,None),self.get_node_name(tail)))
+                    nodes_added.append(tail)
+
+            context += self.format_context(path_data_to_format)+'\n\n'
+
+        return context
+
+    def get_context_from_neighborhood(self,neighborhood,edge_filters=None):
+
+        if(edge_filters):
+            def filter_function(u, v, k):
+                return self.knowledge_graph.edges[u,v,k]["label"] in edge_filters
+
+            filtered_graph = nx.subgraph_view(self.knowledge_graph, filter_edge=filter_function)
+        else:
+            filtered_graph = self.knowledge_graph
+
+        relevant_edges = []
+        for head,tail in neighborhood:
+            relevant_edges += [(head,tail,k) for k,v in filtered_graph.adj[head][tail].items()]
+
+        relevant_edges = list(set(relevant_edges))
+
+        relevant_nodes = list(set([r[0] for r in relevant_edges]+[r[1] for r in relevant_edges]))
+
+        nodes_to_format = []
+        for node in relevant_nodes:
+            # TODO
+            nodes_to_format.append(('node',self.format_node_data(node,edge_filters),self.get_node_name(node)))
+
+        formatted_node_context = self.format_context(nodes_to_format)
+
+        edges_to_format = []
+        for edge in relevant_edges:
+            head,tail,key = edge
+            edges_to_format.append(('edge',self.format_edge_data(head,tail,key),self.get_node_name(head),self.get_node_name(tail)))
+
+        formatted_edge_context = self.format_context(edges_to_format)
+
+        formatted_context = f"{formatted_node_context}\n{formatted_edge_context}"
 
         return formatted_context
 
+    def get_graph_rag_context(self,user_query,strategy='explore_neighborhood',categories=None,threshold=0.4,k=10):
 
-    def get_graph_rag_context(self,query,threshold=0.4,k=10):
+        nodes_in_results = self.get_relevant_nodes(user_query,threshold=threshold,k=k)
+
+        if(strategy=='explore_neighborhood'):
+            neighborhood = []
+            for node in nodes_in_results:
+                neighborhood = self.explore_neighborhood(node,neighborhood,n_hops=1,edge_filters=categories)
+
+            context = self.get_context_from_neighborhood(neighborhood,edge_filters=categories)
+
+        if(strategy=='find_path_between'):
+
+            if(categories):
+                def filter_function(u, v, k):
+                    return self.knowledge_graph.edges[u,v,k]["label"] in categories
+
+                filtered_graph = nx.subgraph_view(self.knowledge_graph, filter_edge=filter_function)
+            else:
+                filtered_graph = self.knowledge_graph
+
+            edge_paths = self.find_all_unique_paths(nodes_in_results, edge_filters=categories)
+
+            context = self.get_context_from_paths(edge_paths,edge_filters=categories)
+
+
+        return context
+
+    def legacy_get_graph_rag_context(self,query,threshold=0.4,k=10):
         #def get_graph_rag_context(self,query,graph,documents_lookup,threshold=0.4,k=10,hops=1):
 
         # need self.knowledge_graph, self.documents_lookup
@@ -971,203 +1111,15 @@ class DatastoreUtilities():
 
         return cosine_sim
 
-    def format_path_context(self,paths):
+    def format_context(self,paths):
         context_text = ""
         for p in paths:
             if(p[0]=='node'):
-                context_text += f"<context_about_{p[1]}>\n{p[2]}\n</context_about_{p[1]}>\n\n"
+                context_text += f"<information>\nTopic : {p[2]}\n{p[1]}</information>\n\n"
             if(p[0]=='edge'):
-                context_text += f"<relationship_between_{p[1]}>\n{p[2]}\n</relationship_between_{p[1]}>\n\n"
+                if(p[2]==p[3]):
+                    context_text += f"<information>\nTopic : {p[2]}\n{p[1]}\n</information>\n\n"
+                else:
+                    context_text += f"<relationship>\nTopic : Relationship between {p[2]} and {p[3]}\n{p[1]}\n</relationship>\n\n"
 
         return context_text
-    # May not need functions beyond this.
-    def get_most_relevant_file(self,query,threshold,k):
-
-        query_vector = self.embed_text(query)
-        scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=k)
-    
-        if scores[0] >= threshold:
-            return examples
-        else:
-            return []
-
-    def filter_similar_text(self,text_list,cosine_similarity,threshold=0.8):
-        # Text list should be what you want to filter the similar sentences from
-        # Returns two lists, similar_text and unique_text
-
-        similar_text = []
-        unique_text = []
-
-        omitted_idxs = []
-        for idx in range(len(text_list)):
-            if(not(idx in omitted_idxs)):
-                similar_idxs = torch.nonzero(cosine_similarity[idx]>0.8,as_tuple=True)[0]
-                for sim_idx in similar_idxs:
-                    omitted_idxs.append(sim_idx)
-                unique_text.append(text_list[idx].strip()+'.')
-
-        similar_text = [text_list[idx] for idx in omitted_idxs]
-
-        return unique_text,similar_text
-
-    def load_files(self):
-        # Return only the files that have been updated
-
-        dataset_update_time = os.path.getmtime(self.faiss_dataset_path)
-
-        # Ensure tags field exists in raw json files
-        files = os.listdir(self.jsonstore_dir)
-        
-        documents = []
-        for filename in files:
-
-            if(filename.split('.')[-1]=='json'):
-
-                file_update_time = os.path.getmtime(f'{self.jsonstore_dir}/{filename}')
-
-                if(file_update_time>dataset_update_time):
-
-                    with open(self.jsonstore_dir+'/'+filename, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-
-                    # 2. Parse JSON data into LangChain Document objects
-                    # Adjust keys ('text', 'metadata') based on your JSON structure    
-
-                    keys = data['data'].keys()
-
-                    text = []
-                    for key in keys:
-                        if(len(data['data'][key])>0):
-                            text = f"{uppercase(key)} of {uppercase(data['name'])} : {' '.join(data['data'][key])}"
-                            metadata = {'name':data['name'],'type':data['type'],'tags':data['tags']+[key],'related':data['related']}
-                            #documents.append(Document(page_content=text, metadata=metadata))
-                            documents.append({'text':text,
-                                'name':metadata['name'],
-                                'id': f"{metadata['name']}.{key}",
-                                'type':metadata['type'],
-                                'tags':metadata['tags'],
-                                'related':metadata['related']})
-
-        return documents
-
-    def create_knowledge_graph(self):
-
-        graph = nx.DiGraph()
-        files = os.listdir(self.jsonstore_dir)
-
-        # Pass 1: Map every filename to its entity 'name'
-
-        documents_lookup = {}
-        for d in self.dataset:
-            documents_lookup[d['id']] = d['text']
-
-
-        for d in self.dataset:
-            graph.add_node(d['id'], type=d['type'])
-
-        for d in self.dataset:
-            if(len(d['text'].split(':')[-1].strip())>0):
-                scores, neighbors = self.dataset.get_nearest_examples("embeddings", np.array(d['embeddings']), k=20)
-
-                for i in range(len(scores)):
-                    if (scores[i] >= 0.6 and not(d['id']==neighbors['id'][i])):
-                        graph.add_edge(d['id'], neighbors['id'][i])
-
-        return graph, documents_lookup
-
-    def update_links(self):
-
-        # Updates the links within JSON files.
-
-        files = os.listdir(self.jsonstore_dir)
-        topics = []
-        for filename in files:
-            if(filename.split('.')[-1]=='json'):
-
-                with open(self.jsonstore_dir+'/'+filename, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-
-                topics.append(data['name'])
-
-        A = ahocorasick.Automaton()
-        for name in topics:
-          A.add_word(name.lower(), name)  # store original name as value
-        A.make_automaton()
-
-        for filename in files:
-            if(filename.split('.')[-1]=='json'):
-
-                with open(self.jsonstore_dir+'/'+filename, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-
-                keys = data['data'].keys()
-                source_name = data['name']
-                data['related'] = dict()
-
-                for key in keys:
-                    found_targets = set()
-                    text = ' '.join(data['data'][key])
-
-                    data['related'][key] = []
-
-                    # Scan the text in a single efficient pass
-                    for end_index, original_name in A.iter(text.lower()):
-                        if original_name != source_name.lower():
-                            found_targets.add(original_name)
-
-                    for target in found_targets:
-                        targetname = target.title().lower()
-                        targetname = re.sub(r'[^a-zA-Z0-9]', '_', targetname)
-                        data['related'][key].append(targetname+'.json')
-                        
-
-                with open(self.jsonstore_dir+'/'+filename, "w") as f:
-                    data = json.dump(data, f, indent=4)
-
-    def get_json_data(self):
-
-        # Updates the tags within JSON files.
-
-        files = os.listdir(self.jsonstore_dir)
-        json_text = dict()
-        for filename in files:
-            if(filename.split('.')[-1]=='json'):
-
-                with open(self.jsonstore_dir+'/'+filename, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-
-                json_text[data['name']] = []
-
-                keys = data['data'].keys()
-
-                for key in keys:
-                    json_text[data['name']].append(' '.join(data['data'][key]))
-
-                json_text[data['name']] = ''.join(json_text[data['name']])
-
-        return json_text
-
-    def does_file_exist(self,name):
-        entity = name.lower()
-        filename = re.sub(r'[^a-zA-Z0-9]', '_', entity)
-        exists = Path(f"{self.jsonstore_dir}/{filename}.json").exists()
-        return exists
-        
-    def save_json(self,name,data):
-        entity = name.lower()
-        filename = re.sub(r'[^a-zA-Z0-9]', '_', entity)
-        with open(self.jsonstore_dir+'/'+filename+'.json', "w") as file:
-            json.dump(data, file, indent=4)
-
-    def load_json(self,name):
-
-        entity = name.lower()
-        filename = re.sub(r'[^a-zA-Z0-9]', '_', entity)
-        exists = Path(f"{self.jsonstore_dir}/{filename}.json").exists()
-        if(exists):
-            with open(f"{self.jsonstore_dir}/{filename}.json", "r") as file:
-                data = json.load(file)
-        else:
-            data = None
-
-        return exists, data

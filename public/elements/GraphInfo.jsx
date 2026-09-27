@@ -125,16 +125,16 @@ export default function GraphInfo() {
 
       <CardContent style={{display: 'grid', gridTemplateColumns: '440px 20px', gap: '10px', 'column-gap': '4px', width: '100%'}} className="space-y-1">
         <div style={{border: "2px solid #666666", 'border-radius':'8px', padding:'10px'}} className="col-span-2 flex-col space-y-2">
-          {Object.entries(props.wiki).map(([key, value]) =>(
+          <div className="text-lg font-bold">Summary</div>
+          {Object.entries(props.summary).map(([key, value]) =>(
               <div>
-                  <div className="text-lg font-bold">{key.charAt(0).toUpperCase() + key.slice(1)}</div>
                   <p className="text-sm font-medium text-muted-foreground">{value}</p>
               </div>
             ))
           }
         </div>
         <hr style={{border: "10px"}} className="col-span-2"/>
-        {props.edges.map(([head, tail, key,text, endpoints], index) => (
+        {props.edges.map(([head, tail, key,text, type, endpoints], index) => (
           <React.Fragment key={index}>
             <div>
               <div style={{padding: "8px", 'border-radius': '16px', display: 'flex', alignItems: 'center'}} className="col-span-1 text-left text-sm text-muted-foreground">

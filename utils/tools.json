@@ -1,67 +1,39 @@
 {
-    "hypothesize":
+    "get_context":
     {
         "type": "function",
         "function": 
         {
-            "name": "hypothesize",
-            "description": "Generate new hypotheses that build upon the given user idea. Use ONLY when the user requests you to brainstorm, generate novel, new ideas or hypotheses.",
+            "name": "get_rag_context",
+            "description": "Call this ONLY if more context is required to answer the user query.",
             "parameters": 
             {
                 "type": "object",
                 "properties": 
                 {
-                    "user_idea": 
+                    "user_query": 
                         {
                             "type": "str", 
-                            "description": "The idea given by the user."
-                        }
-                },
-                "required": ["user_idea"]
-            }
-        }
-    },
-    "elaborate":
-    {
-        "type": "function",
-        "function": 
-        {
-            "name": "elaborate",
-            "description": "Get more context about a given topic. Use ONLY when the user requests you to elaborate upon a topic, add more context or dive deeper into a topic.",
-            "parameters": 
-            {
-                "type": "object",
-                "properties": 
-                {
-                    "topic_description": 
+                            "description": "The user query verbatim, retaining all named entities."
+                        },
+                    "categories": 
+                        {
+                            "type": "array", 
+                            "description": "The categories of information needed to answer the user query.",
+                            "items": {
+                                        "type": "string",
+                                        "enum":["location", "process", "attribute", "time_period"],
+                                        "minItems": 1
+                                      }
+                        },
+                    "strategy": 
                         {
                             "type": "str", 
-                            "description": "A description of the topic specified by the user."
+                            "description": "Strategy to answer the user query. Choose 'explore_neighborhood' to extract broad context or information related to one entity. Choose 'find_path_between' to find ANY form of interaction, connection or relationship between two or more entities.",
+                            "enum":["explore_neighborhood","find_path_between"]
                         }
                 },
-                "required": ["topic_description"]
-            }
-        }
-    },
-    "default_tool":
-    {
-        "type": "function",
-        "function": 
-        {
-            "name": "default_tool",
-            "description": "Call this ONLY if the user's request can be answered using your internal knowledge and does not require external data or tools.",
-            "parameters": 
-            {
-                "type": "object",
-                "properties": 
-                {
-                    "user_message": 
-                        {
-                            "type": "str", 
-                            "description": "The user query verbatim."
-                        }
-                },
-                "required": ["user_message"]
+                "required": ["user_query"]
             }
         }
     }

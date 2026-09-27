@@ -4,6 +4,59 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import React, { useEffect, useMemo, useState } from 'react';
 
+function DropdownMenu() {
+  const [isOpen, setIsOpen] = useState(false);
+  
+  const [selectedOption, setSelectedOption] = useState('Select an option');
+
+  // Toggle the open/closed state
+  const handleToggle = () => setIsOpen(prev => !prev);
+
+  // Handle option selection and close the menu
+  const handleSelect = (option) => {
+    setSelectedOption(option);
+    setIsOpen(false);
+  };
+
+  return (
+    <div className="relative inline-block text-left">
+      {/* Trigger Button */}
+      <button 
+        onClick={handleToggle}
+        className="inline-flex justify-between items-center w-48 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md shadow-sm hover:bg-gray-50 focus:outline-none"
+      >
+        <span>{selectedOption}</span>
+      </button>
+
+      {/* Dropdown List */}
+      {isOpen && (
+        <div className="absolute left-0 w-48 mt-2 bg-white border border-gray-200 rounded-md shadow-lg z-10">
+          <div className="py-1">
+            <button
+              onClick={() => handleSelect('Option A')}
+              className="block w-full px-4 py-2 text-sm text-left text-gray-700 hover:bg-gray-100"
+            >
+              Option A
+            </button>
+            <button
+              onClick={() => handleSelect('Option B')}
+              className="block w-full px-4 py-2 text-sm text-left text-gray-700 hover:bg-gray-100"
+            >
+              Option B
+            </button>
+            <button
+              onClick={() => handleSelect('Option C')}
+              className="block w-full px-4 py-2 text-sm text-left text-gray-700 hover:bg-gray-100"
+            >
+              Option C
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AddToGraph() {
   const [timeLeft, setTimeLeft] = useState(props.timeout || 6000);
   const [openDropdownId, setOpenDropdownId] = useState(null);
@@ -13,7 +66,7 @@ export default function AddToGraph() {
   const [checkedItems, setCheckedItems] = useState(() => {
     const init = {};
     (props.items || []).forEach((item) => {
-      init[item.id] = [item.text,true, false];
+      init[item.id] = [item.text,true, false, item.label, item.topics];
     });
     return init;
   });
@@ -24,7 +77,7 @@ export default function AddToGraph() {
     console.log(finalText)
     setCheckedItems((prev) => ({
       ...prev,
-      [id]: [finalText,true,false],
+      [id]: [finalText,true,false,prev[id][3],prev[id][4]],
     }));
     console.log(checkedItems)
     setText("")
@@ -36,7 +89,7 @@ export default function AddToGraph() {
   const handleEditToggle = (id, state) => {
     setCheckedItems((prev) => ({
       ...prev,
-      [id]: [prev[id][0],prev[id][1],state],
+      [id]: [prev[id][0],prev[id][1],state,prev[id][3],prev[id][4]],
     }));
   };
 
@@ -44,7 +97,7 @@ export default function AddToGraph() {
   const handleToggle = (id) => {
     setCheckedItems((prev) => ({
       ...prev,
-      [id]: [prev[id][0],!prev[id][1],false],
+      [id]: [prev[id][0],!prev[id][1],false,prev[id][3],prev[id][4]],
     }));
   };
 
@@ -52,11 +105,19 @@ export default function AddToGraph() {
   const handleReset = () => {
     const init = {};
     (props.items || []).forEach((item) => {
-      init[item.id] = [item.text,true,false];
+      init[item.id] = [item.text,true,false,prev[id][3],prev[id][4]];
     });
     setCheckedItems(init);
     setOpenDropdownId(null);
     console.log(checkedItems)
+  };
+
+  const handleSelectOption = (id, option) => {
+    setCheckedItems((prev) => ({
+      ...prev,
+      [id]: [prev[id][0], prev[id][1], prev[id][2], option, prev[id][4]],
+    }));
+    setOpenDropdownId(null);
   };
 
 
@@ -73,8 +134,11 @@ export default function AddToGraph() {
 
       <CardContent className="w-full pt-2">
         {props.items && props.items.length > 0 ? (
-          <div style={{display: 'grid', gridTemplateColumns: '20px 520px', gap: '10px', 'column-gap': '4px', width: '100%'}} className="border-2 border-indigo-500 rounded-lg p-6 bg-card">
+          <div style={{display: 'grid', gridTemplateColumns: '20px 420px 100px', gap: '10px', 'column-gap': '4px', width: '100%'}} className="border-2 border-indigo-500 rounded-lg p-6 bg-card">
             {Object.entries(checkedItems).map(([id, item]) => {
+
+              const isOpen = openDropdownId === id;
+              const currentSelection = checkedItems[id][3]|| "Select option";
 
               return(
              <React.Fragment key={id}>
@@ -104,6 +168,38 @@ export default function AddToGraph() {
                   />):
                    (<span className="text-base px-2 text-foreground " onClick={() => handleEditToggle(id,true)} >{checkedItems[id][0]}</span>)}
               </div>
+
+                <div style={{display: 'flex', alignItems: 'center'}} className="col-span-1 py-1 border-indigo-100 relative">
+                    <div className="w-full">
+                      <button
+                        type="button"
+                        onClick={() => setOpenDropdownId(isOpen ? null : id)}
+                        className="w-full flex justify-between items-center px-3 py-1.5 text-xs text-muted-foreground rounded-md shadow-sm hover:bg-gray-50 focus:outline-none"
+                      >
+                        <span className="truncate">{currentSelection}</span>
+                        <svg className="w-4 h-4 ml-2 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                        </svg>
+                      </button>
+
+                      {isOpen && 
+                        <div className="absolute left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20">
+                          <div className="py-1">
+                            {(item.options || ["Location", "Process", "Attribute", "Time Period"]).map((opt, optIdx) => (
+                              <button
+                                key={optIdx}
+                                type="button"
+                                onClick={() => handleSelectOption(id, opt)}
+                                className="block w-full px-3 py-1.5 text-xs text-left text-gray-700 hover:bg-gray-100 truncate"
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      }
+                    </div>
+                  </div>
 
               </React.Fragment>
             )})}
