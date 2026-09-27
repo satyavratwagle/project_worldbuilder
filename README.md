@@ -1,6 +1,6 @@
 # Quill
 
-Quill is a worldbuilding and brainstorming assistant for novel writers and authors. It turns all your ideas into a Wikipedia for your world! 
+> Quill is a worldbuilding and brainstorming assistant for novel writers and authors. It turns all your ideas into a Wikipedia for your world! 
 
 Quill is able to:
 1. Ingest your ideas as natural language and convert them into interconnected topics, complete with topic summaries and categories.
