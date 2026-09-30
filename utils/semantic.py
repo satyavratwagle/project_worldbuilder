@@ -6,6 +6,7 @@ import os
 from fastcoref import FCoref
 import spacy
 import psutil
+from fastcoref import spacy_component
 from gliclass import GLiClassModel, ZeroShotClassificationPipeline
 
 
@@ -41,36 +42,22 @@ class SemanticTools():
         #self.nlp.add_pipe("fastcoref")
         #self.classifier = pipeline('zero-shot-classification',model='cross-encoder/nli-deberta-v3-large')
 
-    def find_aliases(self,name,corpus):
-        #corpus = str
+    def find_aliases(self,doc,entity_coreferences,entity_dict):
 
-        predictions = self.coreference_model.predict(texts=[corpus])
-        clusters = predictions[0].get_clusters()
-        all_aliases = []
-        for cluster in clusters:
-            if(name in cluster):
-                all_aliases = list(set(cluster))
-                break
+        for cluster,entity_name in entity_coreferences:
 
-        # remove pronouns
-        # Load the lightweight spaCy model
-        nlp = spacy.load("en_core_web_lg")
+            aliases = []
+            for start,end in cluster:
+                span = doc.char_span(start,end)
 
-        # Remove apostrophes and pronouns
-        aliases = []
-    
-        for phrase in all_aliases:
-            doc = nlp(phrase)
-            # Filter out tokens tagged as possessive ('POS')
-            # Alternatively, use token.lemma_ or just drop the POS token and keep the rest
-            filtered_tokens = [token.text for token in doc if token.pos_ != "PRON" and token.tag_ != "POS"]
-            cleaned_phrase = " ".join(filtered_tokens).strip()
-            if cleaned_phrase:
-                aliases.append(cleaned_phrase)
+                if(any([(token.pos_=='PROPN' and not token.dep_=='poss') for token in span])):
+                    entity_dict[entity_name]['aliases'].append(span.text)
 
-        aliases = list(set(aliases))
-                
-        return aliases
+        for key in entity_dict.keys():
+            entity_dict[key]['aliases'] = list(set(entity_dict[key]['aliases']))
+
+        return entity_dict
+
 
     def extract_pos(self,text,pos=None):
 
@@ -161,21 +148,13 @@ class SemanticTools():
 
         return head,relation,tail
 
-    def resolve_coreferences(self,resolved_text,entity_names):
+    def resolve_coreferences(self,doc,entity_names):
 
-        #resolved_text,_ = self.nlp(text,component_cfg={"fastcoref": {"resolve_text": True}})
-        doc = self.nlp(resolved_text,component_cfg={"fastcoref": {"resolve_text": False}})
         clusters = doc._.coref_clusters
-        cluster_text = [[resolved_text[c[0]:c[1]] for c in cluster] for cluster in clusters]
-
         all_replacements = []
-        for cluster in doc._.coref_clusters:
-            cluster_aliases = [resolved_text[start:end] for start,end in cluster]
+        for cluster in clusters:
             for selected_cluster,entity in entity_names:
-                print(list(set(selected_cluster)))
-                print(list(set(cluster_aliases)))
-                print()
-                if(set(selected_cluster).issubset(set(cluster_aliases))):
+                if(set(cluster) == set(selected_cluster)):
                     for start,end in cluster:
                         span = doc.char_span(start,end)
                         is_possessive = any(token.tag_ == "PRP$" for token in span) or any(token.tag_ == "POS" for token in span)
@@ -198,42 +177,37 @@ class SemanticTools():
             else:
                 continue
 
-        final_text = resolved_text
+        final_text = doc.text
         for start, end, replacement in filtered_replacements:
             final_text = final_text[:start] + replacement + final_text[end:]
 
         return final_text
 
-    def get_coref_clusters(self, text, new_text=None):
+    def get_coref_clusters(self, text, selections):
 
-        nlp = spacy.load("en_core_web_lg", exclude=["parser", "lemmatizer", "ner", "textcat"])
-        nlp.add_pipe("fastcoref")
+        self.nlp.add_pipe("fastcoref")
 
-        if(new_text):
-            doc = nlp(f"{text}\n\n{new_text}",component_cfg={"fastcoref": {"resolve_text": True}})
-        else:
-            doc = nlp(text,component_cfg={"fastcoref": {"resolve_text": True}})
+        doc = self.nlp(text,component_cfg={"fastcoref": {"resolve_text": True}})
 
         # 5. Access the fully resolved text via spaCy's custom extension
         resolved_output = doc._.resolved_text
         clusters = doc._.coref_clusters
 
-        cluster_text = [list(set([text[c[0]:c[1]] for c in cluster])) for cluster in clusters]
+        entity_coreferences = []
 
-        '''resolved_output = ''
-        for token in doc:
-            resolved_output += (token.text + token.whitespace_)'''
+        for cluster in clusters:
+            cluster_text = list(set([text[c[0]:c[1]] for c in cluster]))
+            print('Cluster text',cluster_text)
+            kept_aliases = list(filter(lambda key: any([alias in key for alias in cluster_text]),selections))
+            print('Kept aliases',kept_aliases)
+            if(len(kept_aliases)>0):
+                entity_coreferences.append((cluster,kept_aliases[0]))
 
-        #print("--- Original Text ---")
-        #print(text)
+        self.nlp.remove_pipe("fastcoref")
 
-        #print("\n--- Resolved Text ---")
-        #print(resolved_output)
-
-        return resolved_output,cluster_text,doc
+        return doc,entity_coreferences
 
     # Load Models
-
     def load_zsc_model(self):
         # Load Zero-Shot Classification Model
         self.zsc_model = GLiClassModel.from_pretrained(self.config['zero_shot_classification_model'])
@@ -409,6 +383,72 @@ class SemanticTools():
 
         return results
 
+    def legacy_zero_shot_classification(self,texts,labels,context=None,threshold=0.8,prompt=None):
+        # Multi-class Zero-shot classification to generate tags
+        # texts (list(str)) : Text to classify
+        # labels (list)     : Labels to classify as
+        # threshold (float) : Threshold beyond which a label is considered True
+
+        # returns labels (list(list([label,score]))) : Tags for each string in texts.
+
+        '''pipeline = ZeroShotClassificationPipeline(self.zsc_model, self.zsc_tokenizer, classification_type='multi-label', device='mps')
+
+        if(prompt):
+            results = pipeline(texts, labels, prompt=prompt, threshold=threshold)
+        else:
+            results = pipeline(texts, labels, threshold=threshold)
+
+        return [[(score_tuple['label'],score_tuple['score']) for score_tuple in result] for result in results]
+        '''
+
+        if(context):
+            texts = texts+self.zsc_tokenizer.sep_token+"".join(context)
+
+        pipeline = ZeroShotClassificationPipeline(self.zsc_model, self.zsc_tokenizer, classification_type='multi-label', device='mps')
+        pipeline.pipe.sep_token = self.zsc_tokenizer.sep_token
+        #res = pipeline([texts],labels,threshold=0.0)
+
+
+        tokenized_inputs = pipeline.pipe.prepare_inputs([texts],labels,True,examples=None,prompt=None)
+        input_ids = tokenized_inputs["input_ids"][0]
+        sep_indices = (input_ids == self.zsc_tokenizer.sep_token_id).nonzero(as_tuple=True)[0].tolist()
+
+        outputs = self.zsc_model.model.encoder_model(
+                                        tokenized_inputs["input_ids"],
+                                        attention_mask=tokenized_inputs["attention_mask"],
+                                        output_attentions=True,
+                                        output_hidden_states=True,
+                                        return_dict=False
+                                    )
+        final_hidden_states = outputs[0]
+        #print(final_hidden_states.shape)
+
+        logits, loss, pooled_output, classes_embedding = self.zsc_model.model.process_encoder_output(tokenized_inputs["input_ids"],
+                                                                                                        tokenized_inputs['attention_mask'],
+                                                                                                        final_hidden_states,max_num_classes=len(labels))
+
+        _, _, text_token_embeddings, text_mask = self.zsc_model.model._extract_class_features(final_hidden_states, tokenized_inputs["input_ids"], tokenized_inputs["attention_mask"], len(labels))
+
+        filtered_hidden_states = text_token_embeddings#[:,sep_indices[0]:sep_indices[1],:]
+        manual_pooled_output = filtered_hidden_states
+        manual_pooled_output = self.zsc_model.model.pooler(filtered_hidden_states)
+        manual_pooled_output = self.zsc_model.model.text_projector(manual_pooled_output)
+        manual_pooled_output = self.zsc_model.model.dropout(manual_pooled_output)
+
+        scores = torch.sigmoid(torch.einsum("BD,BCD->BC", manual_pooled_output, classes_embedding)).detach().numpy()[0]
+
+        results = [[(labels[i],scores[i]) for i in range(len(labels))]]
+
+        return results
+
+    def check_context_entailment(self,contexts,queries):
+
+        for context in contexts:
+            print(context)
+            for query in queries:
+                c,e,n, = self.get_entailment_probs(context,query)
+                print(f"{query} : {np.round(c,2)} | {np.round(e,2)} | {np.round(n,2)}")
+
     def entity_extraction_chunk(self,chunk,labels=['character','location','artifact','faction','event','time'],entity_threshold=0.7):
 
         chunk = '.\n'.join([c.strip() for c in chunk.split('.')])
@@ -450,3 +490,55 @@ class SemanticTools():
         # Label index 1 is typically 'entailment' in cross-encoder models
         probs = torch.softmax(logits, dim=-1).squeeze()
         return probs[0],probs[1],probs[2] # Contradiction, Entailment, Neutral
+
+    def check_entailment(self,premise: str, hypothesis: str, context:str) -> bool:
+
+        #premise = f"Context: {context}\nPremise: {premise}"
+        #hypothesis = f"hypothesis: {hypothesis}"
+        inputs = nli_tokenizer(premise, hypothesis, return_tensors="pt", truncation=True)
+        with torch.no_grad():
+            logits = nli_model(**inputs).logits
+        # Label index 1 is typically 'entailment' in cross-encoder models
+        probs = torch.softmax(logits, dim=1).squeeze()
+        pred_label = torch.argmax(probs).item()
+        return pred_label == 1  # Returns True if premise entails hypothesis
+
+    def is_semantically_equivalent(self,s1: str, s2: str, context:str) -> bool:
+        return check_entailment(s1, s2, context) and check_entailment(s2, s1, context)
+
+    def compute_semantic_entropy_and_consistency(self,samples, context, sample_probs=None):
+        N = len(samples)
+        if sample_probs is None:
+            sample_probs = np.ones(N) / N  # Black-box uniform weighting
+            
+        clusters = []  # List of lists containing sample indices
+        
+        # 2. Greedy Semantic Clustering
+        for i, sample in enumerate(samples):
+            assigned = False
+            for cluster in clusters:
+                rep_sample = samples[cluster[0]]
+                if is_semantically_equivalent(sample, rep_sample, context):
+                    cluster.append(i)
+                    assigned = True
+                    break
+            if not assigned:
+                clusters.append([i])
+                
+        # 3. Aggregate Probabilities
+        cluster_probs = np.array([sum(sample_probs[i] for i in cluster) for cluster in clusters])
+        normalized_cluster_probs = cluster_probs / np.sum(cluster_probs)
+        
+        # 4. Calculate Semantic Entropy
+        # Adding 1e-12 inside log to prevent log(0)
+        semantic_entropy = -np.sum(normalized_cluster_probs * np.log(normalized_cluster_probs + 1e-12))
+        
+        # 5. Calculate Consistency Score (Dominant Cluster Size / N)
+        max_cluster_size = max(len(cluster) for cluster in clusters)
+        consistency_score = max_cluster_size / N
+        
+        return {
+            "semantic_entropy": float(semantic_entropy),
+            "consistency_score": float(consistency_score),
+            "num_clusters": len(clusters)
+        }

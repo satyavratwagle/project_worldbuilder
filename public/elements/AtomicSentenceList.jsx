@@ -57,7 +57,7 @@ function DropdownMenu() {
   );
 }
 
-export default function AddToGraph() {
+export default function AtomicSentenceList() {
   const [timeLeft, setTimeLeft] = useState(props.timeout || 6000);
   const [openDropdownId, setOpenDropdownId] = useState(null);
   const [editingText, setText] = useState("") 
@@ -185,7 +185,7 @@ export default function AddToGraph() {
                       {isOpen && 
                         <div className="absolute left-0 right-0 mt-1 bg-white border border-gray-200 rounded-md shadow-lg z-20">
                           <div className="py-1">
-                            {(item.options || ["Location", "Process", "Attribute", "Time Period"]).map((opt, optIdx) => (
+                            {(props.options).map((opt, optIdx) => (
                               <button
                                 key={optIdx}
                                 type="button"

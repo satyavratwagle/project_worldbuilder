@@ -11,7 +11,7 @@ import string
 
 import utils.prompts as prompts
 from utils.semantic import SemanticTools
-from utils.pydantic_schema import ReasonedResponse, DecomposedText, NodeSummary, label_map
+from utils.pydantic_schema import ReasonedResponse, DecomposedText, NodeSummary, TextTuple, label_map
 from utils.datastore_utils import DatastoreUtilities, slugify_key
 
 from json_repair import repair_json
@@ -82,7 +82,7 @@ async def update_edit_element(text):
 @cl.cache
 def load_modules():
 
-    du = DatastoreUtilities(config)
+    du = DatastoreUtilities(config,'demo','lore',True)
     du.load_embedding_model()
 
     sem = SemanticTools(config)
@@ -92,6 +92,8 @@ def load_modules():
 
     return du, sem
 
+#sem = SemanticTools(config)
+#sem.load_extraction_model()
 du,sem = load_modules()
 
 #############
@@ -158,7 +160,7 @@ async def show_checklist(entities,message='Select topics.',show_description=True
 
     return chosen_selections
 
-async def show_edges_to_add(sentence_tuples,message='Select topics.',show_description=True):
+async def show_edges_to_add(sentence_tuples,message='Select topics.',top_text="",show_description=True):
     # sentence_tuples list(tuple) : List of (sentence,label,topic) tuples
 
     items_list = []
@@ -168,12 +170,13 @@ async def show_edges_to_add(sentence_tuples,message='Select topics.',show_descri
     
     props = {
             "timeout": 6000,
-            "topText": "Select Info to Add!",
-            "Title": "Select Info to Add!!",
-            "items": items_list}
+            "topText": top_text,
+            "Title": message,
+            "items": items_list,
+            "options":[label_map[schema] for schema in TextTuple.model_json_schema()['properties']['label']['enum']]}
 
     checklist_element = cl.CustomElement(
-        name="AddToGraph",
+        name="AtomicSentenceList",
         props=props
     )
 
@@ -340,6 +343,23 @@ async def on_show_node_info(action: cl.Action):
 
     else:
         await cl.Message(content=f'No node named {node_name} found!').send()
+
+@cl.action_callback("show_context_graph")
+async def on_show_context_graph(action: cl.Action):
+
+    #msg: cl.Message = cl.user_session.get("source_message")
+
+    nodes = action.payload.get("nodes")
+    edges = action.payload.get("edges")
+    
+    fig = du.create_network_figure(nodes,target_edges=[tuple(e) for e in edges])
+    element = cl.Plotly(name="network_graph", figure=fig, display="inline")
+
+    msg = await cl.Message(content="Hover over the nodes or edges for more information!",elements=[element]).send()
+    #msg.elements.append(element)
+    #await msg.update()
+
+
 #############
 
 # Datastore Operations
@@ -381,182 +401,169 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
         graph_name = 'lore_graph'
 
     async with cl.Step(name="Topic Selection",default_open=True) as step:
-        extracted_pos,doc = sem.extract_pos(og_text)
-        head,relation,tail = sem.get_triplets(extracted_pos,doc)
-        text,clusters,doc = sem.get_coref_clusters(og_text)
-
-        resolved_text = og_text
-
         # Extract (Named Entities from Text + Nodes from Graph + Additional User Specified Entities)
-        extracted_entities = sem.named_entity_extraction(resolved_text,labels=['Character','Location','Artifact','Faction','Event'])
-        similar_pairs = du.check_nodes_for_replacement(extracted_entities.keys())        
-
-        # Get user response on what to replace
-        replacements = []
-        for key,node in similar_pairs:
-            actions = [cl.Action(name=name,payload={'alias':name},label=name) for name in ['Yes','No']]
-            response = await cl.AskActionMessage(content=f"'{key}' is similar to existing node '{node['name']}'. Replace?",actions=actions,timeout=30).send()
-            if(response['name']=='Yes'):
-                replacements.append((key,node['name']))
-
-            for old_key,new_key in replacements:
-                if(old_key in extracted_entities.keys()):
-                    extracted_entities[new_key] = extracted_entities.pop(old_key)
-
+        extracted_entities = sem.named_entity_extraction(og_text,labels=['Character','Location','Artifact','Faction','Event'])
 
         # Get user to add More Entities to the nodes to extract
         selection_response = await show_checklist(extracted_entities,message='Please select the topics to add to the story graph!')
-        topic_dict = dict()
-        for k,v in selection_response.items():
-            print(k,v)
-            topic_dict[k] = v[0]
-            
+        selected_keys = set(selection_response.keys())
+        print(selection_response)
+
+        entity_dict = dict()
+        for entity,type in extracted_entities.items():
+            entity_dict[entity] = dict()
+            entity_dict[entity]['aliases'] = []
+
+            if(entity in selection_response.keys()):
+                entity_dict[entity]['type'] = selection_response[entity][0]
+
+        # Replace the known aliases in the chunk with node names
+        similar_pairs = du.check_nodes_for_replacement(entity_dict.keys())     
+
+        # Get user response on what to replace
+        print(entity_dict)
+        replacements = []
+        for key,node in similar_pairs:
+
+            if(key in selection_response.keys()):
+                actions = [cl.Action(name=name,payload={'alias':name},label=name) for name in ['Yes','No']]
+                response = await cl.AskActionMessage(content=f"'{key}' is similar to an existing topic called '{node['name']}'. Are these the same?",actions=actions,timeout=30).send()
+                if(response['name']=='Yes'):
+                    replacements.append((key,node))
+                    selected_keys.discard(key)
+                    selected_keys.add(node['name'])
+            else:
+                replacements.append((key,node))
+
+        for key,node in replacements:
+            og_text = og_text.replace(key,node['name'])
+
+            entity_dict[node['name']] = entity_dict.pop(key)
+            entity_dict[node['name']]['type'] = node['type']
+            entity_dict[node['name']]['aliases'] = []
+
+        print(og_text)
+        print(entity_dict)
+
+        print('Resolving Corefs')
+        print(list(selection_response.keys()))
+        doc,entity_coreferences = sem.get_coref_clusters(og_text,list(entity_dict.keys()))
+        print(entity_coreferences)
+
+        entity_dict = sem.find_aliases(doc,entity_coreferences,entity_dict)
+        resolved_text = sem.resolve_coreferences(doc,entity_coreferences)
+        print(resolved_text)
+
+        keys_to_remove = []
+        for key in entity_dict.keys():
+            if(not(key in selected_keys)):
+                keys_to_remove.append(key)
+
+        for key in keys_to_remove:
+            entity_dict.pop(key)
+
+        print('Final Entity Dict :',entity_dict)
         
     async with cl.Step(name="Extracting Information from Scene",default_open=True) as step:
         # Extract node names from the existing Graph
 
         # Combine all names
-        alias_pattern = rf"\b({'|'.join(re.escape(alias) for alias,type in topic_dict.items())})\b"
+        alias_pattern = rf"\b({'|'.join(re.escape(alias) for alias,type in entity_dict.items())})\b"
         alias_finder = re.compile(alias_pattern, flags=re.IGNORECASE)
 
         # Summarize the scenes
         chunk_idx = 1
+        nodes_to_add = []
+        edges_to_add = []
         for chunk in resolved_text.split('\n\n'):
 
             entities = alias_finder.findall(chunk)
-            entities_with_types = [f"{e} ({topic_dict[e]})" for e in list(set(entities))]
+            entities = list(set(entities))
+            entities_with_types = [f"{e}" for e in entities]
             print(entities_with_types)
 
             # Change the type of the entity if needed.
             #scene_entities = [e['text'] for e in entities[0] if e['text'] in aliased_entity_names]+user_defined_entity_names
-            decomposed_tuples = await decompose_text(chunk,topics=entities_with_types)
 
-            print(decomposed_tuples)
-            
-            # Remove sentences that do not mention the topics of interest.
-            filtered_tuples = [[tuplet[0],tuplet[1],alias_finder.findall(tuplet[0])] for tuplet in decomposed_tuples if len(alias_finder.findall(tuplet[0]))>0]
-            print(filtered_tuples)
-            print()
+            for e_idx,selected_entity in enumerate(entities_with_types):
+                # Filter Chunk to only consider sentences where the entity is mentioned
 
-            for idx,tuplet in enumerate(filtered_tuples):
-                head,tail = sem.split_sentence(tuplet[0])
+                chunk_sentences = chunk.split('.')
+                entity_name = selected_entity.split(' (')[0]
+                print(entity_name)
+                filtered_sentences = list(filter(lambda sentence:entity_name in sentence,chunk_sentences))
+                print(filtered_sentences)
 
-                to_add = dict()
-                to_add['heads'] = list(set(alias_finder.findall(head)))
-                to_add['tails'] = list(set(alias_finder.findall(tail)))
+                decomposed_tuples = await decompose_text(chunk,topics=[selected_entity])
 
-                filtered_tuples[idx][2] = to_add
-
-            # May not need this.
-            #cosine_sim = du.get_cosine_similarity(filtered_sentences)
-            #filtered_sentences,_ = du.filter_similar_text(filtered_sentences,cosine_sim)
-
-            # Convert Sentences to Edges
-            added_edges = []
-            # Change this : Tuples will have labels as well.
-            tuples_to_add = await show_edges_to_add(filtered_tuples)
-            print(tuples_to_add)
-
-            #relationship_tuples = [(sentence,[topic]) for sentence in sentences_to_add for topic in alias_finder.findall(sentence)]
-            #print(relationship_tuples)
-            #sentences_to_add,topics = zip(*relationship_tuples)
-            #triplets = sem.relationship_extraction(sentences_to_add,topics)
-
-            nodes_to_add = []
-            edges_to_add = []
-            for tuplet in tuples_to_add:
-                text,label,topics = tuplet
-
-                nodes_to_add += topics['heads']+topics['tails']
-
-                if(len(topics['heads'])>0 and len(topics['tails'])>0):
-                    for head in topics['heads']:
-                        for tail in topics['tails']:
-                            edges_to_add.append((head,tail,text,label))
-                else:
-                    for node in list(set(topics['heads']+topics['tails'])):
-                        edges_to_add.append((node,node,text,label))
-
-            for node in list(set(nodes_to_add)):
-                du.add_node(node,topic_dict[node])
-
-            for edge in edges_to_add:
-                head,tail,text,label = edge
-                du.add_edge(head,tail,text,edge_label=label)
-
-            du.save_graph()
-
-            '''
-            for sentence in sentences_to_add:
+                print(decomposed_tuples)
                 
-
-                
-                topics = 
-
-                print(sentence)
-                print(topics)
+                # Remove sentences that do not mention the topics of interest.
+                filtered_tuples = [[tuplet[0],tuplet[1],alias_finder.findall(tuplet[0])] for tuplet in decomposed_tuples if len(alias_finder.findall(tuplet[0]))>0]
+                print(filtered_tuples)
                 print()
-                # Parallelize later
-                
 
-                extracted_pos,doc = sem.extract_pos(sentence)
-                head,relation,tail = sem.get_triplets(extracted_pos,doc)
+                for idx,tuplet in enumerate(filtered_tuples):
+                    head,tail = sem.split_sentence(tuplet[0])
 
+                    to_add = dict()
+                    to_add['heads'] = list(set(alias_finder.findall(head)))+list(set(du.node_finder.findall(head)))
+                    to_add['tails'] = list(set(alias_finder.findall(tail)))+list(set(du.node_finder.findall(tail)))
 
-                # Add Triplets to Graph
-                if(head and tail):
-                    heads_to_add = alias_finder.findall(head)
-                    tails_to_add = alias_finder.findall(tail)
+                    filtered_tuples[idx][2] = to_add
 
-                    # Remove duplicates
-                    filtered_heads = []
-                    for head in heads_to_add:
-                        if(not(head in filtered_heads)):
-                            filtered_heads.append(head)
-                    heads_to_add = filtered_heads
+                # May not need this.
+                #cosine_sim = du.get_cosine_similarity(filtered_sentences)
+                #filtered_sentences,_ = du.filter_similar_text(filtered_sentences,cosine_sim)
 
-                    filtered_tails = []
-                    for tail in tails_to_add:
-                        if(not(tail in filtered_tails)):
-                            filtered_tails.append(tail)
-                    tails_to_add = filtered_tails
+                # Convert Sentences to Edges
+                added_edges = []
+                # Change this : Tuples will have labels as well.
+                tuples_to_add = await show_edges_to_add(filtered_tuples,message=f"Please select information about {entities[e_idx]} to remember!")
+                print(tuples_to_add)
 
-                    added_head = len(heads_to_add)>0
-                    added_tail = len(tails_to_add)>0
+                #relationship_tuples = [(sentence,[topic]) for sentence in sentences_to_add for topic in alias_finder.findall(sentence)]
+                #print(relationship_tuples)
+                #sentences_to_add,topics = zip(*relationship_tuples)
+                #triplets = sem.relationship_extraction(sentences_to_add,topics)
 
-                    if(added_head and added_tail):
-                        print(heads_to_add)
-                        print(tails_to_add)
-                        #await cl.Message(f"Added {sentence} related to {', '.join([node for node in heads_to_add+tails_to_add])}").send()
-                        [du.add_node(head_node,topic_dict[head_node]) for head_node in heads_to_add]
-                        [du.add_node(tail_node,topic_dict[tail_node]) for tail_node in tails_to_add]
+                for tuplet in tuples_to_add:
+                    text,label,topics = tuplet
 
-                        for head_node in heads_to_add:
-                            for tail_node in tails_to_add:
-                                key = du.add_edge(head_node,tail_node,sentence)
-                                added_edges.append((head_node,tail_node,key,sentence))
+                    nodes_to_add += topics['heads']+topics['tails']
 
-                    elif(added_head):
-                        print(heads_to_add)
-                        #await cl.Message(f"Added {sentence} related to {', '.join([node for node in heads_to_add])}").send()
-                        [du.add_node(head_node,topic_dict[head_node]) for head_node in heads_to_add]
-                        for head_node in heads_to_add:
-                            key = du.add_edge(head_node,head_node,sentence)
-                            added_edges.append((head_node,head_node,key,sentence))
-                        
-                    elif(added_tail):
-                        print(tails_to_add)
-                        #await cl.Message(f"Added {sentence} related to {', '.join([node for node in tails_to_add])}").send()
-                        [du.add_node(tail_node,topic_dict[tail_node]) for tail_node in tails_to_add]
-                        for tail_node in tails_to_add:
-                            key = du.add_edge(tail_node,tail_node,sentence)
-                            added_edges.append((tail_node,tail_node,key,sentence))
+                    if(len(topics['heads'])>0 and len(topics['tails'])>0):
+                        for head in topics['heads']:
+                            for tail in topics['tails']:
+                                edges_to_add.append((head,tail,text,label))
+                    else:
+                        for node in list(set(topics['heads']+topics['tails'])):
+                            edges_to_add.append((node,node,text,label))
+
+        new_nodes = []
+        for node in list(set(nodes_to_add)):
+            node_id = du.add_node(node,entity_dict[node]['type'],aliases=entity_dict[node]['aliases'])
+            print(f"Added Node : {du.knowledge_graph.nodes[slugify_key(node)]}")
+            new_nodes.append(node_id)
+
+        # Remove redundant edges here.
+
+        edge_idxs_to_keep = du.resolve_text([edge[2] for edge in edges_to_add])
+        filtered_edges = [edges_to_add[idx] for idx in edge_idxs_to_keep]
+
+        new_edges = []
+        for edge in filtered_edges:
+            head,tail,text,label = edge
+            key = du.add_edge(head,tail,text,edge_label=label)
+            new_edges.append((head,tail,key))
+
+        du.save_graph()
+
+        fig = du.create_network_figure(new_nodes,target_edges=[tuple(e) for e in new_edges])
+        element = cl.Plotly(name="network_graph", figure=fig, display="inline")
+        msg = await cl.Message(content="Updated the knowledge graph!",elements=[element]).send()
 
             
-
-            du.save_graph()
-            '''
-
 async def audit_graph(graph_name='graph'):
 
     # Identify new connections and resolve old ones.
@@ -568,43 +575,47 @@ async def audit_graph(graph_name='graph'):
         #du.save_graph()
         for similar_edges in edges_to_resolve:
             if(len(similar_edges)>1):
-                actions=[cl.Action(name=edge[3], payload={"edge_data":edge}, label=f"{edge[0]} to {edge[1]}: {edge[3]}") for edge in similar_edges]
+                actions=[cl.Action(name=edge[3], payload={"edge_data":edge}, label=f"{edge[3]}") for edge in similar_edges]
                 response = await cl.AskActionMessage(content="Which description would you like to keep?",actions=actions,timeout=60).send()
                 selected_edge = tuple(response['payload']['edge_data'])
                 edges_to_delete = [edge for edge in similar_edges if not(edge==selected_edge)]
                 du.knowledge_graph.remove_edges_from(edges_to_delete)
 
         # Find new connections between existing edges.
-        #new_edges = du.find_new_edges()
+        new_edges = du.find_new_edges()
 
-        #for head,tail,text in new_edges:
-        #    await cl.Message(content=f"Found a connection between {head} and {tail}!\n> {text}").send()
-        #du.save_graph()
+        for head,tail,text in new_edges:
+            await cl.Message(content=f"Found a connection between {head} and {tail}!\n> {text}").send()
+        du.save_graph()
 
 async def summarize_nodes():
 
+    updated_nodes = []
     for node in du.get_all_nodes():
 
         # Check if the node needs to be updated
         if(du.has_new_edges(node['id'])):
 
-            du.reset_node_summary(node['id'])
+            #du.reset_node_summary(node['id'])
             edge_info_clusters = du.cluster_edge_info(node['id'])
-            node_info = du.get_node_info(node['id'])
+            print(edge_info_clusters)
 
             message = cl.Message(content=f"## {node['name']}")
             await message.send()
 
             history = []
             props_dict = dict()
-            props_dict["node_name"]         = node['name']
+            props_dict["node_name"] = node['name']
 
-            for key in ['location','process','attribute','time_period']:
+            for key in [label_map[schema] for schema in TextTuple.model_json_schema()['properties']['label']['enum']]:
                 if(key in edge_info_clusters.keys()):
-                    props_dict[key]  = f"<{key}_entry>\n\t{edge_info_clusters[key]}\n</{key}_entry>\n\n"
+                    props_dict[key]  = f"{edge_info_clusters[key]}"
                 else:
-                    props_dict[key]  = f""
+                    props_dict[key]  = f"No {key}-related information available."
             
+            print(props_dict)
+            print(f"\n***\n")
+
             history = prompts.get_node_summary_prompt(props_dict,history)
             cl.user_session.set("chat_history",history)
 
@@ -613,15 +624,21 @@ async def summarize_nodes():
             response = await tokenize_and_generate(temperature=0.3,max_new_tokens=1024, template=NodeSummary)
 
 
-            message.content = f"## {node['name']}\n\n### Location\n{response.location}\n\n\n### Events\n{response.process}\n\n\n### Qualities\n{response.attribute}\n\n\n### History\n{response.time_period}\n"
+            message.content = f"## {node['name']}\n\n### Lore\n{response.lore}\n\n\n### Events\n{response.plot}\n"
             await message.update()
 
-            du.add_to_node_summary(node['id'],response.location,'location')
-            du.add_to_node_summary(node['id'],response.process,'process')
-            du.add_to_node_summary(node['id'],response.attribute,'attribute')
-            du.add_to_node_summary(node['id'],response.time_period,'time_period')
+            du.add_to_node_summary(node['id'],'lore',response.lore,)
+            du.add_to_node_summary(node['id'],'plot',response.plot,)
+
+            updated_nodes.append(node['id'])
+            #du.add_to_node_summary(node['id'],'attribute',response.attribute,)
+            #du.add_to_node_summary(node['id'],'time_period',response.time_period,)
 
     du.save_graph()
+
+    fig = du.create_network_figure(updated_nodes,target_edges=[])
+    element = cl.Plotly(name="network_graph", figure=fig, display="inline")
+    msg = await cl.Message(content="Updated the highlighted nodes!",elements=[element]).send()
 
 async def save_to_faiss():
 
@@ -662,17 +679,15 @@ async def decompose_text(text,topics=[],temperature=0.2):
 
     # Clear out chat history to avoid cross-contamination
     chat_history = cl.user_session.get("chat_history")
-    chat_history = []
+    props_dict = dict()
+    props_dict['topics']                = '\n'.join([f"{topic}" for idx,topic in enumerate(topics)])
+    props_dict['text']                  = text
+    chat_history = prompts.get_text_decomposition_prompt(props_dict,history=[])
     cl.user_session.set("chat_history",chat_history)
 
     settings = cl.user_session.get('settings')
 
-    props_dict = dict()
-    props_dict['topics']                = '\n'.join([f"{idx+1}. {topic}" for idx,topic in enumerate(topics)])
-    props_dict['text']                  = text
-
-    chat_history = prompts.get_text_decomposition_prompt(props_dict,history=chat_history)
-    llm_response = await tokenize_and_generate(temperature=0.0,max_new_tokens=512,template=DecomposedText)
+    llm_response = await tokenize_and_generate(temperature=0.1,max_new_tokens=1024,template=DecomposedText)
 
     print(llm_response)
 
@@ -720,7 +735,7 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
                                     messages=chat_history,
                                     #tools=tools_json,
                                     options={
-                                                'temperature': settings['temperature'],      # Controls randomness (0.0 = deterministic, 1.0 = creative)
+                                                'temperature': temperature,      # Controls randomness (0.0 = deterministic, 1.0 = creative)
                                                 'num_predict': max_new_tokens       # Equivalent to max tokens (maximum tokens to generate)
                                             },
                                     format=template.model_json_schema()
@@ -732,7 +747,7 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
                                     messages=chat_history,
                                     #tools=tools_json,
                                     options={
-                                                'temperature': settings['temperature'],      # Controls randomness (0.0 = deterministic, 1.0 = creative)
+                                                'temperature': temperature,      # Controls randomness (0.0 = deterministic, 1.0 = creative)
                                                 'num_predict': max_new_tokens       # Equivalent to max tokens (maximum tokens to generate)
                                             },
                                     )
@@ -753,7 +768,7 @@ async def choose_and_use_tool(user_message):
     settings = cl.user_session.get("settings")
 
     if(len(chat_history)==0):
-        update_system_prompt("reasoned_answer_prompt")
+        update_system_prompt("tool_use_prompt")
 
     chat_history.append({
                             'role': 'user', 
@@ -783,10 +798,11 @@ async def choose_and_use_tool(user_message):
 
             if function_name in available_tools:
                 tool_to_call = available_tools[function_name]
-                response_stream = await tool_to_call(**function_args)
+                tool_output = await tool_to_call(**function_args)
+                response_stream = await respond_with_tool_output(user_message.content,tool_output)
                 return response_stream
 
-async def respond_with_tool_output(tool_output):
+async def respond_with_tool_output(user_query,tool_output):
 
     chat_history = cl.user_session.get("chat_history")
     settings = cl.user_session.get('settings')
@@ -794,6 +810,10 @@ async def respond_with_tool_output(tool_output):
     chat_history.append({
                             "role": "tool",
                             "content": tool_output,
+                        })
+    chat_history.append({
+                            "role": "user",
+                            "content": user_query,
                         })
 
     cl.user_session.set("chat_history",chat_history)
@@ -853,13 +873,20 @@ async def elaborate(topic_description):
         response_stream = await respond_with_tool_output(context_text)
         return response_stream
 
-async def get_rag_context(user_query,categories,strategy):
+async def get_rag_context(user_query,categories,strategy,thinking_type):
 
-    context = await cl.make_async(du.get_graph_rag_context)(user_query=user_query,strategy=strategy,categories=categories)
 
-    final_response_stream = await respond_with_tool_output(context)
+    context, nodes, edges = await cl.make_async(du.get_graph_rag_context)(user_query=user_query,strategy=strategy,categories=[label_map[categories].lower()])
 
-    return final_response_stream
+    if(thinking_type=='answer'):
+        update_system_prompt('reasoned_answer_prompt')
+    elif(thinking_type=='brainstorm'):
+        update_system_prompt('brainstorming_prompt')
+
+    cl.user_session.set("relevant_nodes", nodes)
+    cl.user_session.set("relevant_edges", edges)
+
+    return context
 
 #############
 
@@ -916,6 +943,10 @@ async def on_chat_start():
     cl.user_session.set("graph_element", graph_element)
     cl.user_session.set("info_edit_element", info_edit_element)
     cl.user_session.set("chat_history", [])
+
+    cl.user_session.set("relevant_nodes", [])
+    cl.user_session.set("relevant_edges", None)
+
     
     #mx.metal.clear_cache()
     #mlx_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -1053,7 +1084,7 @@ async def on_message(user_message: cl.Message):
                 final_response_stream = await choose_and_use_tool(user_message)
                 content = ""
 
-                msg = cl.Message(content="")
+                msg = cl.Message(content="",actions=[cl.Action(name='show_context_graph',payload={'nodes':cl.user_session.get("relevant_nodes"),'edges':cl.user_session.get("relevant_edges")},label='Show Context')])
                 for chunk in final_response_stream:
                     print(chunk.message.content, end='', flush=True)
                     await msg.stream_token(chunk.message.content)
@@ -1064,7 +1095,17 @@ async def on_message(user_message: cl.Message):
                         output_tokens = chunk.get('eval_count',0)
                         print('Input prompt length is currently',prompt_tokens+output_tokens)
 
-                await msg.update()
+                cl.user_session.set("source_message", msg)
+                response = await msg.update()
+
+
+
+                '''nodes = cl.user_session.get("relevant_nodes")
+                edges = cl.user_session.get("relevant_edges")
+
+                fig = du.create_network_figure(nodes,target_edges=edges)
+                element = cl.Plotly(name="network_graph", figure=fig, display="inline")'''
+
 
                 chat_history = cl.user_session.get("chat_history")
 
@@ -1074,3 +1115,4 @@ async def on_message(user_message: cl.Message):
                                     })
 
                 cl.user_session.set("chat_history",chat_history)
+

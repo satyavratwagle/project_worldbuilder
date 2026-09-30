@@ -16,6 +16,10 @@ import matplotlib.pyplot as pltk
 import difflib
 import time
 import random
+import shutil
+import plotly.graph_objects as go
+import textwrap
+
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 _orig_getattr = torch.nn.Module.__getattr__
@@ -39,50 +43,121 @@ def slugify_key(text: str) -> str:
 
 class DatastoreUtilities():
 
-    def __init__(self,config,name="worldbuilding",load_most_recent=True):
+    def __init__(self,config,project_name="worldbuilding",current_graph='lore',is_core_graph=False,load_most_recent=True):
 
         self.config = config
-
         self.kg_to_ds_path = config['kg_to_ds_map']
-        self.ds_name = name
-        self.knowledge_graph_prefix = f"{self.config['graph_dir']}/{self.ds_name}_"
-        self.datastore_prefix = f"{self.config['data_dir']}/FAISS_store/{self.ds_name}_"
+
+        self.project_name = project_name
+
+        # Create the project folders in graphs and datasets if they do not exist.
+        os.makedirs(f"{self.config['graph_dir']}/{self.project_name}", exist_ok=True)
+        os.makedirs(f"{self.config['datastore_dir']}/{self.project_name}", exist_ok=True)
+        
+        self.current_graph = current_graph
+        self.knowledge_graph_prefix = f"{self.config['graph_dir']}/{self.project_name}/{self.current_graph}_"
+        self.datastore_prefix = f"{self.config['datastore_dir']}/{self.project_name}/{self.current_graph}_"
+
+        # Load knowledge-graph to datastore map
 
         if(not(os.path.exists(self.kg_to_ds_path))):
             # kg_to_ds_path should indicate the knowledge graph version contained in the current FAISS dataset and the ones not tracked
             kg2ds = dict()
-            kg2ds['datastore_version'] = None
-            kg2ds['datastore_last_saved'] = 0
-            kg2ds['unsaved_versions'] = []
+            kg2ds[self.project_name] = dict()
+            kg2ds[self.project_name][self.current_graph] = dict()
+            kg2ds[self.project_name][self.current_graph]['datastore_version'] = None
+            kg2ds[self.project_name][self.current_graph]['datastore_last_saved'] = 0
+            kg2ds[self.project_name][self.current_graph]['unsaved_versions'] = []
+            kg2ds[self.project_name][self.current_graph]['is_core_graph'] = is_core_graph
             self.kg2ds_map = kg2ds
+
+            with open(config['kg_to_ds_map'], "w") as f:
+                json.dump(self.kg2ds_map, f, indent=4)
         else:
             with open(self.kg_to_ds_path, "r", encoding="utf-8") as f:
                 self.kg2ds_map = json.load(f)
 
+            if(not(self.project_name) in self.kg2ds_map.keys()):
+                self.kg2ds_map[self.project_name] = dict()
 
-        # First check for the knowledge graph
+            if(not(self.current_graph) in self.kg2ds_map[self.project_name].keys()):
+                self.kg2ds_map[self.project_name][self.current_graph] = dict()
+                self.kg2ds_map[self.project_name][self.current_graph]['datastore_version'] = None
+                self.kg2ds_map[self.project_name][self.current_graph]['datastore_last_saved'] = 0
+                self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'] = []
+                self.kg2ds_map[self.project_name][self.current_graph]['is_core_graph'] = is_core_graph
 
-        if(len(self.kg2ds_map['unsaved_versions'])>0 and os.path.exists(f"{self.knowledge_graph_prefix}{self.kg2ds_map['unsaved_versions'][-1]}.gml")):
-            # load the latest knowledge graph
-            self.knowledge_graph = nx.read_gml(f"{self.knowledge_graph_prefix}{self.kg2ds_map['unsaved_versions'][-1]}.gml")
+        # First check for the core knowledge graph
+
+        self.core_graph = None
+        if(not(self.kg2ds_map[self.project_name][self.current_graph]['is_core_graph'])):
+            for key in self.kg2ds_map[self.project_name].keys():
+                if(self.kg2ds_map[self.project_name][key]['is_core_graph']):
+                    self.core_graph_name = key
+
+                    self.core_knowledge_graph_prefix = f"{self.config['graph_dir']}/{self.project_name}/{self.core_graph_name}_"
+                    self.core_datastore_prefix = f"{self.config['datastore_dir']}/{self.project_name}/{self.core_graph_name}_"
+
+                    print(f"Core Graph for project {self.project_name} : {self.core_knowledge_graph_prefix}{self.kg2ds_map[self.project_name][self.core_graph_name]['unsaved_versions']}.gml")
+                    if(len(self.kg2ds_map[self.project_name][key]['unsaved_versions'])>0 and os.path.exists(f"{self.core_knowledge_graph_prefix}{self.kg2ds_map[self.project_name][self.core_graph_name]['unsaved_versions'][-1]}.gml")):
+                        self.core_graph = nx.read_gml(f"{self.knowledge_graph_prefix}{self.kg2ds_map[self.project_name][self.core_graph_name]['unsaved_versions'][-1]}.gml")
+
+            if(not(self.core_graph)):
+                # If core graph does not exist, create an empty graph to serve as a core graph to make things cleaner later.
+                self.core_graph = nx.MultiGraph()
+            
+
+        # Load up the current graph
+        
+        if(len(self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'])>0 and os.path.exists(f"{self.knowledge_graph_prefix}{self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'][-1]}.gml")):
+            self.knowledge_graph = nx.read_gml(f"{self.knowledge_graph_prefix}{self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'][-1]}.gml")
             self.edge_key = (max([int(e[2]) for e in self.knowledge_graph.edges(keys=True)])+1) if len(self.knowledge_graph.edges(keys=True))>0 else 1
-            self.kg_loaded_version = self.kg2ds_map['unsaved_versions'][-1]
+            self.kg_loaded_version = self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'][-1]
         else:
             kg_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.knowledge_graph = nx.MultiGraph()
             nx.write_gml(self.knowledge_graph, f"{self.knowledge_graph_prefix}{kg_suffix}.gml")
-            self.kg2ds_map['unsaved_versions'].append(kg_suffix)
+            self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'].append(kg_suffix)
             self.edge_key = 1
             self.kg_loaded_version = kg_suffix
 
-        print(f"Loaded Graph Version : {self.kg_loaded_version} : {self.knowledge_graph}")
-        
-        if(self.kg2ds_map['datastore_version'] and not(os.path.exists(f"{self.datastore_prefix}{self.kg2ds_map['datastore_version']}"))):
-            self.kg2ds_map['datastore_version'] = None
+        print(f"Loaded Graph Version : {self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'][-1]} : {self.knowledge_graph}")
 
-        if(self.kg2ds_map['datastore_version']):
-            self.dataset = datasets.load_from_disk(f"{self.datastore_prefix}{self.kg2ds_map['datastore_version']}")
-            self.dataset.load_faiss_index("embeddings", f"{self.datastore_prefix}{self.kg2ds_map['datastore_version']}.faiss")
+        if(self.kg2ds_map[self.project_name][self.current_graph]['is_core_graph']):
+
+            print('Setting Core Graph as Current Graph!')
+
+            self.core_graph = self.knowledge_graph
+            self.core_graph_name = self.current_graph
+            print("Core Graph is the current graph!")
+            
+            self.core_knowledge_graph_prefix = self.knowledge_graph_prefix
+            self.core_datastore_prefix = self.datastore_prefix
+
+        assert not(self.core_graph==None)
+
+        # Load up the datastore for the core graph
+
+        if(not(self.core_graph_name == self.current_graph)):
+
+            if(self.kg2ds_map[self.project_name][self.core_graph_name]['datastore_version'] and not(os.path.exists(f"{self.core_datastore_prefix}{self.kg_loaded_version}"))):
+                self.kg2ds_map[self.project_name][self.core_graph_name]['datastore_version'] = None
+
+            if(self.kg2ds_map[self.project_name][self.core_graph_name]['datastore_version']):
+                self.core_dataset = datasets.load_from_disk(f"{self.core_datastore_prefix}{self.kg_loaded_version}")
+                self.core_dataset.load_faiss_index("embeddings", f"{self.core_datastore_prefix}{self.kg_loaded_version}.faiss")
+            else:
+                # No datastore was found
+                self.core_dataset = None
+        
+        # Load up the datastore for the current graph
+
+        if(self.kg2ds_map[self.project_name][self.current_graph]['datastore_version'] and not(os.path.exists(f"{self.datastore_prefix}{self.kg_loaded_version}"))):
+            self.kg2ds_map[self.project_name][self.current_graph]['datastore_version'] = None
+
+        if(self.kg2ds_map[self.project_name][self.current_graph]['datastore_version']):
+            self.dataset = datasets.load_from_disk(f"{self.datastore_prefix}{self.kg_loaded_version}")
+            self.dataset.load_faiss_index("embeddings", f"{self.datastore_prefix}{self.kg_loaded_version}.faiss")
         else:
             # No datastore was found
             self.dataset = None
@@ -91,15 +166,15 @@ class DatastoreUtilities():
         with open(config['kg_to_ds_map'], "w") as f:
             json.dump(self.kg2ds_map, f, indent=4)
 
-        # REMOVE THIS!
-        for node in self.knowledge_graph.nodes(data=True):
-            if(not('name' in node[1].keys())):
-                self.knowledge_graph.nodes[node[0]]['name'] = 'bruh'
+        # Find nodes based on aliases and map them back to the node
 
-        alias_pattern = rf"\b({'|'.join(re.escape(alias[1]['name']) for alias in self.knowledge_graph.nodes(data=True))})\b"
+        self.all_aliases = [alias for node in self.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']]
+        print("Aliases : ",self.all_aliases)
+        alias_pattern = rf"\b({'|'.join(re.escape(alias) for alias in self.all_aliases)})\b"
         self.node_finder = re.compile(alias_pattern, flags=re.IGNORECASE)
+        self.alias_map = {alias:node[0] for node in self.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']}
 
-        # CLEAN UP OLD KNOWLEDGE GRAPHS
+        print("Alias Map : ",self.alias_map)
             
     # FAISS DATASET FUNCTIONS
 
@@ -110,9 +185,7 @@ class DatastoreUtilities():
         documents = []
         for node in nodes:
             update_time = int(time.time())
-            print(node)
-            for key,statement in enumerate(self.get_node_summary(node[0])):
-                print(key,statement)
+            for key,statement in self.get_node_summary(node[0]).items():
                 documents.append({
                                     'topic':node[1]['name'],
                                     'type':node[1]['type'],
@@ -134,7 +207,6 @@ class DatastoreUtilities():
 
         self.save_graph()
         nodes_to_add = self.get_nodes_to_add_to_faiss()
-        print(nodes_to_add)
 
         if(self.dataset):
             nodes_to_remove = [row['node_id'] for row in self.dataset if not(self.knowledge_graph.has_node(row['node_id']))]
@@ -195,8 +267,8 @@ class DatastoreUtilities():
     def overwrite_faiss_dataset(self,new_dataset,cosine_index,temp_name='_temp'):
         
         if(new_dataset):
-            temp_dataset_path = f"{self.config['data_dir']}/FAISS_store/{temp_name}"
-            temp_faiss_path = f"{self.config['data_dir']}/FAISS_store/{temp_name}.faiss"
+            temp_dataset_path = f"{self.config['datastore_dir']}/{self.project_name}/{temp_name}"
+            temp_faiss_path = f"{self.config['datastore_dir']}/{self.project_name}/{temp_name}.faiss"
 
             new_dataset.info.description = str(int())
 
@@ -209,22 +281,22 @@ class DatastoreUtilities():
             new_dataset.save_faiss_index("faiss_cosine", temp_faiss_path)
 
             # Delete old dataset if exists
-            for folder in os.listdir(f"{self.config['data_dir']}/FAISS_store/"):
-                if(os.path.isdir(f"{self.config['data_dir']}/FAISS_store/{folder}") and not(folder==temp_name)):
-                    shutil.rmtree(f"{self.config['data_dir']}/FAISS_store/{folder}")
-                    os.remove(f"{self.config['data_dir']}/FAISS_store/{folder}.faiss")
+            for folder in os.listdir(f"{self.config['datastore_dir']}/{self.project_name}"):
+                if(os.path.isdir(f"{self.config['datastore_dir']}/{self.project_name}/{folder}") and not(folder==temp_name)):
+                    shutil.rmtree(f"{self.config['datastore_dir']}/{self.project_name}/{folder}")
+                    os.remove(f"{self.config['datastore_dir']}/{self.project_name}/{folder}.faiss")
 
             # Rename temporary location
             os.rename(temp_dataset_path,f"{self.datastore_prefix}{self.kg_loaded_version}")
             os.rename(temp_faiss_path,f"{self.datastore_prefix}{self.kg_loaded_version}.faiss")
 
-            self.kg2ds_map['datastore_version'] = self.kg_loaded_version
-            self.kg2ds_map['unsaved_versions'] = [self.kg_loaded_version]
+            self.kg2ds_map[self.project_name][self.current_graph]['datastore_version'] = self.kg_loaded_version
+            self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'] = [self.kg_loaded_version]
 
             # Keep only the latest graph
-            for graph in os.listdir(f"{self.config['graph_dir']}"):
-                if(not(graph==f"{self.ds_name}_{self.kg_loaded_version}.gml")):
-                    os.remove(f"{self.config['graph_dir']}/{graph}")
+            for graph in os.listdir(f"{self.config['graph_dir']}/{self.project_name}/"):
+                if(not(graph==f"{self.current_graph}_{self.kg_loaded_version}.gml")):
+                    os.remove(f"{self.config['graph_dir']}/{self.project_name}/{graph}")
 
             self.kg2ds_map['datastore_last_saved'] = int(time.time())
 
@@ -244,81 +316,12 @@ class DatastoreUtilities():
         with open(self.kg_to_ds_path, "r", encoding="utf-8") as f:
             self.kg2ds_map = json.load(f)
 
-        if(self.kg2ds_map['datastore_version'] and os.path.exists(f"{self.datastore_prefix}{self.kg2ds_map['datastore_version']}")):
-            self.dataset = datasets.load_from_disk(f"{self.datastore_prefix}{self.kg2ds_map['datastore_version']}")
-            self.dataset.load_faiss_index("embeddings", f"{self.datastore_prefix}{self.kg2ds_map['datastore_version']}.faiss")
+        if(self.kg2ds_map[self.project_name][self.current_graph]['datastore_version'] and os.path.exists(f"{self.datastore_prefix}{self.kg2ds_map[self.project_name][self.current_graph]['datastore_version']}")):
+            self.dataset = datasets.load_from_disk(f"{self.datastore_prefix}{self.kg2ds_map[self.project_name][self.current_graph]['datastore_version']}")
+            self.dataset.load_faiss_index("embeddings", f"{self.datastore_prefix}{self.kg2ds_map[self.project_name][self.current_graph]['datastore_version']}.faiss")
         else:
             self.dataset = None
         print(self.dataset)
-        for row in self.dataset:
-            print(f"{row['id']} - {row['node_id']} : {row['text']}")
-
-    '''
-    def calculate_faiss_index(self,dataset):
-
-        def embed_text(batch):
-            # Return a dictionary mapping to your target index string key
-            return {"embeddings": self.text_embedding_model.encode(batch["text"], normalize_embeddings=True)}
-                
-        embedding_dim = self.text_embedding_model.get_embedding_dimension()
-        cosine_index = faiss.IndexFlatIP(embedding_dim)
-        dataset = dataset.map(embed_text, batched=True, batch_size=8)
-
-        return dataset, cosine_index
-
-    def update_faiss_dataset(self):
-
-        # Need a warning here if the current graph has not been saved.
-        self.datastore_save_flag = self.save_graph()
-        if(self.datastore_save_flag):
-            self.reload_graph(most_recent=True)
-            self.nodes_to_add = self.get_nodes_to_add_to_faiss()
-            new_dataset,_ = self.create_dataset_from_nodes(self.nodes_to_add)
-
-            print([doc['id'] for doc in new_dataset])
-            
-            if(os.path.exists(f"{self.datastore_prefix}{self.kg2ds_map['datastore_version']}")):
-                # Filter out existing data from old dataset
-                old_dataset = datasets.load_from_disk(f"{self.datastore_prefix}{self.kg2ds_map['datastore_version']}")
-
-                # Keep the new updated dataset values
-                filtered_dataset = old_dataset
-                filtered = False
-                for doc in new_dataset:
-                    filtered_dataset = filtered_dataset.filter(lambda example: example["id"] != doc['id'])
-                    filtered = True
-
-                # Remove any deleted files
-                old_topics = list(set([doc['id'] for doc in old_dataset]))
-                excluded_topics = []
-                for topic in old_topics:
-                    node_id,key = topic.split('-')
-                    if (self.knowledge_graph.has_node(node_id)):
-                        if(not(key in self.knowledge_graph.nodes[node_id]['wiki'].keys())):
-                            excluded_topics.append(topic)
-                    else:
-                        excluded_topics.append(topic)
-                    
-                for excluded_topic in excluded_topics:
-                    filtered_dataset = filtered_dataset.filter(lambda example: example["id"] != excluded_topic)
-                    
-                print("OLD DATASET SIZE : ",len(old_dataset))
-                print("FILTERED DATASET SIZE : ",len(filtered_dataset))
-                print("NEW DATASET SIZE : ",len(new_dataset))
-
-                # Append datasets.
-                updated_dataset = concatenate_datasets([filtered_dataset,new_dataset])
-                print("UPDATED DATASET SIZE : ",len(updated_dataset))
-            else:
-                updated_dataset = new_dataset
-
-            updated_dataset,updated_index = self.calculate_faiss_index(updated_dataset)
-
-            return updated_dataset,updated_index
-        else:
-            print("No new data found in knowledge graph!")
-            return None, None
-    '''
 
     # EDGE FUNCTIONS
 
@@ -379,7 +382,6 @@ class DatastoreUtilities():
         # Remove redundant edges and add new connections based on edge data if any
         
         # Remove Redandant Edges
-        print(self.knowledge_graph)
         edges_to_resolve = []
         idxs_clustered = []
         for node,_ in self.knowledge_graph.nodes(data=True):
@@ -400,23 +402,41 @@ class DatastoreUtilities():
 
         return edges_to_resolve
 
+    def resolve_text(self,text_list,threshold=0.95):
+
+        similar_list = []
+        idxs_to_keep = []
+        embeddings = torch.from_numpy(self.text_embedding_model.encode(text_list, normalize_embeddings=True))
+        cosine_sim = torch.matmul(embeddings,embeddings.T)
+
+        for idx,text in enumerate(text_list):
+            print('Similarity Check - ',text," : ",cosine_sim[idx])
+
+        for idx in range(len(text_list)):
+            if(not(idx in similar_list)):
+                similar_idxs = torch.nonzero(cosine_sim[idx]>threshold,as_tuple=True)[0]
+                similar_list += [sim_idx for sim_idx in similar_idxs if not(sim_idx in similar_list)]
+                idxs_to_keep.append(idx)
+
+        return idxs_to_keep
+
     def find_new_edges(self):
 
         # Check for any new connections
 
-        # Get aliases of all nodes
-        node_aliases = self.get_all_nodes()
-
-        alias_pattern = rf"\b({'|'.join(re.escape(alias['name']) for alias in node_aliases)})\b"
-        alias_finder = re.compile(alias_pattern, flags=re.IGNORECASE)
-
-        added_edges = []
         edges_log = []
-        for edge in self.knowledge_graph.edges(keys=True,data=True):
-            desc = edge[3]['desc']
-            src_key = edge[2]
 
-            relevant_nodes = [slugify_key(name) for name in list(set(alias_finder.findall(desc))) if len(name)>0]
+        edges_to_add = []
+        edges_to_remove = []
+        for edge in self.knowledge_graph.edges(keys=True,data=True):
+
+            old_head = edge[0]
+            old_tail = edge[1]
+            old_key = edge[2]
+            desc = edge[3]['desc']
+            label = edge[3]['label']
+
+            relevant_nodes = [self.alias_map[name] for name in list(set(self.node_finder.findall(desc))) if len(name)>0]
 
             if(len(relevant_nodes)>1):
                 pairs = [(relevant_nodes[jdx],relevant_nodes[idx]) for idx in range(1,len(relevant_nodes)) for jdx in range(idx)]
@@ -425,20 +445,21 @@ class DatastoreUtilities():
                     already_added = False
                     if(tail in self.knowledge_graph.neighbors(head)):
                         edge_keys = [edge[2] for edge in self.knowledge_graph.edges([head,tail],keys=True,data=True)]
-                        if(src_key in edge_keys):
+                        if(old_key in edge_keys):
                             already_added = True
 
                     if(not(already_added)):
-                        added_edges.append((head,tail,desc))
+                        edges_to_add.append((head,tail,desc,label))
+                        edges_to_remove.append((old_head,old_tail,old_key))
                         edges_log.append((self.knowledge_graph.nodes[head]['name'],self.knowledge_graph.nodes[tail]['name'],desc))
-                        print(edge)
-                        print("HEre :",src_key)
                         print(f"Added edge '{desc}' between {head} and {tail}")
 
-        for head,tail,desc in added_edges:
-            self.add_edge(head,tail,desc)
+        for head,tail,desc,label in edges_to_add:
+            self.add_edge(head,tail,desc,edge_label=label)
 
-        print(self.knowledge_graph)
+        for old_head,old_tail,old_key in edges_to_remove:
+            self.remove_edge(old_head,old_tail,old_key)
+
         return edges_log
 
     def format_edge_data(self,head,tail,key):
@@ -447,35 +468,55 @@ class DatastoreUtilities():
 
     # NODE FUNCTIONS
 
-    def add_node(self,node,type,summary=None,definition=""):
+    def add_node(self,node,type,aliases=[],summary=None,definition=""):
+        # NOTE : Aliases needed for relevant node retrieval
+
+        node_name = node
+        node = slugify_key(node)
 
         if(summary):
             assert type(summary)==dict
         else:
             summary = dict()
+            summary['lore'] = 'No Lore-related information available'
+            summary['plot'] = 'No Plot-related information available'
 
         # Add a node to the graph
-        if(not(self.knowledge_graph.has_node(slugify_key(node)))):
+        if(not(self.knowledge_graph.has_node(node))):
 
-            self.knowledge_graph.add_node(slugify_key(node),
+            self.knowledge_graph.add_node(node,
                                             updated=int(time.time()),
-                                            name=node,
+                                            name=node_name,
                                             type=type,
                                             summary=summary,
+                                            aliases=aliases,
                                             definition="")
+        else:
+            if(len(aliases)>0):
+                self.knowledge_graph.nodes[node]['aliases'] += aliases
+                self.knowledge_graph.nodes[node]['aliases'] = list(set(self.knowledge_graph.nodes[node]['aliases']))
 
         if(len(summary.keys())>0):
             self.knowledge_graph.nodes[node]['summary'] = summary
+
+        return slugify_key(node)
                 
     def get_node_name(self,node_id):
-        print(node_id)
-        print(self.knowledge_graph.nodes[node_id])
         return self.knowledge_graph.nodes[node_id]['name']
+
+    def get_node_id(self,node_name):
+
+        for node in self.knowledge_graph.nodes(data=True):
+            if(node[1]['name']==node_name):
+                return node[0]
+
+        return None
 
     def remove_node(self,node):
         # Cleanly remove a node from the knowledge graph
 
-        print(self.knowledge_graph)
+        node = slugify_key(node)
+
         if(self.knowledge_graph.has_node(node)):
             current_edges = list(self.knowledge_graph.edges([node],keys=True,data=True))
             for idx in range(len(current_edges)):
@@ -490,8 +531,6 @@ class DatastoreUtilities():
                     self.knowledge_graph.remove_edge(current_edges[idx][0],current_edges[idx][1],key=current_edges[idx][2])
 
             self.knowledge_graph.remove_node(node)
-
-        print(self.knowledge_graph)
 
     def get_all_nodes(self):
         # Return a list of all node names
@@ -519,7 +558,6 @@ class DatastoreUtilities():
             return [node for node in self.knowledge_graph.nodes(data=True)]
         else:
             nodes_in_dataset = set(self.dataset['id'])
-            print([node for node in self.knowledge_graph.nodes(data=True) if node[1]['updated']>self.kg2ds_map['datastore_last_saved']])
             return [node for node in self.knowledge_graph.nodes(data=True) if node[1]['updated']>self.kg2ds_map['datastore_last_saved']]
 
     def get_random_node(self):
@@ -536,6 +574,7 @@ class DatastoreUtilities():
             node_id = node_data['id']
             self.knowledge_graph.nodes[node_id]['updated']  = int(time.time())
 
+    # GRAPH FUNCTIONS
     def check_if_node_exists(self,node):
         return self.knowledge_graph.has_node(slugify_key(node))
 
@@ -552,18 +591,16 @@ class DatastoreUtilities():
 
         all_edge_desc   = [edge[3]['desc'] for edge in self.get_edges_from(node)]
         all_edge_labels = list(set([edge[3]['label'] for edge in self.get_edges_from(node)]))
+        print([edge[3]['label'] for edge in self.get_edges_from(node)])
 
         edge_clusters = dict()
-        print(node)
         for label in all_edge_labels:
 
             info_list = [edge[3]['desc'] for edge in self.get_edges_from(node) if edge[3]['label']==label]
             if(len(info_list)>0):
-                edge_clusters[label] = ' '.join(info_list)
+                print(label)
+                edge_clusters[uppercase(label)] = ' '.join(info_list)
 
-        print(edge_clusters)
-
-        print("\n\n---\n\n")
         return edge_clusters
 
     def get_node_info(self,node):
@@ -609,7 +646,7 @@ class DatastoreUtilities():
 
         return False
 
-    def add_to_node_summary(self,node,summary,topic):
+    def add_to_node_summary(self,node,topic,summary):
 
         node = slugify_key(node)
 
@@ -622,7 +659,7 @@ class DatastoreUtilities():
         return False
     
     def get_node_summary(self,node):
-        return self.knowledge_graph.nodes[slugify_key(node)]['summary'] if self.knowledge_graph.has_node(slugify_key(node)) else []
+        return self.knowledge_graph.nodes[slugify_key(node)]['summary'] if self.knowledge_graph.has_node(slugify_key(node)) else dict()
     
     def format_node_data(self,node,edge_filters=None):
 
@@ -689,7 +726,8 @@ class DatastoreUtilities():
     def get_relevant_nodes(self,query,k=10, threshold=0.4):
 
         # Check literal mentions of any node names.
-        relevant_nodes = [slugify_key(name) for name in list(set(self.node_finder.findall(query))) if len(name)>0]
+        relevant_nodes = [self.alias_map[name] for name in list(set(self.node_finder.findall(query))) if len(name)>0]
+        print("Extracted Nodes :",relevant_nodes)
 
         query_vector = self.embed_text(query)
         scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=k)
@@ -707,7 +745,6 @@ class DatastoreUtilities():
     def extract_relevant_edge_info(self,query,node,threshold=0.7):
 
         node = slugify_key(node)
-        print(node)
 
         documents = []
         
@@ -829,8 +866,8 @@ class DatastoreUtilities():
 
         similar_pairs = []
         for key in named_entities:
-            similarity = list(map(lambda x :difflib.SequenceMatcher(None, x,key).ratio(),[node['name'] for node in nodes]))
-            similar_pairs += [(key,nodes[i]) for i, sim in enumerate(similarity) if (sim > threshold and not(key==nodes[i]))]
+            similarity = list(map(lambda x :difflib.SequenceMatcher(None, x,key).ratio(),self.all_aliases))
+            similar_pairs += [(key,self.knowledge_graph.nodes[self.alias_map[self.all_aliases[i]]]) for i, sim in enumerate(similarity) if (sim > threshold)]
         
         return similar_pairs
 
@@ -903,20 +940,20 @@ class DatastoreUtilities():
         with open(self.kg_to_ds_path, "r", encoding="utf-8") as f:
             self.kg2ds_map = json.load(f)
 
-        if(len(self.kg2ds_map['unsaved_versions'])>0):
+        if(len(self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'])>0):
             # Check if graphs exist. If not, remove them from the map
             versions_to_remove = []
-            for idx,kg_version in enumerate(self.kg2ds_map['unsaved_versions']):
+            for idx,kg_version in enumerate(self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions']):
                 if(not(os.path.exists(f"{self.knowledge_graph_prefix}{kg_version}.gml"))):
                     versions_to_remove.append(kg_version)
-            [self.kg2ds_map['unsaved_versions'].remove(version) for version in versions_to_remove]
+            [self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'].remove(version) for version in versions_to_remove]
 
             with open(self.config['kg_to_ds_map'], "w") as f:
                 json.dump(self.kg2ds_map, f, indent=4)
 
-        if(len(self.kg2ds_map['unsaved_versions'])>0 and os.path.exists(f"{self.knowledge_graph_prefix}{self.kg2ds_map['unsaved_versions'][-1]}.gml")):
+        if(len(self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'])>0 and os.path.exists(f"{self.knowledge_graph_prefix}{self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'][-1]}.gml")):
             # load the latest knowledge graph
-            most_recent_graph = nx.read_gml(f"{self.knowledge_graph_prefix}{self.kg2ds_map['unsaved_versions'][-1]}.gml")
+            most_recent_graph = nx.read_gml(f"{self.knowledge_graph_prefix}{self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'][-1]}.gml")
         else:
             most_recent_graph = None
 
@@ -928,7 +965,7 @@ class DatastoreUtilities():
             self.kg_saved_version = datetime.now().strftime("%Y%m%d_%H%M%S")
             nx.write_gml(self.knowledge_graph, f"{self.knowledge_graph_prefix}{self.kg_saved_version}.gml")
 
-            self.kg2ds_map['unsaved_versions'].append(self.kg_saved_version)
+            self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'].append(self.kg_saved_version)
 
             with open(self.kg_to_ds_path, "w") as f:
                 json.dump(self.kg2ds_map, f, indent=4)
@@ -945,23 +982,27 @@ class DatastoreUtilities():
         with open(self.kg_to_ds_path, "r", encoding="utf-8") as f:
             self.kg2ds_map = json.load(f)
 
-        if(len(self.kg2ds_map['unsaved_versions'])>0):
+        if(len(self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'])>0):
             # Check if graphs exist. If not, remove them from the map
             versions_to_remove = []
-            for idx,kg_version in enumerate(self.kg2ds_map['unsaved_versions']):
+            for idx,kg_version in enumerate(self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions']):
                 if(not(os.path.exists(f"{self.knowledge_graph_prefix}{kg_version}.gml"))):
                     versions_to_remove.append(kg_version)
-            [self.kg2ds_map['unsaved_versions'].remove(version) for version in versions_to_remove]
+            [self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'].remove(version) for version in versions_to_remove]
 
             with open(self.config['kg_to_ds_map'], "w") as f:
                 json.dump(self.kg2ds_map, f, indent=4)
 
-        if(len(self.kg2ds_map['unsaved_versions'])>0 and os.path.exists(f"{self.knowledge_graph_prefix}{self.kg2ds_map['unsaved_versions'][-1]}.gml")):
+        if(len(self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'])>0 and os.path.exists(f"{self.knowledge_graph_prefix}{self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'][-1]}.gml")):
             # load the latest knowledge graph
-            self.knowledge_graph = nx.read_gml(f"{self.knowledge_graph_prefix}{self.kg2ds_map['unsaved_versions'][-1]}.gml")
+            self.knowledge_graph = nx.read_gml(f"{self.knowledge_graph_prefix}{self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'][-1]}.gml")
             self.edge_key = (max([int(e[2]) for e in self.knowledge_graph.edges(keys=True)])+1) if len(self.knowledge_graph.edges(keys=True))>0 else 1
-            self.kg_loaded_version = self.kg2ds_map['unsaved_versions'][-1]
+            self.kg_loaded_version = self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'][-1]
             print(f"Reloaded Graph Version : {self.kg_loaded_version} : {self.knowledge_graph}")
+            self.all_aliases = [alias for node in self.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']]
+            self.alias_map = {alias:node[0] for node in self.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']}
+            alias_pattern = rf"\b({'|'.join([re.escape(alias) for alias in self.all_aliases])})\b"
+            self.node_finder = re.compile(alias_pattern, flags=re.IGNORECASE)
             return True
         else:
             return False
@@ -975,6 +1016,7 @@ class DatastoreUtilities():
 
         path_data_to_format = []
         nodes_added = []
+        edges_added = []
         context = ""
         for path in paths:
             
@@ -988,9 +1030,14 @@ class DatastoreUtilities():
 
                 relevant_edges = []
                 for edge in self.get_edge(head,tail):
-                    head,tail,key,text,label = edge
-                    if(label in edge_filters):
+                    head,tail,key,text,label,endpoints = edge
+                    if(edge_filters):
+                        if(label in edge_filters):
+                            relevant_edges.append(self.format_edge_data(head,tail,key))
+                            edges_added.append((head,tail,key))
+                    else:
                         relevant_edges.append(self.format_edge_data(head,tail,key))
+                        edges_added.append((head,tail,key))
 
                 path_data_to_format.append(('edge','\n'.join(relevant_edges),self.get_node_name(head),self.get_node_name(tail)))
 
@@ -1001,7 +1048,7 @@ class DatastoreUtilities():
 
             context += self.format_context(path_data_to_format)+'\n\n'
 
-        return context
+        return context, nodes_added, edges_added
 
     def get_context_from_neighborhood(self,neighborhood,edge_filters=None):
 
@@ -1029,26 +1076,30 @@ class DatastoreUtilities():
         formatted_node_context = self.format_context(nodes_to_format)
 
         edges_to_format = []
+        added_edges = []
         for edge in relevant_edges:
             head,tail,key = edge
             edges_to_format.append(('edge',self.format_edge_data(head,tail,key),self.get_node_name(head),self.get_node_name(tail)))
+            added_edges.append((head,tail,key))
 
         formatted_edge_context = self.format_context(edges_to_format)
 
         formatted_context = f"{formatted_node_context}\n{formatted_edge_context}"
 
-        return formatted_context
+        return formatted_context, relevant_nodes, added_edges
 
-    def get_graph_rag_context(self,user_query,strategy='explore_neighborhood',categories=None,threshold=0.4,k=10):
+    def get_graph_rag_context(self,user_query,strategy='explore_neighborhood',categories=None,threshold=0.8,k=10,n_hops=1):
 
         nodes_in_results = self.get_relevant_nodes(user_query,threshold=threshold,k=k)
+        nodes = None
+        edges = None
 
         if(strategy=='explore_neighborhood'):
             neighborhood = []
             for node in nodes_in_results:
-                neighborhood = self.explore_neighborhood(node,neighborhood,n_hops=1,edge_filters=categories)
+                neighborhood = self.explore_neighborhood(node,neighborhood,n_hops=n_hops,edge_filters=categories)
 
-            context = self.get_context_from_neighborhood(neighborhood,edge_filters=categories)
+            context, nodes, edges = self.get_context_from_neighborhood(neighborhood,edge_filters=categories)
 
         if(strategy=='find_path_between'):
 
@@ -1062,17 +1113,14 @@ class DatastoreUtilities():
 
             edge_paths = self.find_all_unique_paths(nodes_in_results, edge_filters=categories)
 
-            context = self.get_context_from_paths(edge_paths,edge_filters=categories)
-
-
-        return context
+            context, nodes, edges = self.get_context_from_paths(edge_paths,edge_filters=categories)
+        return context, nodes, edges
 
     def legacy_get_graph_rag_context(self,query,threshold=0.4,k=10):
         #def get_graph_rag_context(self,query,graph,documents_lookup,threshold=0.4,k=10,hops=1):
 
         # need self.knowledge_graph, self.documents_lookup
 
-        print(query)
         nodes_in_results = self.get_relevant_nodes(query,threshold=threshold,k=k)
 
         retrieved_context = []
@@ -1123,3 +1171,194 @@ class DatastoreUtilities():
                     context_text += f"<relationship>\nTopic : Relationship between {p[2]} and {p[3]}\n{p[1]}\n</relationship>\n\n"
 
         return context_text
+
+    def create_network_figure(self, target_nodes, target_edges=None):
+        # target_nodes : list(node_ids)
+        # target_edges : list((head,tail,key))
+
+        # Create a subgraph with the target nodes and target edges
+        all_neighbors = []
+        for node in target_nodes:
+            all_neighbors += self.knowledge_graph.neighbors(node)
+
+        all_neighbors = list(set(all_neighbors))
+
+        new_edges = []
+        for node in target_nodes:
+            for neighbor in all_neighbors:
+                if(neighbor in self.knowledge_graph.neighbors(node)):
+                    new_edges += [(node,neighbor,k) for k in self.knowledge_graph.adj[node][neighbor].keys()]
+        new_edges = list(set(new_edges))
+
+        G = self.knowledge_graph.subgraph(target_nodes+all_neighbors).copy()
+        # 2. Extract the edge-induced subgraph
+        if(target_edges):
+            G = G.edge_subgraph(target_edges+new_edges)
+
+        pos = nx.spring_layout(G, seed=42)
+
+        # 2. Extract unique edges and aggregate data
+        edge_x, edge_y = [], []
+        mid_x, mid_y, edge_text = [], [], []
+        endpoints = []
+        seen_edges = set()
+
+        other_edge_x, other_edge_y = [], []
+
+        for u, v, data in G.edges(data=True):
+            # Sort tuple for undirected graphs to avoid handling (A,B) and (B,A) separately
+            edge_key = tuple(sorted([u, v]))
+            if edge_key not in seen_edges:
+                seen_edges.add(edge_key)
+
+                endpoints.append((u,v))
+
+                if(u in target_nodes and v in target_nodes):
+                    x0, y0 = pos[u]
+                    x1, y1 = pos[v]
+                    
+                    if(not(u==v)):
+                        edges = G.adj[u][v]
+                        pair_text = [e['desc'] for e in edges.values()]
+                    else:
+                        pair_text = []
+
+                    edge_x.extend([x0, x1, None])
+                    edge_y.extend([y0, y1, None])
+
+
+                    # Midpoint coordinates for edge hover triggering
+                    if(not(u==v)):
+                        mid_x.append((x0 + x1) / 2)
+                        mid_y.append((y0 + y1) / 2)
+                        edge_text.append("<br>".join([text for text in pair_text]))
+                else:
+
+                    x0, y0 = pos[u]
+                    x1, y1 = pos[v]
+
+                    other_edge_x.extend([x0, x1, None])
+                    other_edge_y.extend([y0, y1, None])
+
+
+        edge_trace = go.Scatter(
+          x=edge_x,
+          y=edge_y,
+          line=dict(width=5.0, color="#EEE"),
+          hoverinfo="none",
+          mode="lines",
+        )
+
+        other_edge_trace = go.Scatter(
+          x=other_edge_x,
+          y=other_edge_y,
+          line=dict(width=2.0, color="#666"),
+          hoverinfo="none",
+          mode="lines",
+        )
+
+        # Transparent marker trace placed at midpoints to capture edge hover events
+        edge_hover_trace = go.Scatter(
+          x=mid_x,
+          y=mid_y,
+          mode="markers",
+          hoverinfo="text",
+          text=edge_text,
+          marker=dict(opacity=0, size=20),  # Invisible, but sized to easily catch the mouse
+        )
+
+        # 4. Extract node coordinates and attributes for Plotly markers
+        node_x = []
+        node_y = []
+        node_text = []
+        node_ids = []
+        node_labels = []
+        node_colors = []
+        for node in G.nodes(data=True):
+            x, y = pos[node[0]]
+            node_x.append(x)
+            node_y.append(y)
+
+            wrapped_desc = "<br>".join(textwrap.wrap(node[1]['summary']['lore'], width=35))
+            node_text.append(f"<b>{node[1]['name']}</b><br><i>{wrapped_desc}</i>")
+            node_ids.append(node[0])
+            if(node[0] in target_nodes):
+                node_colors.append("#EEE")
+                node_labels.append(self.get_node_name(node[0]))
+            else:
+                node_colors.append("#333")
+                node_labels.append("")
+
+        node_trace = go.Scatter(
+          x=node_x,
+          y=node_y,
+          mode="markers+text",
+          textposition="bottom center",
+          hoverinfo="text",
+          hovertext=node_text,
+          text=node_labels,
+          textfont=dict(
+                color="#EEE",  # Color of the text labels (e.g., white)
+                size=20,  # Font size in pixels
+                family=('system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",'' Roboto, Helvetica, Arial, sans-serif')
+            ),
+          marker=dict(
+              showscale=False,
+              color="#EEE",
+              size=30)
+        )
+
+        # Zoom into the parts of the graph that are relevant                
+        node_trace.marker.color = node_colors
+        node_trace.text = node_labels
+
+
+        # 2. Extract coordinates for just these nodes
+        subset_x = [pos[node][0] for node in target_nodes if node in pos]
+        subset_y = [pos[node][1] for node in target_nodes if node in pos]
+
+        # 3. Calculate bounding box ranges with a 20% padding margin
+        if subset_x and subset_y:
+          x_min, x_max = min(subset_x), max(subset_x)
+          y_min, y_max = min(subset_y), max(subset_y)
+
+          x_pad = (x_max - x_min) * 0.2 if x_max != x_min else 1.0
+          y_pad = (y_max - y_min) * 0.2 if y_max != y_min else 1.0
+
+          x_range = [x_min - x_pad, x_max + x_pad]
+          y_range = [y_min - y_pad, y_max + y_pad]
+        else:
+          # Fallback defaults if target nodes aren't found
+          x_range, y_range = None, None
+
+        # 5. Build the final Plotly figure
+        fig = go.Figure(
+          data=[edge_trace, other_edge_trace, edge_hover_trace,node_trace],
+          layout=go.Layout(
+              showlegend=False,
+              hovermode="closest",
+              plot_bgcolor="rgba(0,0,0,0)",  # Transparent plot canvas
+              paper_bgcolor="rgba(0,0,0,0)",  # Transparent outer border canvas
+              hoverlabel=dict(
+                    bgcolor="#ffffff",  # Background color of the tooltip bubble (e.g., dark gray)
+                    font_color="#000000",  # Text color inside the tooltip
+                    font_size=12,  # Font size
+                    font_family=(
+                        'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",'
+                        ' Roboto, Helvetica, Arial, sans-serif'
+                    ), # Font family
+                    bordercolor="#ffffff",  # Border color around the bubble
+                ),
+              dragmode="pan",
+              margin=dict(b=20, l=5, r=5, t=40),
+              xaxis=dict(
+                range=x_range, showgrid=False, zeroline=False, showticklabels=False
+            ),
+            yaxis=dict(
+                range=y_range, showgrid=False, zeroline=False, showticklabels=False
+            ),
+          ),
+        )
+        return fig
+
+    

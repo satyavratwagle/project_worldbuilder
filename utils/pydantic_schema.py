@@ -27,13 +27,13 @@ class QueryEvaluationSchema(BaseModel):
     is_context_sufficient: bool = Field(description="'True' if the provided context is sufficient to completely answer the user query. 'False' otherwise.")
     new_query: Optional[str] = Field(description="If provided context is not sufficient, a new data query for the missing context.")
     answer: Optional[str] = Field(description="If provided context is sufficient, the answer to the user query.")
-    genre: Literal["location", "process", "attribute", "time period"] = Field(description="The category of information needed to answer the user query.")
+    genre: Literal["location", "process", "attribute", "time_period"] = Field(description="The category of information needed to answer the user query.")
 
 # Text Decomposition Schema
 class TextTuple(BaseModel):
     atomic_sentence: str = Field(description="An atomic sentence related to one of the user topics.")
     topic: str = Field(description="Subject of 'atomic_sentence'")
-    label: Literal["location", "process", "attribute", "time period"] = Field(description="Label assigned to 'atomic_sentence'")
+    label: Literal["AXIOM","INCIDENT"] = Field(description="Choose AXIOM only if 'atomic_sentence' describes permanent truths, core identities, immutable facts, or long-term properties that rarely or never change (e.g., parent-child, material composition, birthplace). Choose INCIDENT only 'atomic_sentence' describes temporary actions, plot events, transient states, situational possessions, or active conflicts that change or expire (e.g., carrying an item, fighting an enemy, temporary possession).")
 
 class DecomposedText(BaseModel):
     decomposed_text: list[TextTuple]
@@ -41,17 +41,10 @@ class DecomposedText(BaseModel):
 # Node Summary Schema
 # Text Decomposition Schema
 class NodeSummary(BaseModel):
-    location:       str = Field(description="A summary of the location-related descriptions of the topic.")
-    process:        str = Field(description="A summary of the process-related descriptions of topic.")
-    attribute:      str = Field(description="A summary of the attribute-related descriptions of the topic.")
-    time_period:    str = Field(description="A summary of the time period-related descriptions of the topic.")
+    lore:       str = Field(description="A summary of the lore-related information related to the topic.")
+    plot:        str = Field(description="A summary of the plot-related information related to the topic.")
 
-
-label_map = dict()
-label_map['location'] = 'Location'
-label_map['process'] = 'Process'
-label_map['attribute'] = 'Attribute'
-label_map['time_period'] = 'Time Period'
+label_map = {'AXIOM' : "Lore", 'INCIDENT': "Plot"}
 
 class Triplet(BaseModel):
     source: str = Field(description="Normalized canonical name of the source entity in simple_sentence, e.g., 'Prince Elian'")

@@ -69,11 +69,9 @@ def get_node_summary_prompt(args_dict, history=[]):
 	# Required args node_name, node_description, existing summary
 
 	assert 'node_name' in args_dict.keys()
-	assert 'location' in args_dict.keys()
-	assert 'process' in args_dict.keys()
-	assert 'attribute' in args_dict.keys()
-	assert 'time_period' in args_dict.keys()
-
+	assert 'Plot' in args_dict.keys()
+	assert 'Lore' in args_dict.keys()
+	
 	history.append(process_prompt(prompts['node_summary_prompt']['system']))
 	history.append(process_prompt(prompts['node_summary_prompt']['user'],args_dict))
 	return history

@@ -18,19 +18,22 @@
                         },
                     "categories": 
                         {
-                            "type": "array", 
-                            "description": "The categories of information needed to answer the user query.",
-                            "items": {
-                                        "type": "string",
-                                        "enum":["location", "process", "attribute", "time_period"],
-                                        "minItems": 1
-                                      }
+                            "type": "str", 
+                            "description": "Category of information required to answer the user query. Choose AXIOM only if the answer to the user query requires information about permanent truths, core identities, immutable facts, or long-term properties that rarely or never change (e.g., parent-child, material composition, birthplace). Choose INCIDENT only if the answer to the user query requires information about temporary actions, plot events, transient states, situational possessions, or active conflicts that change or expire (e.g., carrying an item, fighting an enemy, temporary possession).",
+                            "enum": ["AXIOM", "INCIDENT"]
                         },
                     "strategy": 
                         {
                             "type": "str", 
-                            "description": "Strategy to answer the user query. Choose 'explore_neighborhood' to extract broad context or information related to one entity. Choose 'find_path_between' to find ANY form of interaction, connection or relationship between two or more entities.",
+                            "description": "Strategy to find context. Choose 'explore_neighborhood' to extract broad context or information related to one entity. Choose 'find_path_between' to find ANY form of interaction, connection or relationship between two or more entities.",
                             "enum":["explore_neighborhood","find_path_between"]
+                        },
+                    "thinking_type": 
+                        {
+                            "type": "str", 
+                            "description": "Type of thinking. Choose 'answer' ONLY if the user query expects a response based on retrieved context. Choose 'brainstorm' ONLY if the user query expects you to extrapolate, generate hypotheses, create new ideas or brainstorm.",
+                            "enum":["answer","brainstorm"]
+                            
                         }
                 },
                 "required": ["user_query"]

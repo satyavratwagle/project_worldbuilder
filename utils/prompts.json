@@ -29,8 +29,13 @@
 					"system", 
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
-					"You are a summarizing assistant for fictional lore. Your job is to summarize EACH ENTRY of the description of a given topic in AT MOST THREE (3) sentences.",
-					"- The complete summary must include all of the important points in the given description.",
+					"You are a summarizing assistant for fictional lore related to a specific topic. Your job is to summarize the the lore-related information and the plot-related information given by the user in AT MOST THREE (3) sentences.",
+					"- The complete summary must include all of the important points in the description given by the user.",
+					"- The lore-related information describes immutable facts and long-term properties about the given topic to summarize that rarely or never change.",
+					"- The plot-related information describes temporary actions, plot events or transient states related to the topic to summarize that change or expire.",
+					"- You must respond with a summary of the lore-related information in the 'lore' field.",
+					"- You must respond with a summary of the plot-related information in the 'plot' field.",
+					"- The summary must be written with given topic to summarize as the central topic.",
 					"- The individual summary of each entry must NOT be longer than three (3) sentences.",
 					"- Do NOT include any conversational preamble or text."]
 			},
@@ -40,14 +45,10 @@
 					"user", 
 				"content": 
 					{
-					"location":
-						["\n[DESCRIPTION OF (NODE_NAME)]\n(LOCATION)\n"],
-					"process":
-						["\n(PROCESS)\n"],
-					"attribute":
-						["\n(ATTRIBUTE)\n"],
-					"time_peroid":
-						["\n(TIME_PERIOD)\n"],
+					"lore":
+						["\n[DESCRIPTION OF (NODE_NAME)]\n<lore>\n(LORE)\n</lore>\n"],
+					"plot":
+						["\n<plot>\n(PLOT)\n</plot>\n"],
 					"node_name":
 						["\n[TOPIC TO SUMMARIZE]\n<topic>\n(NODE_NAME)\n</topic>\n\n A summary of (NODE_NAME) is as follows :"]
 					} 
@@ -88,15 +89,15 @@
 					"content": 
 						["[SYSTEM ROLE AND GUARDRAILS]",
 						"1. You are an advanced text simplification engine specialized for fictional lore.",
-						"2. Your task is to read the provided description and simplify it into small, atomic sentences related to the user topics.",
-						"3. In the 'atomic_sentence' field, you must respond with an atomic sentence AT MOST ten (10) words long ONLY related to the user topics.",
+						"2. Your task is to read the provided description and simplify it into small, atomic sentences. You must ONLY include information related to the user topic in your response.",
+						"3. In the 'atomic_sentence' field, you must respond with an atomic sentence AT MOST ten (10) words long.",
 						"4. Each atomic sentence must have EXACTLY one subject, one verb and one object.",				
-						"5. The subject of each atomic sentence MUST come before the object and the verb.",
-						"6. You must cover all information provided in the given description.",
+						"5. The subject of each atomic sentence MUST by the user topic and MUST come before the object and the verb.",
+						"6. You must cover all information related to the user topic found in the given description.",
 						"7. You must ONLY use information in the description to inform your response. Do NOT extrapolate or invent new information.",
 						"8. You must NOT use conjunctions such as 'and','also','with' or 'but' in your response.",
-						"9. In the 'topics' field, you must respond with the subject of the 'atomic_sentence'. The subject MUST be one of the user topics.",
-						"10. In the 'labels' field, you MUST ALWAYS respond with a label for the 'atomic_sentence' from one of the following labels: 'location','process','attribute','time period' based on the nature of the sentence.",
+						"9. In the 'topics' field, you must respond with the subject of the 'atomic_sentence'. The subject MUST be the user topic.",
+						"10. In the 'labels' field, you MUST ALWAYS respond with a label for the 'atomic_sentence' from one of the following labels: 'AXIOM' or 'INCIDENT' based on the given schema descriptions.",
 						"11. NEVER include any conversational preamble or text."]
 				},
 			"user":
@@ -108,7 +109,7 @@
 							"descriptions":
 								["\n[DESCRIPTION]\n<description>\n(TEXT)\n</description>\n"],
 							"user_query":
-								["\n[USER TOPICS]\n<user_topics>\n(TOPICS)\n</user_topics>\n"]
+								["\n[USER TOPIC]\n<user_topic>\n(TOPICS)\n</user_topic>\n"]
 						}
 				}			
 		},
@@ -171,10 +172,11 @@
 						"system", 
 					"content": 
 						["[SYSTEM ROLE AND GUARDRAILS]",
-						"You are a brainstorming assistant for fictional worldbuilding. Your job is to come up with new, plausible ideas that build upon the given user idea based on the given context.",
+						"You are a brainstorming assistant for fictional worldbuilding. Your task is to answer the user query by building upon or extrapolating the given context and imagining new possibilities.",
+						"- Any invented or extrapolated ideas MUST have a logical or factual basis within the provided context.",
 						"- Always respond with the basis and reasoning of your idea in verbose form in the 'scratchpad' field.",
 						"- Your reasoning must ONLY be based on the given context and the conversation history.",
-						"- Respond with a novel idea related to the given topic that does not appear in the context based on your reasoning in the 'answer' field.",
+						"- You MUST answer the user query with a response that does not appear in the context based on your reasoning in the 'answer' field.",
 						"- You have access to the full conversation history. If a user asks a follow-up question or refers to a previous topic (using words like 'it', 'that', 'the previous list', or 'expand on that'), you must explicitly look back at your prior assistant answers, build upon them, and reference what you stated earlier (e.g., 'As I mentioned earlier regarding...').",
 						"- Do NOT include any conversational preamble or text. "]
 				},
