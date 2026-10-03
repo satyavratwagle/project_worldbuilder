@@ -128,6 +128,7 @@ export default function SelectToTrack() {
       [id]: [prev[id][0], option, true, false],
     }));
     setOpenDropdownId(null);
+    console.log(checkedItems)
   };
 
   // Reset all checkboxes to their initial state
@@ -186,7 +187,7 @@ export default function SelectToTrack() {
                     autoFocus
                     className="border-2 px-2 rounded text-base focus:outline-none focus:ring-gray-50 bg-card text-muted-foreground"
                   />):
-                   (<span className="text-base px-2 text-foreground font-semibold" onClick={() => handleEditToggle(id,true)} >{checkedItems[id][0]}</span>)}
+                   (<span className="text-base text-left px-2 text-foreground font-semibold" onClick={() => handleEditToggle(id,true)} >{checkedItems[id][0]}</span>)}
               </div>
 
 

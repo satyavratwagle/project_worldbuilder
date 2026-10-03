@@ -1,10 +1,10 @@
 {
-    "get_context":
-    {
+    "get_additional_context":
+        {
         "type": "function",
         "function": 
         {
-            "name": "get_rag_context",
+            "name": "get_additional_context",
             "description": "Call this ONLY if more context is required to answer the user query.",
             "parameters": 
             {
@@ -31,7 +31,7 @@
                     "thinking_type": 
                         {
                             "type": "str", 
-                            "description": "Type of thinking. Choose 'answer' ONLY if the user query expects a response based on retrieved context. Choose 'brainstorm' ONLY if the user query expects you to extrapolate, generate hypotheses, create new ideas or brainstorm.",
+                            "description": "Choose 'answer' ONLY if the user query expects a factual response based on retrieved context. Choose 'brainstorm' ONLY if the user query expects you to extrapolate, generate hypotheses, create new ideas, explore new possibilities or answer counterfactual questions (e.g., 'What if...').",
                             "enum":["answer","brainstorm"]
                             
                         }

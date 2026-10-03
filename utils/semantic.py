@@ -39,10 +39,13 @@ class SemanticTools():
         self.faiss_index_path = f"{self.store_path}/FAISS_store/worldbuilding_dataset.faiss"
 
         self.nlp = spacy.load("en_core_web_lg")
+        self.fcoref = FCoref(device="mps")
         #self.nlp.add_pipe("fastcoref")
         #self.classifier = pipeline('zero-shot-classification',model='cross-encoder/nli-deberta-v3-large')
 
     def find_aliases(self,doc,entity_coreferences,entity_dict):
+
+        preds = self.fcoref.predict(doc.text)
 
         for cluster,entity_name in entity_coreferences:
 
@@ -58,6 +61,27 @@ class SemanticTools():
 
         return entity_dict
 
+    def get_root_entity(self,doc,start,end):
+        # Get the root entity within a span of text defined by start and end
+
+        for ent in doc.ents:
+            if not (end <= ent.start_char or start >= ent.end_char):
+                if(ent.label_ in ["PERSON","ORG","WORK_OF_ART"]):
+                    print(doc.text[start:end],ent.label_)
+                    # Clean entity name
+                    cleaned_entity = []
+                    for token in ent:
+                        if(token.pos_ == "PART" and token.text.lower() == "'s"):
+                            continue
+                        if(token.text.lower() != token.lemma_.lower()):
+                            word = token.lemma_
+                            if token.pos_ == "PROPN":
+                                word = word.capitalize()
+                        else:
+                            word = token.text
+                        cleaned_entity.append(word + token.whitespace_)
+
+                    return "".join(cleaned_entity).strip()
 
     def extract_pos(self,text,pos=None):
 
@@ -153,7 +177,7 @@ class SemanticTools():
         clusters = doc._.coref_clusters
         all_replacements = []
         for cluster in clusters:
-            for selected_cluster,entity in entity_names:
+            for selected_cluster,entity,aiases in entity_names:
                 if(set(cluster) == set(selected_cluster)):
                     for start,end in cluster:
                         span = doc.char_span(start,end)
@@ -183,26 +207,49 @@ class SemanticTools():
 
         return final_text
 
-    def get_coref_clusters(self, text, selections):
+    def get_alias_clusters(self, text, entity_dict):
 
         self.nlp.add_pipe("fastcoref")
 
         doc = self.nlp(text,component_cfg={"fastcoref": {"resolve_text": True}})
 
-        # 5. Access the fully resolved text via spaCy's custom extension
+        # Access the fully resolved text via spaCy's custom extension
         resolved_output = doc._.resolved_text
         clusters = doc._.coref_clusters
+
+        print("Entities : ",[(ent.text, ent.label_) for ent in doc.ents])
+        print("Resolved : ",resolved_output)
 
         entity_coreferences = []
 
         for cluster in clusters:
-            cluster_text = list(set([text[c[0]:c[1]] for c in cluster]))
-            print('Cluster text',cluster_text)
-            kept_aliases = list(filter(lambda key: any([alias in key for alias in cluster_text]),selections))
-            print('Kept aliases',kept_aliases)
-            if(len(kept_aliases)>0):
-                entity_coreferences.append((cluster,kept_aliases[0]))
+            entities_in_cluster = []
+            for start,end in cluster:
 
+                print('\nDoc Cluster : ',doc.text[start:end])
+                root_entity = self.get_root_entity(doc,start,end)
+                print(root_entity)
+                if(root_entity):
+                    entities_in_cluster.append(root_entity)
+
+            # Set primary alias for cluster
+
+            set_primary_alias = False
+            entities_in_cluster = set(entities_in_cluster)
+            for selection in entity_dict.keys():
+                if(any([alias in entities_in_cluster for alias in entity_dict[selection]['aliases']])):
+                    primary_alias = selection
+                    entities_in_cluster.update(set(entity_dict[selection]['aliases']))
+                    set_primary_alias = True
+
+            if(not(set_primary_alias)):
+                if(len(entities_in_cluster)>0):
+                    primary_alias = list(entities_in_cluster)[0]
+                else:
+                    primary_alias = doc.text[cluster[0][0]:cluster[0][1]]
+
+            entity_coreferences.append((cluster,primary_alias,list(entities_in_cluster)))
+            
         self.nlp.remove_pipe("fastcoref")
 
         return doc,entity_coreferences

@@ -9,8 +9,11 @@
 					"You are an assistant with access to tools.",
 					"When a user asks a query that requires real-time data or specific actions, call the appropriate tool.",
 					"Never guess parameter values if they are missing; ask the user instead.",
+					"You must ALWAYS explain the reasoning behind your tool choice.",
 					"\n[LIST OF AVAILABLE TOOLS]",
-					"1. get_rag_context : Use this ONLY when the user queries about information that is not available in your internal database"]
+					"1. get_additional_context : Use this ONLY when the user queries about information that is not available in your internal database.",
+					"1 (A). In the get_additional_context tool, choose 'brainstorm' ONLY if the user query expects you to invent, extrapolate, generate hypotheses, explore new possibilities or answer hypothetical questions (e.g., 'What if...') based on future possibilities.",
+					"1 (B). In the get_additional_context tool, choose 'answer' ONLY if the user query expects you to retrieve information related to a certain topic and provide a factual response based on present conditions or past conditions."]
 			},
 		"user":
 			{
@@ -90,7 +93,7 @@
 						["[SYSTEM ROLE AND GUARDRAILS]",
 						"1. You are an advanced text simplification engine specialized for fictional lore.",
 						"2. Your task is to read the provided description and simplify it into small, atomic sentences. You must ONLY include information related to the user topic in your response.",
-						"3. In the 'atomic_sentence' field, you must respond with an atomic sentence AT MOST ten (10) words long.",
+						"3. In the 'atomic_sentence' field, you must respond with an atomic sentence AT MOST twelve (12) words long.",
 						"4. Each atomic sentence must have EXACTLY one subject, one verb and one object.",				
 						"5. The subject of each atomic sentence MUST by the user topic and MUST come before the object and the verb.",
 						"6. You must cover all information related to the user topic found in the given description.",
@@ -255,6 +258,67 @@
 								["\n<topics>\n(TOPICS)\n</topics>\n"],
 							"chunk":
 								["\n<text_chunk>\n(TEXT)\n</text_chunk>\n"]
+						} 
+						
+				}			
+		},
+	"plot_reordering_prompt_legacy":
+		{
+			"system":
+				{
+					"role": 
+						"system", 
+					"content": 
+						["[TASK INSTRUCTIONS]",
+						"1. Assign the given unordered_sentences to phases that are in strict chronological order. You must always respond based on the given schema.",
+						"2. The format of each entry in unordered_sentences is {ID : sentence} You must use the given story_outline and existing phases to decide which phase to assign the sentence to.",
+						"3. If multiple sentences describe events happening concurrently or overlapping in time, cluster them together into the same chronological phase. Approximately, each sentence in the story_outline corresponds to the same phase.",
+						"4. You are also given a list of existing phases with their indices in the format {'Phase' Index : Phase events}. If the events described in a given sentence overlap with events in a particular phase, assign that sentence to the phase index.",
+						"5. You MUST include ALL IDs in your response, and each ID must appear EXACTLY ONCE in your response.",
+						"6. In the 'index' field : Output the index of the corresponding phase. You may respond with indices out of order.",
+						"7. In the 'ids' field : Output the sentence IDs for events happening in the same chronological phase. Do NOT output the sentence."]
+				},
+			"user":
+				{
+					"role": 
+						"user",
+					"content": 
+						{
+							"phases":
+								["\n[EXISTING PHASES IN CHRONOLOGICAL ORDER]\n<existing_phases>\n(PHASES)\n</existing_phases>\n"],
+							"chunk":
+								["\n<unordered_sentences>\n(TEXT)\n</unordered_sentences>\n"],
+							"topics":
+								["\n<story>\n(OUTLINE)\n</story>\n"]
+						} 
+						
+				}			
+		},
+	"plot_reordering_prompt":
+		{
+			"system":
+				{
+					"role": 
+						"system", 
+					"content": 
+						["[TASK INSTRUCTIONS]",
+						"IMPORTANT : You are given a list of events in {ID : event} pairs, and a story outline. Your task is to determine whether the given events happened concurrently, or whether the events happened sequentially based on the given story outline.",
+						"You must ALWAYS answer according to the provided schema. Always start your response with the reasoning to your answer in the 'thinking' field.",
+						"1. In the 'sequential_events' field : Respond with 'True' ONLY if the list of events can be split into 'before' and 'after' subsets based on chronological order. Respond with 'False' otherwise.",
+						"2. In the 'before' field, respond with the IDs of the events that happened first based on the given story outline ONLY if concurrent_events is False.",
+						"3. In the 'after' field, respond with the IDs of the events that happened AFTER the initial events based on the given story outline ONLY if concurrent_events is False.",
+						"4. You MUST include ALL IDs in your response, and each ID must appear EXACTLY ONCE."]
+				},
+			"user":
+				{
+					"role": 
+						"user",
+					"content": 
+						{
+							"chunk":
+								["\n<events>\n(TEXT)\n</events>\n"],
+							"topics":
+								["\n<story_outline>\n(OUTLINE)\n</story_outline>\nUse the story_outline to determine whether the events happened concurrently or sequentially."]
 						} 
 						
 				}			

@@ -83,7 +83,6 @@ def get_text_decomposition_prompt(args_dict,history=[]):
 
 	history.append(process_prompt(prompts['text_decomposition_prompt']['system']))
 	history.append(process_prompt(prompts['text_decomposition_prompt']['user'],args_dict))
-	print(history[0]['content'])
 
 	return history
 
@@ -140,6 +139,19 @@ def get_hypothesizing_prompt(args_dict,history=[]):
 	if(len(history)==0):
 		history.append(process_prompt(prompts['hypothesizing_prompt']['system']))
 	history.append(process_prompt(prompts['hypothesizing_prompt']['user'],args_dict))
+	print(history[-1]['content'])
+
+	return history
+
+def get_reordering_prompt(args_dict,history=[]):
+
+	assert 'phases' in args_dict.keys()
+	assert 'outline' in args_dict.keys()
+	assert 'text' in args_dict.keys()
+
+	if(len(history)==0):
+		history.append(process_prompt(prompts['plot_reordering_prompt']['system']))
+	history.append(process_prompt(prompts['plot_reordering_prompt']['user'],args_dict))
 	print(history[-1]['content'])
 
 	return history

@@ -1,5 +1,4 @@
 import torch
-from gliner import GLiNER
 import utils.preprocessing as pre
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -19,6 +18,7 @@ import random
 import shutil
 import plotly.graph_objects as go
 import textwrap
+from rapidfuzz import process, fuzz
 
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
@@ -32,6 +32,7 @@ def uppercase(text):
     return text[0].upper()+text[1:]
 
 def slugify_key(text: str) -> str:
+
     # Convert to lowercase
     text = text.lower()
     # Replace spaces and hyphens with underscores
@@ -40,6 +41,32 @@ def slugify_key(text: str) -> str:
     text = re.sub(r'[^a-z0-9_]', '', text)
     # Strip leading/trailing underscores
     return text.strip('_')
+
+def id_to_code(n):
+
+    n = int(n)
+
+    result = ""
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        result = chr(65 + remainder) + result
+
+    return result
+
+def code_to_id(code):
+
+    letters = code
+
+    idx = len(code)-1
+    value = 0
+    for letter in letters:
+
+        
+        adding = ord(letter)-65
+        value += (adding+1)*(26**idx)
+        idx-=1
+
+    return value
 
 class DatastoreUtilities():
 
@@ -168,13 +195,10 @@ class DatastoreUtilities():
 
         # Find nodes based on aliases and map them back to the node
 
-        self.all_aliases = [alias for node in self.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']]
-        print("Aliases : ",self.all_aliases)
-        alias_pattern = rf"\b({'|'.join(re.escape(alias) for alias in self.all_aliases)})\b"
-        self.node_finder = re.compile(alias_pattern, flags=re.IGNORECASE)
+        self.all_aliases = sorted([alias for node in self.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']],key=len,reverse=True)
+        self.alias_pattern = rf"\b({'|'.join(re.escape(alias) for alias in self.all_aliases)})\b"
+        self.node_finder = re.compile(self.alias_pattern, flags=re.IGNORECASE)
         self.alias_map = {alias:node[0] for node in self.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']}
-
-        print("Alias Map : ",self.alias_map)
             
     # FAISS DATASET FUNCTIONS
 
@@ -332,7 +356,8 @@ class DatastoreUtilities():
                                         slugify_key(tail),
                                         desc=text,
                                         key=str(self.edge_key),
-                                        label=edge_label.lower(), 
+                                        label=edge_label.lower(),
+                                        phase = 0, 
                                         updated=time_now)
         self.edge_key += 1
 
@@ -373,6 +398,35 @@ class DatastoreUtilities():
         head,tail,key,metadata = edge
         self.knowledge_graph.edges[head,tail,key]['label'] = label
         self.knowledge_graph.edges[head,tail,key]['updated'] = int(time.time())
+
+    def set_plot_edge_phase(self,head,tail,key,phase):
+
+        if(self.knowledge_graph.edges[head,tail,key]['label']=='plot'):
+            self.knowledge_graph.edges[head,tail,key]['phase'] = phase
+            self.knowledge_graph.edges[head,tail,key]['updated'] = int(time.time())
+
+    def get_existing_plot_phases(self,node=None):
+        phase_dict = dict()
+
+        if(node):
+            for edge in self.knowledge_graph.edges(node,data=True,keys=True):
+                phase_idx = edge[3]['phase']
+                if(phase_idx>0 and not(phase_idx in phase_dict.keys())):
+                    phase_dict[phase_idx] = [(edge[0],edge[1],edge[2],edge[3]['desc'])]
+                elif(phase_idx>0):
+                    phase_dict[phase_idx].append((edge[0],edge[1],edge[2],edge[3]['desc']))
+        else:
+            for edge in self.knowledge_graph.edges(data=True,keys=True):
+                phase_idx = edge[3]['phase']
+                if(phase_idx>0 and not(phase_idx in phase_dict.keys())):
+                    phase_dict[phase_idx] = [(edge[0],edge[1],edge[2],edge[3]['desc'])]
+                elif(phase_idx>0):
+                    phase_dict[phase_idx].append((edge[0],edge[1],edge[2],edge[3]['desc']))
+
+        return phase_dict
+
+    def get_unordered_plot_edges(self):
+        return ([(edge[0],edge[1],edge[2],edge[3]) for edge in self.knowledge_graph.edges(data=True,keys=True) if (edge[3]['phase']==0 and edge[3]['label']=='plot')])
 
     def get_num_edges(self):
         # Return the number of edges in the graph
@@ -451,11 +505,11 @@ class DatastoreUtilities():
                     if(not(already_added)):
                         edges_to_add.append((head,tail,desc,label))
                         edges_to_remove.append((old_head,old_tail,old_key))
-                        edges_log.append((self.knowledge_graph.nodes[head]['name'],self.knowledge_graph.nodes[tail]['name'],desc))
                         print(f"Added edge '{desc}' between {head} and {tail}")
 
         for head,tail,desc,label in edges_to_add:
-            self.add_edge(head,tail,desc,edge_label=label)
+            key = self.add_edge(head,tail,desc,edge_label=label)
+            edges_log.append((head,tail,key))
 
         for old_head,old_tail,old_key in edges_to_remove:
             self.remove_edge(old_head,old_tail,old_key)
@@ -465,6 +519,26 @@ class DatastoreUtilities():
     def format_edge_data(self,head,tail,key):
 
         return f"- {self.knowledge_graph.edges[head,tail,key]["label"]} : {self.knowledge_graph.edges[head,tail,key]["desc"]}"
+
+    def format_plot_edges(self,node=None):
+
+        phase_dict = self.get_existing_plot_phases(node)
+        phase_keys = sorted(list(set(phase_dict.keys())))
+
+        formatted_phases = ""
+
+        if(len(phase_dict.keys())>0):
+            for key in phase_keys:
+                formatted_phases += "{"+f"Phase {key} : "
+                for edge in phase_dict[key]:
+                    formatted_phases += f"{edge[3]} "
+
+                formatted_phases += "},\n"
+
+        else:
+            formatted_phases = "No existing phases."
+
+        return formatted_phases
 
     # NODE FUNCTIONS
 
@@ -489,7 +563,7 @@ class DatastoreUtilities():
                                             name=node_name,
                                             type=type,
                                             summary=summary,
-                                            aliases=aliases,
+                                            aliases=list(set(aliases+[node_name])),
                                             definition="")
         else:
             if(len(aliases)>0):
@@ -596,10 +670,13 @@ class DatastoreUtilities():
         edge_clusters = dict()
         for label in all_edge_labels:
 
-            info_list = [edge[3]['desc'] for edge in self.get_edges_from(node) if edge[3]['label']==label]
-            if(len(info_list)>0):
-                print(label)
-                edge_clusters[uppercase(label)] = ' '.join(info_list)
+            if(not(label=='plot')):
+                info_list = [edge[3]['desc'] for edge in self.get_edges_from(node) if edge[3]['label']==label]
+                if(len(info_list)>0):
+                    print(label)
+                    edge_clusters[uppercase(label)] = ' '.join(info_list)
+            else:
+                edge_clusters['Plot'] = self.format_plot_edges(node)
 
         return edge_clusters
 
@@ -861,8 +938,64 @@ class DatastoreUtilities():
     def get_node_summaries(self,nodes):
         return [self.get_node_summary(node) for node in nodes]
 
+    def check_for_similar_nodes(self,text,similarity_score=0.8):
+
+        # 1. Tokenize the long text
+        tokens = text.replace(".", "").split()
+
+        # Find the maximum word length in your phrase list to know how far to slide
+        max_words = max(len(alias.split()) for alias in self.all_aliases)
+
+        raw_matches = []
+
+        # 2. Slide a window of tokens across the text (checking lengths 1 up to max_words)
+        for n in range(max_words, 0, -1):
+            for i in range(len(tokens) - n + 1):
+                # Extract a multi-word or single-word chunk from the text
+                window_tokens = tokens[i:i + n]
+                window_text = " ".join(window_tokens)
+                
+                # 3. Fuzzy match the chunk against your list using token_set_ratio
+                match = process.extractOne(
+                    window_text, 
+                    self.all_aliases, 
+                    scorer=fuzz.token_set_ratio, 
+                    score_cutoff=similarity_score*100 # Minimum similarity score
+                )
+                
+                if match:
+                    matched_item, score, index = match
+                    raw_matches.append({
+                                "start_idx": i,
+                                "end_idx": i + n, # exclusive end index in token array
+                                "text_snippet": window_text,
+                                "matched_item": matched_item,
+                                "score": score,
+                                "length": n
+                            })
+
+        final_matches = []
+        claimed_token_indices = set()
+
+
+        # Sort by length (descending) then score (descending)
+        sorted_matches = sorted(raw_matches, key=lambda x: (x["length"], x["score"]), reverse=True)
+
+        for m in sorted_matches:
+            # Check if any token in this window has already been claimed by a longer match
+            match_range = set(range(m["start_idx"], m["end_idx"]))
+            if not match_range.intersection(claimed_token_indices):
+                # If free, accept this match and mark its tokens as claimed
+                final_matches.append((m['text_snippet'],m['matched_item']))
+                claimed_token_indices.update(match_range)
+
+        resolved_text = text
+        for (to_replace, replacement) in final_matches:
+            resolved_text = resolved_text.replace(to_replace,replacement)
+
+        return final_matches,resolved_text
+
     def check_nodes_for_replacement(self,named_entities,threshold=0.85):
-        nodes = self.get_all_nodes()
 
         similar_pairs = []
         for key in named_entities:
@@ -999,10 +1132,10 @@ class DatastoreUtilities():
             self.edge_key = (max([int(e[2]) for e in self.knowledge_graph.edges(keys=True)])+1) if len(self.knowledge_graph.edges(keys=True))>0 else 1
             self.kg_loaded_version = self.kg2ds_map[self.project_name][self.current_graph]['unsaved_versions'][-1]
             print(f"Reloaded Graph Version : {self.kg_loaded_version} : {self.knowledge_graph}")
-            self.all_aliases = [alias for node in self.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']]
+            self.all_aliases = sorted([alias for node in self.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']],key=len,reverse=True)
             self.alias_map = {alias:node[0] for node in self.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']}
-            alias_pattern = rf"\b({'|'.join([re.escape(alias) for alias in self.all_aliases])})\b"
-            self.node_finder = re.compile(alias_pattern, flags=re.IGNORECASE)
+            self.alias_pattern = rf"\b({'|'.join([re.escape(alias) for alias in self.all_aliases])})\b"
+            self.node_finder = re.compile(self.alias_pattern, flags=re.IGNORECASE)
             return True
         else:
             return False
@@ -1011,6 +1144,45 @@ class DatastoreUtilities():
         self.text_embedding_model = SentenceTransformer(self.config['text_embedding_model'])
 
     # RAG FUNCTIONS
+
+    def resolve_aliases(self,text):
+
+        # List to store our audit trail of replacements
+        entity_dict = dict()
+
+        def replacer(match):
+            original = match.group(0)
+
+            if(len(original.strip())>0):
+                replacement = self.get_node_name(self.alias_map[original])
+                entity_dict[replacement]    = dict()
+                entity_dict[replacement]['aliases']      = []
+                entity_dict[replacement]['type']         = self.knowledge_graph.nodes[self.alias_map[original]]['type']
+                return replacement
+            else:
+                return original
+            
+        modified_text = re.sub(self.alias_pattern, replacer, text)
+
+        return modified_text, entity_dict
+
+        '''
+        found_alias_tuples = list(set([(name,self.get_node_name(self.alias_map[name])) for name in list(set(self.node_finder.findall(text))) if len(name)>0]))
+        found_aliases = list(set([self.get_node_name(self.alias_map[name]) for name in list(set(self.node_finder.findall(text))) if len(name)>0]))
+        print('Aliases! : ',found_alias_tuples)
+
+        entity_dict = dict()
+        for key in found_aliases:
+            entity_dict[key] = dict()
+            entity_dict[key]['aliases'] = []
+
+        for alias,real_name in found_alias_tuples:
+            text = text.replace(alias,real_name)
+
+        print('New text : ',text)
+
+        return text, entity_dict
+        '''
 
     def get_context_from_paths(self,paths,edge_filters=None):
 
@@ -1094,6 +1266,10 @@ class DatastoreUtilities():
         nodes = None
         edges = None
 
+        # Fall back to explore neighborhood if there is only a single relevant topic.
+        if(len(nodes_in_results)==1):
+            strategy = 'explore_neighborhood'
+
         if(strategy=='explore_neighborhood'):
             neighborhood = []
             for node in nodes_in_results:
@@ -1115,6 +1291,38 @@ class DatastoreUtilities():
 
             context, nodes, edges = self.get_context_from_paths(edge_paths,edge_filters=categories)
         return context, nodes, edges
+
+    def get_plot_to_reorder(self,user_query,threshold=0.7,plot_similarity_threshold=0.75,k=5):
+
+        nodes_in_results = self.get_relevant_nodes(user_query,threshold=threshold,k=k)
+        
+        all_edges = []
+
+        for node in nodes_in_results:
+
+            all_edges += [edge for edge in self.knowledge_graph.edges(node,keys=True,data=True) if (edge[3]['label'] == 'plot' and edge[3]['phase'] == 0)]
+
+        similarity = self.get_cosine_similarity([s for s in user_query.split('.') if len(s.strip())>0],[edge[3]['desc'] for edge in all_edges])
+
+        print(similarity.T)
+
+        if(len(all_edges)>0):
+            edges_to_reorder = []
+            for idx,sim in enumerate(similarity.T):
+                if(torch.max(sim)>plot_similarity_threshold):
+                    edges_to_reorder.append(all_edges[idx])
+
+            text_to_reorder = ",\n".join("{"+f"{id_to_code(edge[2])} : {edge[3]['desc']}"+"}" for edge in edges_to_reorder)
+
+            reference_dict = dict()
+
+            for edge in edges_to_reorder:
+                reference_dict[id_to_code(edge[2])] = (edge[0],edge[1],edge[2],edge[3]['desc'])
+        else:
+            text_to_reorder = ""
+            reference_dict = dict()
+
+        return user_query, text_to_reorder, reference_dict
 
     def legacy_get_graph_rag_context(self,query,threshold=0.4,k=10):
         #def get_graph_rag_context(self,query,graph,documents_lookup,threshold=0.4,k=10,hops=1):

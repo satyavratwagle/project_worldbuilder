@@ -46,6 +46,20 @@ class NodeSummary(BaseModel):
 
 label_map = {'AXIOM' : "Lore", 'INCIDENT': "Plot"}
 
+# Plot Reordering Schema
+class Reordering(BaseModel):
+    thinking: str = Field(description="Step-by-step chain of thought to determine the chronological relationship between the given events.")
+    sequential_events: bool = Field(description="'True' if the given events can be split into 'before' and 'after' subsets based on the given story outline.")
+    before: Optional[list[str]] = Field(description="A list of sentence IDs corresponding to the events that happened first based on your thinking.")
+    after: Optional[list[str]] = Field(description="A list of sentence IDs corresponding to the events that happened later based on your thinking.")
+
+class PlotPhase(BaseModel):
+    index : int = Field(ge=1,description="The index of the phase in chronological order.")
+    ids : list[str] = Field(description="A list of sentence IDs corresponding to events happening concurrently or overlapping in time.")
+
+class PhaseList(BaseModel):
+    phases: list[PlotPhase] = Field(description="A list of CHRONOLOGICALLY ORDERED plot phases.")
+
 class Triplet(BaseModel):
     source: str = Field(description="Normalized canonical name of the source entity in simple_sentence, e.g., 'Prince Elian'")
     target: str = Field(description="Normalized canonical name of the target entity in simple_sentence, e.g., 'Sunblade'")

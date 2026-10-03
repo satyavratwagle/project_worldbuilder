@@ -15,6 +15,9 @@ with open('utils/tools.json', "r", encoding="utf-8") as f:
 
 tools_list = [tool_desc for tool_desc in tools.values()]
 
+for tool in tools_list:
+	print(tool)
+
 def load_markdown(file_name,start_para, end_para):
 
 	with open(f"{config['data_dir']}/obsidian_data/{file_name}.md", "r", encoding="utf-8") as f:
@@ -34,13 +37,21 @@ def load_markdown(file_name,start_para, end_para):
 
 	return text_to_return
 
-context = load_markdown('ambar',0,1)
-query = "Where does Mahamun live and how does he get his powers?"
+#context = load_markdown('ambar',0,1)
+query = "What can Grace do to solve the Astrophage mystery?"
+
+#"Does Rocky have the ability to become human?" #(Incorrectly classified)
+
+#"What is the connection between Stratt and Rocky?"
+#"What possible connection could there be between Stratt and Rocky?"
 
 props_dict = dict()
 props_dict['query'] = query
 
 prompt = prompts.get_tool_use_prompt(props_dict,[])
+
+for m in prompt:
+	print(f"{m['role']}:\n{m['content']}\n")
 
 response = ollama.chat(
                                 model='llama3.1:8b',
