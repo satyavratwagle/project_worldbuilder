@@ -555,7 +555,6 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
 
         for e_idx,selected_entity in enumerate(entities_with_types):
             # Filter Chunk to only consider sentences where the entity is mentioned
-
             
             chunk_words = chunk.split(" ")
             chunk_starter = " ".join(chunk_words[:min(len(chunk_words),5)])
@@ -563,12 +562,13 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
 
             async with cl.Step(name=f"{chunk_starter}... to find information about {entity_name}",default_open=True) as step:
                 chunk_sentences = chunk.split('.')
+                formatted_chunk = ".\n".join([s for s in chunk_sentences])
                 filtered_sentences = list(filter(lambda sentence:entity_name in sentence,chunk_sentences))
 
                 decomposed_tuples = await decompose_text(chunk,topics=[selected_entity])
 
                 print('\nRaw Output : ',decomposed_tuples)
-                
+
                 # Remove sentences that do not mention the topics of interest.
                 filtered_tuples = [[tuplet[0],tuplet[1],alias_finder.findall(tuplet[0])] for tuplet in decomposed_tuples if len(alias_finder.findall(tuplet[0]))>0]
                 print("\nFiltered Output : ",filtered_tuples)
@@ -1096,17 +1096,7 @@ async def on_chat_start():
     await cl.context.emitter.set_commands(helpers)
     
     for id,node in du.knowledge_graph.nodes(data=True):
-        print(f"Found Node {node['name']} ({node['type']}), also known as {node['aliases']}")
-
-    for edge in du.knowledge_graph.edges(keys=True,data=True):
-        head,tail,key,text = edge
-        du.set_plot_edge_phase(head,tail,key,0)
-        print(du.knowledge_graph.edges[head,tail,key])
-
-    du.all_aliases = [alias for node in du.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']]
-    du.alias_map = {alias:node[0] for node in du.knowledge_graph.nodes(data=True) for alias in node[1]['aliases']}
-    alias_pattern = rf"\b({'|'.join([re.escape(alias) for alias in du.all_aliases])})\b"
-    du.node_finder = re.compile(alias_pattern, flags=re.IGNORECASE)
+        print(f"Found Node {node['desc']} ({node['type']})")
 
     await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?").send()
 
