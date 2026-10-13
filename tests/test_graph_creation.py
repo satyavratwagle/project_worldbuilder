@@ -11,7 +11,7 @@ og_text = "Ryland Grace, PhD is a self-deprecating 8th grade science teacher who
 with open('config.json', "r", encoding="utf-8") as f:
     config = json.load(f)
 
-du = DatastoreUtilities(config,project_name='demo',current_graph='lore')
+du = DatastoreUtilities(config,project_name='test',current_graph='lore')
 #sem = SemanticTools(config)
 #sem.load_extraction_model()
 
@@ -108,8 +108,8 @@ def check_dataset():
     for row in du.dataset:
         print(f"{row['node_id']} = {row['text']}")
 
-phase_construct_graph = False
-phase_overwrite_dataset = False
+phase_construct_graph = True
+phase_overwrite_dataset = True
 
 phase_test_graph = True
 phase_test_dataset = False
@@ -171,12 +171,14 @@ if(phase_overwrite_dataset):
     check_dataset()
 
 if(phase_test_dataset):
-    du.load_embedding_model()
+    #du.load_embedding_model()
     order_plot("Grace was kicked out of the academic circles.","Grace started to teach in school.")
     order_plot("Grace started to teach in school.","Stratt approached Grace with a job.")
     order_plot("Stratt approached Grace with a job.","Grace was launched on a shuttle.")
     order_plot("Grace was launched on a shuttle.","In space, Grace found Rocky.")
     save_graph()
+    update_dataset()
+    check_dataset()
 
 
     

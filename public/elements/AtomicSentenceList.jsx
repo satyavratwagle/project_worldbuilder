@@ -66,7 +66,7 @@ export default function AtomicSentenceList() {
   const [checkedItems, setCheckedItems] = useState(() => {
     const init = {};
     (props.items || []).forEach((item) => {
-      init[item.id] = [item.text,true, false, item.label, item.topics];
+      init[item.id] = [item.text,true, false, item.label];
     });
     return init;
   });
@@ -77,7 +77,7 @@ export default function AtomicSentenceList() {
     console.log(finalText)
     setCheckedItems((prev) => ({
       ...prev,
-      [id]: [finalText,true,false,prev[id][3],prev[id][4]],
+      [id]: [finalText,true,false,prev[id][3]],
     }));
     console.log(checkedItems)
     setText("")
@@ -89,7 +89,7 @@ export default function AtomicSentenceList() {
   const handleEditToggle = (id, state) => {
     setCheckedItems((prev) => ({
       ...prev,
-      [id]: [prev[id][0],prev[id][1],state,prev[id][3],prev[id][4]],
+      [id]: [prev[id][0],prev[id][1],state,prev[id][3]],
     }));
   };
 
@@ -97,7 +97,7 @@ export default function AtomicSentenceList() {
   const handleToggle = (id) => {
     setCheckedItems((prev) => ({
       ...prev,
-      [id]: [prev[id][0],!prev[id][1],false,prev[id][3],prev[id][4]],
+      [id]: [prev[id][0],!prev[id][1],false,prev[id][3]],
     }));
   };
 
@@ -105,7 +105,7 @@ export default function AtomicSentenceList() {
   const handleReset = () => {
     const init = {};
     (props.items || []).forEach((item) => {
-      init[item.id] = [item.text,true,false,prev[id][3],prev[id][4]];
+      init[item.id] = [item.text,true,false,prev[id][3]];
     });
     setCheckedItems(init);
     setOpenDropdownId(null);
@@ -115,7 +115,7 @@ export default function AtomicSentenceList() {
   const handleSelectOption = (id, option) => {
     setCheckedItems((prev) => ({
       ...prev,
-      [id]: [prev[id][0], prev[id][1], prev[id][2], option, prev[id][4]],
+      [id]: [prev[id][0], prev[id][1], prev[id][2], option],
     }));
     setOpenDropdownId(null);
   };

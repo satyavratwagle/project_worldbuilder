@@ -46,6 +46,17 @@ class NodeSummary(BaseModel):
 
 label_map = {'AXIOM' : "Lore", 'INCIDENT': "Plot"}
 
+# Context Sufficiency Schema
+class MultipleChoiceAnswer(BaseModel):
+    question: str = Field(description="A multiple-choice question related to provided that will help you answer the user query")
+    options: conlist(str,min_length=3,max_length=3) = Field(description="A list of EXACTLY 3 (three) options that could potentially answer the question correctly.")
+
+class SufficiencyCheck(BaseModel):
+    relevant_information: str = Field(description="Parts of the context that are relevant to the user query.")
+    information_needed: str = Field(description="A description of the information gaps in the provided context that prevent you from answering the query correctly.")
+    is_sufficient: int = Field(ge=0, le=10, description="A measure of whether the provided context contains enough information to answer the user query. 0 if the context contains NO relevant information. 10 if the context contains ALL required information. 5 if the user query can only be partially answered using the provided context.")
+    additional_questions: conlist(MultipleChoiceAnswer, min_length=1, max_length=3) = Field(description="A set of multiple-choice questions based on the 'information_needed' field whose responses will provide the additional information needed to answer the question.")
+
 # Plot Reordering Schema
 class Reordering(BaseModel):
     thinking: str = Field(description="Step-by-step chain of thought to determine the chronological relationship between the given events.")
@@ -58,7 +69,8 @@ class PlotPhase(BaseModel):
     ids : list[str] = Field(description="A list of sentence IDs corresponding to events happening concurrently or overlapping in time.")
 
 class PhaseList(BaseModel):
-    phases: list[PlotPhase] = Field(description="A list of CHRONOLOGICALLY ORDERED plot phases.")
+    thinking: str = Field(description="The given story outline in chornological order without any preamble.")
+    event_id: str = Field(description="The ID of the event that happened first based on the given story outline.")
 
 class Triplet(BaseModel):
     source: str = Field(description="Normalized canonical name of the source entity in simple_sentence, e.g., 'Prince Elian'")

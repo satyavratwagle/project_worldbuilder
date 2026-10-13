@@ -1,4 +1,4 @@
-#import torch
+import torch
 import numpy as np
 import datasets
 import networkx as nx
@@ -18,6 +18,7 @@ import plotly.graph_objects as go
 import textwrap
 from rapidfuzz import process, fuzz
 import itertools
+import string
 
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
@@ -73,9 +74,20 @@ def code_to_id(code):
 
     return value
 
+def generate_alphanumeric_code(length=4):
+    # Combine ascii letters (a-z, A-Z) and digits (0-9)
+    characters = string.ascii_letters + string.digits
+    
+    # Generate a list of random characters and join them into a string
+    return ''.join(random.choices(characters, k=length))
+
 class DatastoreUtilities():
 
-    def __init__(self,config,project_name="worldbuilding",current_graph='lore',load_most_recent=True):
+    def __init__(self,config,project_name="worldbuilding",current_graph='lore'):
+
+        # Temporary variables (Delete once fixed)
+        self.arrow_scale = 0.9
+
 
         self.config = config
         self.kg_to_ds_path = config['kg_to_ds_map']
@@ -159,7 +171,7 @@ class DatastoreUtilities():
      
     # FAISS DATASET FUNCTIONS
 
-    def calculate_graph_datastore_diff(self):
+    def calculate_graph_datastore_diff(self,write_to_kg2ds=True):
         # Call this function after saving graphs and datasets.
 
         with open(self.kg_to_ds_path, "r", encoding="utf-8") as f:
@@ -168,11 +180,28 @@ class DatastoreUtilities():
         nodes_not_in_graph = [row['node_id'] for row in self.dataset if not(self.knowledge_graph.has_node(row['node_id']))]
         nodes_not_in_dataset = [node for node in self.knowledge_graph.nodes() if not(node in self.dataset['node_id'])]
 
-        self.kg2ds_map[self.project_name][self.current_graph]['nodes_not_in_graph'] = nodes_not_in_graph
-        self.kg2ds_map[self.project_name][self.current_graph]['nodes_not_in_datastore'] = nodes_not_in_dataset
+        if(write_to_kg2ds):
+            self.kg2ds_map[self.project_name][self.current_graph]['nodes_not_in_graph'] = nodes_not_in_graph
+            self.kg2ds_map[self.project_name][self.current_graph]['nodes_not_in_datastore'] = nodes_not_in_dataset
 
-        with open(self.config['kg_to_ds_map'], "w") as f:
-            json.dump(self.kg2ds_map, f, indent=4)
+            with open(self.config['kg_to_ds_map'], "w") as f:
+                json.dump(self.kg2ds_map, f, indent=4)
+
+        return nodes_not_in_graph,nodes_not_in_dataset
+
+    def add_alias(self,node_name, alias):
+        node_id = self.get_node_id(node_name)
+
+        assert self.get_node_layer(node_id)=='topic',f"{node_id} is not a topic! Aliases may only be assigned to topics!"
+
+        node_layer = self.get_node_layer(node_id)
+        node_type = self.knowledge_graph.nodes[node_id]['type']
+
+        node_id = self.add_node(node_id,node_layer,type=node_type,aliases=[alias])
+
+        self.save_graph()
+
+        return self.knowledge_graph.nodes[node_id]['metadata']['aliases']
 
     def reload_lookups(self):
         topic_nodes = list(filter(lambda node:node[1]['layer']=='topic',self.knowledge_graph.nodes(data=True)))
@@ -183,6 +212,17 @@ class DatastoreUtilities():
         self.alias_pattern = rf"\b({'|'.join(re.escape(alias) for alias in self.all_aliases)})\b"
         self.node_finder = re.compile(self.alias_pattern, flags=re.IGNORECASE)
         self.node_lookup = {alias:node[0] for node in topic_nodes for alias in node[1]['metadata']['aliases']} | {node[1]['desc']:node[0] for node in descriptive_nodes}
+
+    def get_alias_dict(self,text):
+        nodes_in_text = [self.knowledge_graph.nodes[self.node_lookup[name]] for name in list(set(self.node_finder.findall(text))) if len(name)>0]
+
+        alias_dict = dict()
+        for node in nodes_in_text:
+            alias_dict[node['desc']] = dict()
+            alias_dict[node['desc']]['type'] = node['type']
+            alias_dict[node['desc']]['aliases'] = node['metadata']['aliases']
+
+        return alias_dict
 
     def load_embedding_model(self):
         from sentence_transformers import SentenceTransformer
@@ -321,20 +361,20 @@ class DatastoreUtilities():
 
         # Filter out data from existing dataset coming from the same nodes
 
-        filtered_dataset = self.dataset
-        print(filtered_dataset.list_indexes())
-        if "embeddings" in filtered_dataset.list_indexes():
-            filtered_dataset.drop_index(index_name="embeddings")
+        temp_dataset = self.dataset
+        print(temp_dataset.list_indexes())
+        if "embeddings" in temp_dataset.list_indexes():
+            temp_dataset.drop_index("embeddings")
 
-        filtered_dataset = filtered_dataset.filter(lambda example: example["layer"] == layer)
+        filtered_dataset = temp_dataset.filter(lambda example: example["layer"] == layer)
 
         embedding_dim = self.text_embedding_model.get_embedding_dimension()
         cosine_index = faiss.IndexFlatIP(embedding_dim)
         filtered_dataset.add_faiss_index(column="embeddings", custom_index=cosine_index, index_name="filtered_embeddings_index")
 
         # Re-add the index to the original dataset
-        self.dataset.add_faiss_index(column="embeddings", custom_index=cosine_index)
-        self.dataset.load_faiss_index("embeddings", f"{self.datastore_path}.faiss")
+        #self.dataset.add_faiss_index(column="embeddings", custom_index=cosine_index)
+        #self.dataset.load_faiss_index("embeddings", f"{self.datastore_path}.faiss")
 
         return filtered_dataset
 
@@ -374,6 +414,39 @@ class DatastoreUtilities():
         self.knowledge_graph.remove_edge(head_id,tail_id)
         return edge_data
 
+    def get_relevant_edge(self,text,threshold=0.5):
+        # Based on text, find the two most similar nodes and the edge between them.
+
+        query,_ = self.resolve_aliases(text)
+        query_vector = self.embed_text(query)
+
+        scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=20)
+
+        candidate_sets = []
+        selected = False
+
+        best_edge = (None,None)
+        for idx,score in enumerate(scores):
+            if(score>threshold):
+
+                current_node = examples['node_id'][idx]
+                for head in candidate_sets:
+                    if(self.knowledge_graph.has_edge(head,current_node)):
+                        best_edge = (head,current_node)
+                        selected = True
+                        break
+                    elif(self.knowledge_graph.has_edge(current_node,head)):
+                        best_edge = (current_node,head)
+                        selected = True
+                        break
+
+                if(not(selected)):
+                    candidate_sets.append(current_node)
+                else:
+                    break
+
+        return best_edge
+
     # Old functions
     def get_edges_from(self,head):
         return [edge for edge in self.knowledge_graph.edges(head,keys=True,data=True)]
@@ -382,25 +455,15 @@ class DatastoreUtilities():
         # Get all edges between a head and tail node
         return [(head,tail,k,v['desc'],v['label'],[self.get_node_name(head),self.get_node_name(tail)]) for k,v in self.knowledge_graph.adj[head][tail].items()]
 
-    def get_relevant_edges(self,text,threshold=0.8):
-        # All relevant edges are structured as list((node,tail,info))
+    def get_edges_in_layer(self,layer):
+        assert layer in ['plot','topic','lore'], f"layer '{layer}' not in allowed list!"
 
-        graph_edges = list(self.knowledge_graph.edges(keys=True,data=True))
-        text_embedding = torch.from_numpy(self.text_embedding_model.encode([text], normalize_embeddings=True))
-        embeddings = torch.from_numpy(self.text_embedding_model.encode([e[3]['desc'] for e in graph_edges], normalize_embeddings=True))
-        cosine_sim = torch.matmul(embeddings,text_embedding.T)
+        edge_mapper = dict()
+        edge_mapper['topic'] = ['relationship']
+        edge_mapper['plot'] = ['scene']
+        edge_mapper['lore'] = ['description']
 
-        similar_idxs = torch.nonzero(torch.flatten(cosine_sim)>threshold,as_tuple=True)[0]
-
-        all_info = dict()
-        if(len(similar_idxs)>0):
-            all_info['node_name'] = f"Edges similar to '{text}'"
-            all_info['summary'] = None
-            all_info['edge_info'] = [(graph_edges[idx][0],graph_edges[idx][1],graph_edges[idx][2],graph_edges[idx][3]['desc']) for idx in similar_idxs]
-        else:
-            all_info = None
-
-        return all_info
+        return [edge for edge in self.knowledge_graph.edges(data=True) if edge[2]['label']==edge_mapper[layer]]
 
     def set_edge_label(self,edge,topic,label):
         head,tail,key,metadata = edge
@@ -552,11 +615,11 @@ class DatastoreUtilities():
 
     def add_node(self,node_name,layer,type="misc",**metadata):
         # NOTE : Aliases needed for relevant topic retrieval
-
+        layer = layer.lower()
         assert layer in ['plot','lore','topic']
 
         # Check if the node exists in the graph (Mostly useful for `topic` nodes)
-        if(not(node_name in self.node_lookup.keys())):
+        if(not(node_name in self.node_lookup.keys()) and not(node_name in self.knowledge_graph.nodes())):
 
             # If the node is 'lore' or 'plot', resolve any preliminary aliases.
             node_name,_ = self.resolve_aliases(node_name)
@@ -578,7 +641,10 @@ class DatastoreUtilities():
 
         else:
 
-            node_id = self.node_lookup[node_name]
+            if(node_name in self.knowledge_graph.nodes()):
+                node_id = node_name
+            else:
+                node_id = self.get_node_id(node_name)
 
             new_metadata = metadata
             # If node already exists, overwrite the properties.
@@ -597,20 +663,36 @@ class DatastoreUtilities():
     def remove_node(self,node):
         # Cleanly remove a node from the knowledge graph
 
-        node,_ = self.resolve_aliases(node)
-
-        node_id = self.get_node_id(node)
+        if(node in self.node_lookup.keys() or node in self.knowledge_graph.nodes()):
+            node_id = self.get_node_id(node)
+        else:
+            node,_ = self.resolve_aliases(node)
+            node_id = self.get_node_id(node)
 
         node_data = self.knowledge_graph.nodes[node_id]
+
+        # Heal the edges between its neighbors so that the graph stays continuous.
+        predecessors = self.knowledge_graph.predecessors(node_id)
+        successors = self.knowledge_graph.successors(node_id)
+
+        # Connect each predecessor to each successor only if the edge type is the same. (Prevents crossing between node layers)
+        for successor in successors:
+            for predecessor in predecessors:
+                if(self.knowledge_graph.edges[node_id,successor]['label']==self.knowledge_graph.edges[predecessor,node_id]['label']):
+                    label = self.knowledge_graph.edges[predecessor,node_id]['label']
+                    self.add_edge(predecessor,successor,label)
 
         edges_to_remove = []
         for edge in self.knowledge_graph.edges([node_id],data=True):
             edges_to_remove.append((edge[0],edge[1]))
+            print(f"Removed edge between {edge[0]} and {edge[1]}")
 
         for head,tail in edges_to_remove:
             self.knowledge_graph.remove_edge(head,tail)
 
         self.knowledge_graph.remove_node(node_id)
+
+        print(f"Removed Node : {node_id}")
 
         return node_data
 
@@ -624,12 +706,21 @@ class DatastoreUtilities():
         elif(node_name in self.node_lookup.keys()):
             return self.node_lookup[node_name]
         else:
-            raise KeyError(f"'{node_name}' not found in knowledge graph!.")
+            return None
 
     def get_node_layer(self,node_name):
 
         node_id = self.get_node_id(node_name)
         return self.knowledge_graph.nodes[node_id]['layer']
+
+    def get_node_aliases(self,node_name):
+
+        node_id = self.get_node_id(node_name)
+
+        assert self.knowledge_graph.nodes[node_id]['layer']=='topic',f"{node_name} is not a valid topic node!"
+
+        node = self.knowledge_graph.nodes[node_id]
+        return (node['desc'],node['metadata']['aliases'])
 
     def get_node_metadata(self,node_name,key):
 
@@ -639,24 +730,55 @@ class DatastoreUtilities():
 
         return self.knowledge_graph.nodes[node_id]['metadata'][key]
 
-    def get_layer(self,layer):
+    def get_nodes_in_layer(self,layer):
         return [node for node in self.knowledge_graph.nodes(data=True) if node[1]['layer']==layer]
 
-    # Old Functions
-    def get_all_nodes(self):
-        # Return a list of all node names
-        return [{"name":node[1]['name'],"id":node[0]} for node in self.knowledge_graph.nodes(data=True)]
+    def does_node_exist(self,node):
+        if(self.get_node_id(node)):
+            return True
+        else:
+            return False
 
-    def get_all_node_data(self):
-        nodes = self.get_all_nodes()
-        node_descriptions = dict()
-        for node in nodes:
-            node_descriptions[node['id']] = list(self.knowledge_graph.edges(node['id'],keys=True,data=True))
-        return node_descriptions
+    def get_relevant_node(self,text,threshold=0.8):
 
-    def is_node_updated(self,node):
-        edge_data = self.knowledge_graph.edges(node,data=True)
-        return not(any([self.knowledge_graph.nodes[node]['updated']<e[-1]['updated'] for e in edge_data]))
+        # Based on text, find the most similar node and return.
+
+        query,_ = self.resolve_aliases(text)
+        query_vector = self.embed_text(query)
+
+        scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=20)
+
+        for idx,score in enumerate(scores):
+            #print(f"{examples['text'][idx]} : {score}")
+            if(score>threshold):
+                return examples['node_id'][idx]
+
+        return None
+
+    def get_node_stack(self,node):
+        # Returns the `lore`, `topic` and `plot` related to a specific node.
+
+        node_id = self.get_node_id(node)
+
+        # First, get the associated topic.
+        if(self.get_node_layer(node_id)=='topic'):
+            topic_node_ids = [node_id]
+        else:
+            topic_node_ids = self.get_related_topics(node_id)
+
+        # From each topic, get the related `lore` and `plot` nodes and edges
+        stack_nodes = topic_node_ids
+        stack_edges = []
+        for topic_node in topic_node_ids:
+            neighbors = self.knowledge_graph.successors(topic_node)
+            stack_nodes += [neighbor_id for neighbor_id in neighbors if not(self.knowledge_graph.nodes[neighbor_id]['layer']=='topic')]
+            stack_edges += [(topic_node,neighbor_id) for neighbor_id in stack_nodes]
+
+        print(stack_nodes)
+        stack_nodes = list(set(stack_nodes))
+        stack_edges = list(set(stack_edges))
+
+        return stack_nodes, stack_edges
 
     def get_nodes_to_add_to_faiss(self):
         # Return a list of nodes that have been updated, but not added to the FAISS dataset
@@ -668,19 +790,14 @@ class DatastoreUtilities():
         # Get only the non-topic nodes that have been updated after the last datastore save.
         return [node for node in self.knowledge_graph.nodes(data=True) if (node[1]['updated']>self.kg2ds_map[self.project_name][self.current_graph]['datastore_last_saved'] and not(node[1]['layer']=='topic'))]
 
-    def get_random_node(self):
-        all_nodes = self.get_all_nodes()
-        return random.choice(all_nodes)
+    # Old Functions
+
+    def is_node_updated(self,node):
+        edge_data = self.knowledge_graph.edges(node,data=True)
+        return not(any([self.knowledge_graph.nodes[node]['updated']<e[-1]['updated'] for e in edge_data]))
 
     def get_neighbors(self,node):
         return [n for n in self.knowledge_graph.neighbors(node)]
-
-    def reset_nodes(self):
-        # Reset if the nodes need to be saved to the dataset all over again.
-
-        for node_data in self.get_all_nodes():
-            node_id = node_data['id']
-            self.knowledge_graph.nodes[node_id]['updated']  = int(time.time())
 
     # GRAPH FUNCTIONS
 
@@ -688,7 +805,7 @@ class DatastoreUtilities():
         # For all lore nodes, find mentions of topics and create edges
 
         added_edges = []
-        lore_nodes = self.get_layer('lore')
+        lore_nodes = self.get_nodes_in_layer('lore')
 
         for id,node in lore_nodes:
             mentioned_topics = [name for name in list(set(self.node_finder.findall(node['desc']))) if len(name)>0]
@@ -703,7 +820,7 @@ class DatastoreUtilities():
         # For all lore nodes, find mentions of topics and create edges
 
         added_edges = []
-        plot_nodes = self.get_layer('plot')
+        plot_nodes = self.get_nodes_in_layer('plot')
 
         for id,node in plot_nodes:
             mentioned_topics = [name for name in list(set(self.node_finder.findall(node['desc']))) if len(name)>0]
@@ -719,7 +836,7 @@ class DatastoreUtilities():
 
         # For Lore nodes, check if the outgoing neighbors are connected.
         added_edges = []
-        lore_nodes = self.get_layer('lore')
+        lore_nodes = self.get_nodes_in_layer('lore')
 
         for id,node in lore_nodes:
             related_topics = [edge[0] for edge in self.knowledge_graph.in_edges(id,data=True) if edge[2]['label']=='description']
@@ -732,7 +849,7 @@ class DatastoreUtilities():
         # For Plot nodes, do the same
         # May need to change this as Plot nodes increase.
 
-        plot_nodes = self.get_layer('plot')
+        plot_nodes = self.get_nodes_in_layer('plot')
 
         for id,node in plot_nodes:
             related_topics = [edge[0] for edge in self.knowledge_graph.in_edges(id,data=True) if edge[2]['label']=='involvement']
@@ -744,13 +861,217 @@ class DatastoreUtilities():
 
         return added_edges
 
+    def order_scenes(self,ordered_nodes):
+
+        def get_first_common_element(list_a, list_b):
+            # Convert list_b to a set for O(1) lookups
+            set_b = set(list_b)
+            
+            # Iterate through list_a to preserve the original order
+            for item in list_a:
+                if item in set_b:
+                    return item
+                    
+            return None  # Return None if no common element exists
+
+        assert all([self.knowledge_graph.nodes[node]['layer']=='plot' for node in ordered_nodes]), f"All nodes are not plot nodes!"
+
+        added_edges = []
+        edges_to_reconsider = dict()
+
+        edges_to_reconsider['least_cut'] = []
+        edges_to_reconsider['full_overlap'] = []
+
+        plot_graph = self.filter_graph(filter_layer='plot')
+        for idx in range(len(ordered_nodes)-1):
+            head = ordered_nodes[idx]
+            tail = ordered_nodes[idx+1]
+
+            chapter_overlap, heads_overlap, tails_overlap = self.do_chapters_overlap(head,tail)
+            if chapter_overlap:
+                full_overlap_dict = dict()
+                print(f"Adding a path between {head} and {tail} will form a cycle!")
+                # One of the predecessors or successors of the head and tail must be common.
+                # If we make a cut at the common node within the paths to the common heads or tails, we create new branches.
+
+                if(heads_overlap and tails_overlap):
+                    # If heads AND tails overlap, it means that a direct path already exists between the two nodes
+                    print(f"{head} and {tail} exist on the same path! Don't create a shortcut!")
+
+                    # Find a path between the two nodes, and delete any edge between them.
+                    common_heads = set(self.get_chapter_heads(head))&set(self.get_chapter_heads(tail))
+                    common_tails = set(self.get_chapter_tails(head))&set(self.get_chapter_tails(tail))
+
+                    common_chapter_paths = []
+                    for c_head in common_heads:
+                        for c_tail in common_tails:
+                            nodes_in_path = nx.shortest_path(self.knowledge_graph,c_head,c_tail)
+                            common_chapter_paths += [(u, v) for u, v in nx.utils.pairwise(nodes_in_path) if self.knowledge_graph.has_edge(u, v)]
+
+                    common_chapter_paths = list(set(common_chapter_paths))
+                    common_chapter_nodes = list(set([item for tup in common_chapter_paths for item in tup]))
+
+                    print("Full Overlap")
+                    print(common_chapter_paths)
+                    print(common_chapter_nodes)
+
+                    full_overlap_dict['chapter_edges'] = common_chapter_paths
+                    full_overlap_dict['chapter_nodes'] = common_chapter_nodes
+
+                    node_path_nodes = nx.shortest_path(self.knowledge_graph,head,tail)
+                    node_path_edges = [(u, v) for u, v in nx.utils.pairwise(node_path_nodes) if self.knowledge_graph.has_edge(u, v)]
+
+                    full_overlap_dict['common_edges'] = node_path_edges
+                    full_overlap_dict['common_nodes'] = node_path_nodes
+
+                    print(node_path_edges)
+                    print(node_path_nodes)
+
+                    edges_to_reconsider['full_overlap'].append(full_overlap_dict)
+
+
+                elif(heads_overlap):
+
+                    partial_overlap_dict = dict()
+
+                    # Find the common heads for the two nodes
+                    common_heads = set(self.get_chapter_heads(head))&set(self.get_chapter_heads(tail))
+
+                    # For each path from each head, find the common path node for both nodes
+                    for chapter_head in common_heads:
+                        head_path1 = nx.shortest_path(self.knowledge_graph,chapter_head,head)
+                        head_path2 = nx.shortest_path(self.knowledge_graph,chapter_head,tail)
+
+                        head_path1.reverse()
+                        head_path2.reverse()
+
+                        last_common_predecessor = get_first_common_element(head_path1,head_path2)
+
+                        head_path1.reverse()
+                        head_path2.reverse()
+
+                        # Least Cut Edge format for head : (node1, node2), (common_predecessor,node_after_that1), (common_predecessor,node_after_that2)
+                        least_cut_for_node1 = head_path1[head_path1.index(last_common_predecessor)+1]
+                        least_cut_for_node2 = head_path2[head_path2.index(last_common_predecessor)+1]
+
+                        partial_overlap_dict['new_edge'] = (head,tail)
+                        partial_overlap_dict['option_1'] = (last_common_predecessor,least_cut_for_node1)
+                        partial_overlap_dict['option_2'] = (last_common_predecessor,least_cut_for_node2)
+                        partial_overlap_dict['nodes_in_path'] = list(set(head_path1+head_path2))
+
+                        edges_to_reconsider['least_cut'].append(partial_overlap_dict)
+
+                    print(f"Common Predecessor is {last_common_predecessor}")
+
+                elif(tails_overlap):
+                    
+                    # Find the common tails for the two nodes
+                    common_tails = set(self.get_chapter_tails(head))&set(self.get_chapter_tails(tail))
+
+                    # For each path from each head, find the common path node for both nodes
+                    for chapter_tail in common_tails:
+                        partial_overlap_dict = dict()
+                        tail_path1 = nx.shortest_path(self.knowledge_graph,head,chapter_tail)
+                        tail_path2 = nx.shortest_path(self.knowledge_graph,tail,chapter_tail)
+
+                        first_common_successor = get_first_common_element(tail_path1,tail_path2)
+
+                        # Least Cut Edge format for head : (node1, node2), (node_before_that1,common_successor), (node_before_that2,common_successor)
+                        least_cut_for_node1 = tail_path1[tail_path1.index(first_common_successor)-1]
+                        least_cut_for_node2 = tail_path2[tail_path2.index(first_common_successor)-1]
+
+                        partial_overlap_dict['new_edge'] = (head,tail)
+                        partial_overlap_dict['option_1'] = (least_cut_for_node1,first_common_successor)
+                        partial_overlap_dict['option_2'] = (least_cut_for_node2,first_common_successor)
+                        partial_overlap_dict['nodes_in_path'] = list(set(tail_path1+tail_path2))
+
+                        #least_cut_edge = ((head,tail),(least_cut_for_node1,first_common_successor),(least_cut_for_node2,first_common_successor),tail_path1,tail_path2)
+                        edges_to_reconsider['least_cut'].append(partial_overlap_dict)
+
+                    print(f"Common Successor is {first_common_successor}")
+            else:
+                print(f"Added a path between {head} and {tail}!")
+                new_edge = self.add_edge(head,tail,'scene')
+                if(new_edge):
+                    added_edges.append(new_edge)
+
+        return added_edges, edges_to_reconsider
+
+    def get_chapter_heads(self,node):
+        
+        node_id = self.get_node_id(node)
+        assert self.get_node_layer(node_id)=='plot'
+
+        nodes = [node_id]
+        heads = []
+        for node in nodes:
+            current_node = node
+
+            while(True):
+                # Check if the current node has any plot predecessors
+                previous_plots = [p for p in self.knowledge_graph.predecessors(current_node) if self.get_node_layer(p)=='plot']
+
+                if(len(previous_plots)==0):
+                    # This is the head of the chapter. Move to the next node
+                    heads.append(current_node)
+                    break
+                elif(len(previous_plots)==1):
+                    # This is the only previous plot. Set this as the current node
+                    current_node = previous_plots[0]
+                else:
+                    # The current node is a fork. Choose one of the branches and append the others to nodes.
+                    current_node = previous_plots[0]
+                    nodes += previous_plots[1:]
+
+        return heads
+
+    def get_chapter_tails(self,node):
+
+        node_id = self.get_node_id(node)
+        assert self.get_node_layer(node_id)=='plot'
+
+        nodes = [node_id]
+        tails = []
+        for node in nodes:
+            current_node = node
+
+            while(True):
+                # Check if the current node has any plot successors
+                next_plots = [p for p in self.knowledge_graph.successors(current_node) if self.get_node_layer(p)=='plot']
+
+                if(len(next_plots)==0):
+                    # This is the tail of the chapter. Move to the next node
+                    tails.append(current_node)
+                    break
+                elif(len(next_plots)==1):
+                    # This is the only next plot. Set this as the current node
+                    current_node = next_plots[0]
+                else:
+                    # The current node is a fork. Choose one of the branches and append the others to nodes.
+                    current_node = next_plots[0]
+                    nodes += next_plots[1:]
+
+        return tails
+
+    def do_chapters_overlap(self,node1,node2):
+
+        node1_id = self.get_node_id(node1)
+        node2_id = self.get_node_id(node2)
+
+        heads_overlap = not set(self.get_chapter_heads(node1_id)).isdisjoint(self.get_chapter_heads(node2_id))
+        tails_overlap = not set(self.get_chapter_tails(node1_id)).isdisjoint(self.get_chapter_tails(node2_id))
+
+        chapter_overlap = heads_overlap or tails_overlap
+
+        return (chapter_overlap, heads_overlap, tails_overlap)
+
     def sequence_scenes(self,before,after):
 
-        before_id,before_score,before_text = self.find_similar_nodes(before,k=1,filter='plot')[0]
-        after_id,after_score,after_text = self.find_similar_nodes(after,k=1,filter='plot')[0]
+        before_id = self.find_similar_nodes(before,k=1,filter='plot')[0]
+        after_id = self.find_similar_nodes(after,k=1,filter='plot')[0]
 
-        print(f"Before - {before_text} : {before_score}")
-        print(f"After - {after_text} : {after_score}")
+        #print(f"Before - {before_text} : {before_score}")
+        #print(f"After - {after_text} : {after_score}")
         
         edge = self.add_edge(before_id,after_id,'scene')
 
@@ -766,39 +1087,67 @@ class DatastoreUtilities():
         return filtered_graph
 
     def find_path_between(self,source,target,layer):
-
-        filtered_graph = self.filter_graph(layer)
-
-        source_id,source_score,source_text = self.find_similar_nodes(source,k=1,filter=layer)[0]
-        target_id,target_score,target_text = self.find_similar_nodes(target,k=1,filter=layer)[0]
-
-        print(f"Source : {source_text} - ({source_score})")
-        print(f"Target : {target_text} - ({target_score})")
-
-        if nx.has_path(filtered_graph, source_id, target_id):
-            path = nx.shortest_path(filtered_graph, source=source_id, target=target_id)
-        else:
-            path = None
-
-        return path
-
-    def find_path_between(self,source,target,layer):
         # Returns a sequence of `plot` nodes
 
         filtered_graph = self.filter_graph(layer)
 
-        source_id,source_score,source_text = self.find_similar_nodes(source,k=1,filter=layer)[0]
-        target_id,target_score,target_text = self.find_similar_nodes(target,k=1,filter=layer)[0]
+        #source_id = self.find_similar_nodes(source,k=1,filter=layer)[0]
+        #target_id = self.find_similar_nodes(target,k=1,filter=layer)[0]
 
-        print(f"Source : {source_text} - ({source_score})")
-        print(f"Target : {target_text} - ({target_score})")
+        assert source in filtered_graph.nodes()
+        assert target in filtered_graph.nodes()
 
-        if nx.has_path(filtered_graph, source_id, target_id):
-            path = nx.shortest_path(filtered_graph, source=source_id, target=target_id)
+        #print(f"Source : {source_text} - ({source_score})")
+        #print(f"Target : {target_text} - ({target_score})")
+
+        if nx.has_path(filtered_graph, source, target):
+            path = nx.shortest_path(filtered_graph, source=source, target=target)
         else:
             path = None
 
         return path
+
+    def propagate_plot_nodes(self,node,n_hops=2,direction='forward'):
+        # Returns the next plot nodes from a given node
+        assert self.get_node_layer(node)=='plot',f"{node} is not a valid plot node!"
+        assert direction in ['forward','backward'], f"direction = {direction} must be one of 'forward' or 'backward'"
+
+        node_id = self.get_node_id(node)
+
+        adjacent_nodes = []
+
+        for hop in range(n_hops+1):
+
+            if(direction=='forward'):
+                next_nodes = [tail for head,tail in self.knowledge_graph.out_edges(node_id) if self.get_node_layer(tail)=='plot']
+            elif(direction=='backward'):
+                next_nodes = [head for head,tail in self.knowledge_graph.in_edges(node_id) if self.get_node_layer(head)=='plot']
+
+            old_node_id = node_id
+            if(len(next_nodes)>0):
+                node_id = next_nodes[0]
+                adjacent_nodes.append(node_id)
+
+            if(node_id==old_node_id):
+                break
+
+        if(direction=='backward'):
+            adjacent_nodes.reverse()
+
+        return adjacent_nodes
+
+    def get_related_topics(self,node):
+        # Given any node, get the list of neighboring topic nodes
+
+        node_id = self.get_node_id(node)
+        print(node_id)
+
+        if(self.knowledge_graph.nodes[node_id]['layer']=='topic'):
+            return [node_id]
+        else:
+            # `plot` or `lore` are successors of `topic` (i.e `topic` ---> `lore`)
+            neighbors = self.knowledge_graph.predecessors(node_id)
+            return [neighbor_id for neighbor_id in neighbors if self.knowledge_graph.nodes[neighbor_id]['layer']=='topic']
 
     def explore_neighborhood(self,node,n_hops=1,layer='topic'):
         # Returns a set of `topic` nodes
@@ -844,10 +1193,7 @@ class DatastoreUtilities():
 
         return lore
 
-
     # Old functions
-    def check_if_node_exists(self,node):
-        return self.knowledge_graph.has_node(slugify_key(node))
 
     def has_new_edges(self,node):
 
@@ -877,7 +1223,7 @@ class DatastoreUtilities():
 
         return edge_clusters
     
-    def format_node_data(self,node,edge_filters=None):
+    def format_node_data(self,node):
 
         node = slugify_key(node)
 
@@ -894,25 +1240,6 @@ class DatastoreUtilities():
                 formatted_summary += f"- {key} : {value}\n"
 
         return formatted_summary
-
-    def get_relevant_nodes(self,query,k=10, threshold=0.4):
-
-        # Check literal mentions of any node names.
-        relevant_nodes = [self.node_lookup[name] for name in list(set(self.node_finder.findall(query))) if len(name)>0]
-        print("Extracted Nodes :",relevant_nodes)
-
-        query_vector = self.embed_text(query)
-        scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=k)
-
-        for i in range(len(scores)):
-            if(scores[i] >= threshold and len(examples['text'][i].split(':')[-1].strip())>0):
-                #print(f"{scores[i]} : {examples['node_id'][i]} - {examples['text'][i]}")
-                relevant_nodes.append(examples['node_id'][i])
-
-        relevant_nodes = list(set(relevant_nodes))
-        print("Relevant Nodes : ",relevant_nodes)
-
-        return relevant_nodes
 
     def extract_relevant_edge_info(self,query,node,threshold=0.7):
 
@@ -940,98 +1267,51 @@ class DatastoreUtilities():
 
         return relevant_edge_info
 
-    def find_all_unique_paths(self,nodes, edge_filters=None):
+    def find_all_unique_paths(self,nodes, layer='plot',buffer_context=2):
 
-        if(edge_filters):
-            def filter_function(u, v, k):
-                return self.knowledge_graph.edges[u,v,k]["label"] in edge_filters
+        # Use this if the process slows down.
+        #filtered_graph = self.filter_graph(filter_layer=layer)
 
-            filtered_graph = nx.subgraph_view(self.knowledge_graph, filter_edge=filter_function)
+        print(f"\nfind_all_unique_paths : Input = {nodes}")
+
+        if(len(nodes)>1):
+            all_paths = []
+            for idx in range(len(nodes)):
+                path_added = False
+                for jdx in range(len(nodes)):
+                    if(not(idx==jdx)):
+                        path = self.find_path_between(nodes[idx],nodes[jdx],layer=layer)
+                        if(path):
+                            all_paths.append(path)
+                            path_added = True
+                if(not(path_added)):
+                    all_paths.append([nodes[idx]])
+
+            all_paths = sorted(all_paths,key=len,reverse=True)
+
+            filtered_paths = []
+            for path in all_paths:
+                if(not(any([self.check_subpath(path,c_path) for c_path in filtered_paths]))):
+                    filtered_paths.append(path)
+            filtered_paths = sorted(filtered_paths,key=len,reverse=True)
         else:
-            filtered_graph = self.knowledge_graph
+            filtered_paths = [nodes]
 
 
-        all_paths = []
-        for idx in range(len(nodes)):
-            for jdx in range(len(nodes)):
-                if(not(idx==jdx)):
-                    path = self.find_path(nodes[idx],nodes[jdx],filtered_graph=filtered_graph)
-                    if(path):
-                        all_paths.append(path)
+        print("filtered_paths : ",filtered_paths)
 
-        all_paths = sorted(all_paths,key=len,reverse=True)
+        # Add buffer plot nodes before and after the paths
+        for idx in range(len(filtered_paths)):
+            head = filtered_paths[idx][0]
+            tail = filtered_paths[idx][-1]
 
-        filtered_paths = []
-        for path in all_paths:
-            if(not(any([self.check_subpath(path,c_path) for c_path in filtered_paths]))):
-                filtered_paths.append(path)
-        filtered_paths = sorted(filtered_paths,key=len,reverse=True)
+            before_head = self.propagate_plot_nodes(head,n_hops=buffer_context,direction='backward')
+            after_tail = self.propagate_plot_nodes(tail,n_hops=buffer_context,direction='forward')
+
+            filtered_paths[idx] = before_head+filtered_paths[idx]+after_tail
+
 
         return filtered_paths
-
-    def find_all_unique_paths_from(self,head,nodes):
-
-        all_paths = []
-        for idx in range(len(nodes)):
-            if(not(nodes[idx]==head)):
-                path = self.find_path(head,nodes[idx])
-                if(path):
-                    all_paths.append(path)
-
-        all_paths = sorted(all_paths,key=len,reverse=True)
-
-        filtered_paths = []
-        for path in all_paths:
-            if(not(any([self.check_subpath(path,c_path) for c_path in filtered_paths]))):
-                filtered_paths.append(path)
-        filtered_paths = sorted(filtered_paths,key=len,reverse=True)
-
-        return filtered_paths
-
-    def extract_path_info(self,paths):
-
-        added_nodes = []
-        added_relations = []
-        paths_info = []
-
-        for path in paths:
-            for idx in range(len(path)-1):
-                # Extract head info
-
-                if(idx==0):
-                    # The first node is crucial, so more information is given about it.
-                    paths_info.append(('node',path[idx],'\n'.join(self.get_node_summary(path[idx]))))
-                    added_nodes.append(path[idx])
-                else:
-                    # Add definitions for the rest of the node
-                    if(not(path[idx] in added_nodes)):
-                        paths_info.append(('node',path[idx],self.get_node_definition(path[idx])))
-                        added_nodes.append(path[idx])
-
-                # Extract relation info
-                if(not(f"{path[idx]}_and_{path[idx+1]}" in added_relations) and not(f"{path[idx+1]}_and_{path[idx]}" in added_relations)):
-                    edge_info = "\n".join([edge[3] for edge in self.get_edge(path[idx],path[idx+1])])
-                    paths_info.append(('edge',f"{path[idx]}_and_{path[idx+1]}",edge_info))
-                    added_relations.append(f"{path[idx]}_and_{path[idx+1]}")
-
-                # Extract tail info
-                if(idx+1==len(path)):
-                    # The final node is crucial, so more information is given about it.
-                    paths_info.append(('node',path[idx+1],'\n'.join(self.get_node_summary(path[idx+1]))))
-                    added_nodes.append(path[idx+1])
-                else:
-                    if(not(path[idx+1] in added_nodes)):
-                        paths_info.append(('node',path[idx+1],self.get_node_definition(path[idx+1])))
-                        added_nodes.append(path[idx+1])
-
-        return paths_info
-
-    def get_unparsed_edges(self,node):
-        unparsed_edges = [edge for edge in self.knowledge_graph.edges(node,keys=True,data=True) if self.knowledge_graph.nodes[node]['updated']<edge[3]['updated']]
-        return unparsed_edges
-
-    def get_node_summaries(self,nodes):
-        return [self.get_node_summary(node) for node in nodes]
 
     def check_for_similar_nodes(self,text,similarity_score=0.8):
 
@@ -1101,8 +1381,8 @@ class DatastoreUtilities():
 
     def find_path(self,source,target,filtered_graph=None):
 
-        source = slugify_key(source)
-        target = slugify_key(target)
+        source = self.get_node_id(source)
+        target = self.get_node_id(target)
 
         if(not(filtered_graph)):
             filtered_graph = self.knowledge_graph
@@ -1167,7 +1447,7 @@ class DatastoreUtilities():
         print("Saving Graph!")
         # Clean up old graphs
         # 1 day = 86400 seconds
-
+        self.knowledge_graph.remove_edges_from(nx.selfloop_edges(self.knowledge_graph))
         nx.write_gml(self.knowledge_graph, f"{self.knowledge_graph_path}.gml")
 
         self.reload_graph()
@@ -1210,192 +1490,150 @@ class DatastoreUtilities():
 
         return modified_text, entity_dict
 
-    def find_similar_nodes(self,query,threshold=0.5,k=10,filter=None):
-
-        if(filter):
-            dataset = self.filter_faiss_dataset(filter)
-        else:
-            dataset = self.dataset
+    def find_similar_nodes(self,query,threshold=0.5,k=20,filter=None):
+        
+        dataset = self.dataset
 
         query,_ = self.resolve_aliases(query)
         query_vector = self.embed_text(query)
-        scores, examples = dataset.get_nearest_examples("filtered_embeddings_index", query_vector, k=k)
+
+        scores, examples = dataset.get_nearest_examples("embeddings", query_vector, k=k)
 
         similar_nodes = []
+        logging_info = []
         for idx,score in enumerate(scores):
             #print(f"{examples['text'][idx]} : {score}")
-            if(score>threshold):
-                similar_nodes.append((examples['node_id'][idx],score,examples['text'][idx]))
+            if(filter):
+                if(score>threshold and examples['layer'][idx]==filter):
+                    logging_info.append((examples['node_id'][idx],score,examples['text'][idx]))
+                    similar_nodes.append(examples['node_id'][idx])
+            else:
+                if(score>threshold):
+                    logging_info.append((examples['node_id'][idx],score,examples['text'][idx]))
+                    similar_nodes.append(examples['node_id'][idx])
+
+        print('similar_nodes : ',similar_nodes)
 
         return similar_nodes
 
-    def get_context_from_paths(self,paths,edge_filters=None):
+    def find_nodes_in_clauses(self,clauses,threshold=0.6,k=20,filter=None):
+        nodes_in_results = []
+        for query in clauses:
+            nodes_in_results += self.find_similar_nodes(query,threshold=threshold,k=k,filter=filter)
 
-        path_data_to_format = []
-        nodes_added = []
-        edges_added = []
-        context = ""
-        for path in paths:
-            
-            for idx in range(len(path)-1):
-                head = path[idx]
-                tail = path[idx+1]
+        return nodes_in_results
 
-                if(not(head in nodes_added)):
-                    path_data_to_format.append(('node',self.format_node_data(head,None),self.get_node_name(head)))
-                    nodes_added.append(head)
+    def get_context_from_paths(self,paths,add_code=False,context_label='context'):
 
-                relevant_edges = []
-                for edge in self.get_edge(head,tail):
-                    head,tail,key,text,label,endpoints = edge
-                    if(edge_filters):
-                        if(label in edge_filters):
-                            relevant_edges.append(self.format_edge_data(head,tail,key))
-                            edges_added.append((head,tail,key))
-                    else:
-                        relevant_edges.append(self.format_edge_data(head,tail,key))
-                        edges_added.append((head,tail,key))
-
-                path_data_to_format.append(('edge','\n'.join(relevant_edges),self.get_node_name(head),self.get_node_name(tail)))
-
-
-                if(not(tail in nodes_added)):
-                    path_data_to_format.append(('node',self.format_node_data(tail,None),self.get_node_name(tail)))
-                    nodes_added.append(tail)
-
-            context += self.format_context(path_data_to_format)+'\n\n'
-
-        return context, nodes_added, edges_added
-
-    def get_context_from_neighborhood(self,neighborhood,edge_filters=None):
-
-        if(edge_filters):
-            def filter_function(u, v, k):
-                return self.knowledge_graph.edges[u,v,k]["label"] in edge_filters
-
-            filtered_graph = nx.subgraph_view(self.knowledge_graph, filter_edge=filter_function)
+        if(add_code):
+            for idx in range(len(paths)):
+                random.shuffle(paths[idx])
+            path_info = {str(idx):[f"[{node[0].capitalize()}{node[-1]}] : {self.knowledge_graph.nodes[node]['desc']}" for node in path] for idx,path in enumerate(paths)}
         else:
-            filtered_graph = self.knowledge_graph
+            path_info = {str(idx):[self.knowledge_graph.nodes[node]['desc'] for node in path] for idx,path in enumerate(paths)}
 
-        relevant_edges = []
-        for head,tail in neighborhood:
-            relevant_edges += [(head,tail,k) for k,v in filtered_graph.adj[head][tail].items()]
+        all_path_nodes = []
+        all_path_edges = []
+        for path in paths:
+            all_path_nodes += path
 
-        relevant_edges = list(set(relevant_edges))
+            for idx in range(len(path)-1):
+                all_path_edges.append((path[idx],path[idx+1]))
 
-        relevant_nodes = list(set([r[0] for r in relevant_edges]+[r[1] for r in relevant_edges]))
+        formatted_context = self.format_context(path_info,"path",add_code=add_code,label=context_label)
 
-        nodes_to_format = []
-        for node in relevant_nodes:
-            # TODO
-            nodes_to_format.append(('node',self.format_node_data(node,edge_filters),self.get_node_name(node)))
+        return formatted_context, list(set(all_path_nodes)), list(set(all_path_edges))
 
-        formatted_node_context = self.format_context(nodes_to_format)
+    def get_context_from_neighborhood(self,topic_nodes,layer='lore',context_label='context'):
 
-        edges_to_format = []
-        added_edges = []
-        for edge in relevant_edges:
-            head,tail,key = edge
-            edges_to_format.append(('edge',self.format_edge_data(head,tail,key),self.get_node_name(head),self.get_node_name(tail)))
-            added_edges.append((head,tail,key))
+        # Extract relevant Lore / Plot nodes from the neighborhood of Topic nodes
+        lore_info = {self.get_node_name(topic_node):[self.get_node_name(lore_node) for lore_node in self.collect_lore_nodes(topic_node)] for topic_node in topic_nodes}
+        print("\nLore Info :",lore_info)           
 
-        formatted_edge_context = self.format_context(edges_to_format)
+        lore_nodes = []
+        lore_edges = []
+        for node in topic_nodes:
+            lore_nodes += self.collect_lore_nodes(node) 
 
-        formatted_context = f"{formatted_node_context}\n{formatted_edge_context}"
+            node_id = self.get_node_id(node)
+            lore_edges += [(head,tail) for head,tail in self.knowledge_graph.edges(node_id)]
 
-        return formatted_context, relevant_nodes, added_edges
+        formatted_context = self.format_context(lore_info,"neighborhood",label=context_label)
 
-    def get_graph_rag_context(self,user_query,strategy='explore_neighborhood',categories=None,threshold=0.8,k=10,n_hops=1):
+        return formatted_context, list(set(lore_nodes)), list(set(lore_edges))
 
-        nodes_in_results = self.get_relevant_nodes(user_query,threshold=threshold,k=k)
-        nodes = None
-        edges = None
+    def get_graph_rag_context(self,
+                            user_query,
+                            strategy='explore_neighborhood',
+                            categories=None,
+                            threshold=0.5,
+                            k=10,
+                            n_hops=1,
+                            buffer_context=2,
+                            add_code=False,
+                            context_label='context'):
 
-        # Fall back to explore neighborhood if there is only a single relevant topic.
-        if(len(nodes_in_results)==1):
-            strategy = 'explore_neighborhood'
+        # Convert user_query to a list of atomic sentences decomposed by sem.advanced_split_and_repair
+
+        nodes_in_results = []
+        for query in user_query:
+            nodes_in_results += self.find_similar_nodes(query,threshold=threshold,k=k)
+        nodes_in_results = list(set(nodes_in_results))
 
         if(strategy=='explore_neighborhood'):
-            neighborhood = []
-            for node in nodes_in_results:
-                neighborhood = self.explore_neighborhood(node,neighborhood,n_hops=n_hops,edge_filters=categories)
 
-            context, nodes, edges = self.get_context_from_neighborhood(neighborhood,edge_filters=categories)
+            # Get the closest `topic` nodes from the `lore` / `plot` nodes
+            topic_nodes = []
+            for node in nodes_in_results:
+                topic_nodes += self.get_related_topics(node)
+
+            print(topic_nodes)
+
+            topic_nodes = list(set(topic_nodes))
+            print(topic_nodes)
+
+            neighborhood = []
+            for node in topic_nodes:
+                neighborhood = self.explore_neighborhood(node,n_hops=n_hops,layer='topic')
+
+            relevant_nodes = list(set(topic_nodes+neighborhood))
+
+            context, lore_nodes, lore_edges = self.get_context_from_neighborhood(relevant_nodes,context_label=context_label)
+
+            relevant_nodes += lore_nodes
+            relevant_edges = lore_edges
 
         if(strategy=='find_path_between'):
+            # Does it make sense to find a path between `topic` nodes?
 
-            if(categories):
-                def filter_function(u, v, k):
-                    return self.knowledge_graph.edges[u,v,k]["label"] in categories
+            nodes_in_results = []
+            for query in user_query:
+                nodes_in_results += self.find_similar_nodes(query,threshold=threshold,k=k,filter='plot')
 
-                filtered_graph = nx.subgraph_view(self.knowledge_graph, filter_edge=filter_function)
-            else:
-                filtered_graph = self.knowledge_graph
+            print(f"NIR Before : {nodes_in_results}")
+            nodes_in_results = list(set(nodes_in_results))
+            print(f"NIR After : {nodes_in_results}")
 
-            edge_paths = self.find_all_unique_paths(nodes_in_results, edge_filters=categories)
+            plot_paths = self.find_all_unique_paths(nodes_in_results,buffer_context=buffer_context)
 
-            context, nodes, edges = self.get_context_from_paths(edge_paths,edge_filters=categories)
-        return context, nodes, edges
+            print("plot_paths",plot_paths)
 
-    def get_plot_to_reorder(self,user_query,threshold=0.7,plot_similarity_threshold=0.75,k=5):
+            context, relevant_nodes, relevant_edges = self.get_context_from_paths(plot_paths,add_code=add_code,context_label=context_label)
 
-        nodes_in_results = self.get_relevant_nodes(user_query,threshold=threshold,k=k)
-        
-        all_edges = []
+        return context, relevant_nodes, relevant_edges
 
-        for node in nodes_in_results:
+    def get_plot_to_reorder(self,nodes):
 
-            all_edges += [edge for edge in self.knowledge_graph.edges(node,keys=True,data=True) if (edge[3]['label'] == 'plot' and edge[3]['phase'] == 0)]
+        info_dict = dict()
+        node_dict = dict()
+        for node in nodes:
+            nodecode = generate_alphanumeric_code()
+            info_dict[nodecode] = self.knowledge_graph.nodes[node]['desc']
+            node_dict[nodecode] = node
+       
+        context_to_reorder = self.format_for_reordering(info_dict)
 
-        similarity = self.get_cosine_similarity([s for s in user_query.split('.') if len(s.strip())>0],[edge[3]['desc'] for edge in all_edges])
-
-        print(similarity.T)
-
-        if(len(all_edges)>0):
-            edges_to_reorder = []
-            for idx,sim in enumerate(similarity.T):
-                if(torch.max(sim)>plot_similarity_threshold):
-                    edges_to_reorder.append(all_edges[idx])
-
-            text_to_reorder = ",\n".join("{"+f"{id_to_code(edge[2])} : {edge[3]['desc']}"+"}" for edge in edges_to_reorder)
-
-            reference_dict = dict()
-
-            for edge in edges_to_reorder:
-                reference_dict[id_to_code(edge[2])] = (edge[0],edge[1],edge[2],edge[3]['desc'])
-        else:
-            text_to_reorder = ""
-            reference_dict = dict()
-
-        return user_query, text_to_reorder, reference_dict
-
-    def legacy_get_graph_rag_context(self,query,threshold=0.4,k=10):
-        #def get_graph_rag_context(self,query,graph,documents_lookup,threshold=0.4,k=10,hops=1):
-
-        # need self.knowledge_graph, self.documents_lookup
-
-        nodes_in_results = self.get_relevant_nodes(query,threshold=threshold,k=k)
-
-        retrieved_context = []
-        edge_paths = []
-
-        if(len(nodes_in_results)>1):
-            
-            edge_paths = self.find_all_unique_paths(nodes_in_results)
-            retrieved_context = self.extract_path_info(edge_paths)
-
-        elif(len(nodes_in_results)==0):
-            retrieved_context = []
-            edge_paths = [] 
-        else:
-            # If there is only one node in the results
-            node = nodes_in_results[0]
-            retrieved_context = [('node',node,'\n'.join(self.get_node_summary(node)))]
-            edge_paths += [node]
-
-        context_text = self.format_path_context(retrieved_context)
-            
-        return context_text, edge_paths
+        return context_to_reorder,node_dict
 
     def embed_text(self,text):
         return self.text_embedding_model.encode(text, normalize_embeddings=True)
@@ -1412,51 +1650,105 @@ class DatastoreUtilities():
 
         return cosine_sim
 
-    def format_context(self,paths):
-        context_text = ""
-        for p in paths:
-            if(p[0]=='node'):
-                context_text += f"<information>\nTopic : {p[2]}\n{p[1]}</information>\n\n"
-            if(p[0]=='edge'):
-                if(p[2]==p[3]):
-                    context_text += f"<information>\nTopic : {p[2]}\n{p[1]}\n</information>\n\n"
-                else:
-                    context_text += f"<relationship>\nTopic : Relationship between {p[2]} and {p[3]}\n{p[1]}\n</relationship>\n\n"
+    def compare_against_existing_nodes(self,source_text: list, threshold=0.8)-> dict:
+        # source_text is a list of strings containing all the text to be compared.
+
+        if(len(self.dataset)>0):
+            source_embeddings = torch.from_numpy(self.text_embedding_model.encode(source_text, normalize_embeddings=True))
+            existing_embeddings = torch.stack([torch.tensor(row['embeddings']) for row in self.dataset])
+            
+            cosine_sim = torch.matmul(source_embeddings,existing_embeddings.T)
+
+            comparison_dict = dict()
+            for source_idx in range(len(cosine_sim)):
+                comparison_dict[source_idx] = []
+                for existing_idx in range(len(cosine_sim[0])):
+                    if(cosine_sim[source_idx][existing_idx]>threshold):
+                        comparison_dict[source_idx].append(self.dataset['node_id'][existing_idx])
+        else:
+            comparison_dict = dict()
+
+        return comparison_dict
+
+    def format_for_reordering(self,info_dict):
+        context_text = f"\n<events>\n{"\n".join([f"[{key}] : {text}" for key,text in info_dict.items()])}\n</events>\n\n"
 
         return context_text
+            
+    def format_context(self,info_dict,mode,add_code=False,label='context'):
 
-    def create_network_figure(self, target_nodes, target_edges=None):
+        context_text = ""
+        if(mode=="neighborhood"):
+            context_text = f"<{label}>\n"
+            for topic,info in info_dict.items():
+                context_text += f"\n<topic>\n{topic}\n</topic>"
+                context_text += f"\n<information>\n{"\n".join([f"* {text}" for text in info])}\n</information>\n\n"
+            context_text += f"</{label}>"
+        if(mode=="path"):
+            context_text = f"<{label}>\n"
+            for path_idx,path in info_dict.items():
+                context_text += f"\n[Phase No. {int(path_idx)+1}]"
+                if(add_code):
+                    context_text += f"\n<events>\n{"\n".join([f"{text}" for idx,text in enumerate(path)])}\n</events>\n\n"
+                else:
+                    context_text += f"\n<events>\n{"\n".join([f"{str(idx+1)}. {text}" for idx,text in enumerate(path)])}\n</events>\n\n"
+            context_text += f"</{label}>"
+
+            
+        return context_text
+
+    def create_network_figure(self, target_nodes, target_edges=None, layer='plot', add_edges=True, focus_on = None):
         # target_nodes : list(node_ids)
         # target_edges : list((head,tail,key))
 
         # Create a subgraph with the target nodes and target edges
+
+        if(focus_on==None):
+            focus_on = dict()
+            focus_on['nodes'] = []
+            focus_on['edges'] = []
+
         all_neighbors = []
         for node in target_nodes:
             all_neighbors += self.knowledge_graph.neighbors(node)
 
         all_neighbors = list(set(all_neighbors))
 
-        new_edges = []
-        for node in target_nodes:
-            for neighbor in all_neighbors:
-                if(neighbor in self.knowledge_graph.neighbors(node)):
-                    new_edges += [(node,neighbor,k) for k in self.knowledge_graph.adj[node][neighbor].keys()]
-        new_edges = list(set(new_edges))
-
+        all_neighbors = []
         G = self.knowledge_graph.subgraph(target_nodes+all_neighbors).copy()
         # 2. Extract the edge-induced subgraph
-        if(target_edges):
-            G = G.edge_subgraph(target_edges+new_edges)
 
-        pos = nx.spring_layout(G, seed=42)
+        if(add_edges):
+            if(target_edges):
+                G = G.edge_subgraph(target_edges)
+            else:
+                target_edges = []
+                for node in target_nodes:
+                    target_edges += [(node,neighbor) for neighbor in self.knowledge_graph.neighbors(node) if self.get_node_layer(neighbor)==layer] 
+
+                target_edges = list(set(target_edges))
+
+        if(layer=='plot'):
+            pos = nx.planar_layout(G)
+        elif(layer=='topic'):
+            pos = nx.spring_layout(G)
+        elif(layer=='lore'):
+            pos = nx.spring_layout(G)
+        else:
+            pos = nx.kamada_kawai_layout(G)
+
 
         # 2. Extract unique edges and aggregate data
+        focus_edge_x, focus_edge_y = [], []
         edge_x, edge_y = [], []
         mid_x, mid_y, edge_text = [], [], []
         endpoints = []
         seen_edges = set()
 
         other_edge_x, other_edge_y = [], []
+        
+        # Initialize list to store arrow annotations
+        annotations = []
 
         for u, v, data in G.edges(data=True):
             # Sort tuple for undirected graphs to avoid handling (A,B) and (B,A) separately
@@ -1469,16 +1761,58 @@ class DatastoreUtilities():
                 if(u in target_nodes and v in target_nodes):
                     x0, y0 = pos[u]
                     x1, y1 = pos[v]
+
+                    label = self.knowledge_graph.edges[u,v]['label']
+                    print(u,v,label)
+                    if(label=='relationship'):
+                        arrow_color = "#EEE"
+                    if(label=='description'):
+                        arrow_color = "#a77846"
+                    if(label=='involvement'):
+                        arrow_color = "#5a7c66"
                     
                     if(not(u==v)):
                         edges = G.adj[u][v]
-                        pair_text = [e['desc'] for e in edges.values()]
+                        pair_text = [edges['label']]
                     else:
                         pair_text = []
 
-                    edge_x.extend([x0, x1, None])
-                    edge_y.extend([y0, y1, None])
+                    if((u,v) in focus_on['edges']):
 
+                        focus_edge_x.extend([x0, x1, None])
+                        focus_edge_y.extend([y0, y1, None])
+                        # Add arrowhead annotation for primary target edges
+                        annotations.append(
+                            dict(
+                                x=(x1+x0)/2, y=(y1+y0)/2,      # Arrow head target
+                                ax=x0, ay=y0,    # Arrow tail start
+                                xref="x", yref="y",
+                                axref="x", ayref="y",
+                                showarrow=True,
+                                arrowhead=2,     # Style of arrowhead (1 to 8)
+                                arrowsize=1.8,   # Size multiplier
+                                arrowwidth=3.5,  # Line width matching edge trace
+                                arrowcolor="#d50e11"# Match your primary edge color
+                            )
+                        )
+                    else:
+
+                        edge_x.extend([x0, x1, None])
+                        edge_y.extend([y0, y1, None])
+                        # Add arrowhead annotation for primary target edges
+                        annotations.append(
+                            dict(
+                                x=(x1+x0)/2, y=(y1+y0)/2,      # Arrow head target
+                                ax=x0, ay=y0,    # Arrow tail start
+                                xref="x", yref="y",
+                                axref="x", ayref="y",
+                                showarrow=True,
+                                arrowhead=2,     # Style of arrowhead (1 to 8)
+                                arrowsize=1.2,   # Size multiplier
+                                arrowwidth=2.0,  # Line width matching edge trace
+                                arrowcolor=arrow_color# Match your primary edge color
+                            )
+                        )
 
                     # Midpoint coordinates for edge hover triggering
                     if(not(u==v)):
@@ -1486,20 +1820,44 @@ class DatastoreUtilities():
                         mid_y.append((y0 + y1) / 2)
                         edge_text.append("<br>".join([text for text in pair_text]))
                 else:
-
                     x0, y0 = pos[u]
                     x1, y1 = pos[v]
 
                     other_edge_x.extend([x0, x1, None])
                     other_edge_y.extend([y0, y1, None])
 
+                    # Add arrowhead annotation for secondary/other edges
+                    annotations.append(
+                        dict(
+                            x=x1, y=y1,
+                            ax=x0, ay=y0,
+                            xref="x", yref="y",
+                            axref="x", ayref="y",
+                            showarrow=True,
+                            arrowhead=2,
+                            arrowsize=0.8,
+                            arrowwidth=2.0,
+                            arrowcolor="#666" # Match your secondary edge color
+                        )
+                    )
+
+
+        focus_edge_trace = go.Scatter(
+          x=focus_edge_x,
+          y=focus_edge_y,
+          line=dict(width=3.0, color="#d50e11"),
+          hoverinfo="none",
+          mode="lines",
+          zorder=0
+        )
 
         edge_trace = go.Scatter(
           x=edge_x,
           y=edge_y,
-          line=dict(width=5.0, color="#EEE"),
+          line=dict(width=2.0, color="#EEE"),
           hoverinfo="none",
           mode="lines",
+          zorder=0
         )
 
         other_edge_trace = go.Scatter(
@@ -1508,6 +1866,7 @@ class DatastoreUtilities():
           line=dict(width=2.0, color="#666"),
           hoverinfo="none",
           mode="lines",
+          zorder=0
         )
 
         # Transparent marker trace placed at midpoints to capture edge hover events
@@ -1518,6 +1877,7 @@ class DatastoreUtilities():
           hoverinfo="text",
           text=edge_text,
           marker=dict(opacity=0, size=20),  # Invisible, but sized to easily catch the mouse
+          zorder=0
         )
 
         # 4. Extract node coordinates and attributes for Plotly markers
@@ -1532,15 +1892,34 @@ class DatastoreUtilities():
             node_x.append(x)
             node_y.append(y)
 
-            wrapped_desc = "<br>".join(textwrap.wrap(node[1]['summary']['lore'], width=35))
-            node_text.append(f"<b>{node[1]['name']}</b><br><i>{wrapped_desc}</i>")
+            wrapped_desc = ""
+            node_text.append(f"<i>{node[0]}</i><br>"+"<br>".join(textwrap.wrap(self.get_node_name(node[0]), width=20)))
             node_ids.append(node[0])
-            if(node[0] in target_nodes):
-                node_colors.append("#EEE")
-                node_labels.append(self.get_node_name(node[0]))
+
+            if(len(focus_on['nodes'])>0):
+                if(node[0] in focus_on['nodes']):
+                    node_colors.append("#d50e11")
+                    node_labels.append("")
+                elif(node[0] in target_nodes):
+                    node_colors.append("#EEE")
+                    node_labels.append("")
+                else:
+                    node_colors.append("#333")
+                    node_labels.append("")
             else:
-                node_colors.append("#333")
-                node_labels.append("")
+                # Color code based on layer
+                layer = self.get_node_layer(node[0])
+                if(layer=='topic'):
+                    node_colors.append("#EEE")
+                    node_labels.append("")
+                elif(layer=='plot'):
+                    node_colors.append("#5a7c66")
+                    node_labels.append("")
+                elif(layer=='lore'):
+                    node_colors.append("#a77846")
+                    node_labels.append("")
+
+
 
         node_trace = go.Scatter(
           x=node_x,
@@ -1551,20 +1930,19 @@ class DatastoreUtilities():
           hovertext=node_text,
           text=node_labels,
           textfont=dict(
-                color="#EEE",  # Color of the text labels (e.g., white)
-                size=20,  # Font size in pixels
-                family=('system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",'' Roboto, Helvetica, Arial, sans-serif')
+                color="#EEE",  
+                size=12,  
+                family=('system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif')
             ),
           marker=dict(
-              showscale=False,
-              color="#EEE",
-              size=30)
+                showscale=False,
+                color="#EEE",
+                size=30),
+          zorder=5
         )
 
-        # Zoom into the parts of the graph that are relevant                
         node_trace.marker.color = node_colors
         node_trace.text = node_labels
-
 
         # 2. Extract coordinates for just these nodes
         subset_x = [pos[node][0] for node in target_nodes if node in pos]
@@ -1581,37 +1959,39 @@ class DatastoreUtilities():
           x_range = [x_min - x_pad, x_max + x_pad]
           y_range = [y_min - y_pad, y_max + y_pad]
         else:
-          # Fallback defaults if target nodes aren't found
           x_range, y_range = None, None
 
-        # 5. Build the final Plotly figure
+        # 5. Build the final Plotly figure with annotations included
         fig = go.Figure(
-          data=[edge_trace, other_edge_trace, edge_hover_trace,node_trace],
+          data=[focus_edge_trace, edge_trace, other_edge_trace, edge_hover_trace],
           layout=go.Layout(
               showlegend=False,
               hovermode="closest",
-              plot_bgcolor="rgba(0,0,0,0)",  # Transparent plot canvas
-              paper_bgcolor="rgba(0,0,0,0)",  # Transparent outer border canvas
+              plot_bgcolor="rgba(0,0,0,0)",  
+              paper_bgcolor="rgba(0,0,0,0)",  
+              annotations=annotations, # <-- Added arrow annotations here
               hoverlabel=dict(
-                    bgcolor="#ffffff",  # Background color of the tooltip bubble (e.g., dark gray)
-                    font_color="#000000",  # Text color inside the tooltip
-                    font_size=12,  # Font size
+                    bgcolor="#ffffff",  
+                    font_color="#000000",  
+                    font_size=12,  
                     font_family=(
                         'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",'
                         ' Roboto, Helvetica, Arial, sans-serif'
-                    ), # Font family
-                    bordercolor="#ffffff",  # Border color around the bubble
+                    ), 
+                    bordercolor="#ffffff",  
                 ),
               dragmode="pan",
               margin=dict(b=20, l=5, r=5, t=40),
               xaxis=dict(
                 range=x_range, showgrid=False, zeroline=False, showticklabels=False
-            ),
-            yaxis=dict(
+              ),
+              yaxis=dict(
                 range=y_range, showgrid=False, zeroline=False, showticklabels=False
-            ),
+              ),
           ),
         )
+
+        fig.update_annotations(startstandoff=12)
+        fig.add_trace(node_trace)
         return fig
 
-    

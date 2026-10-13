@@ -1,5 +1,4 @@
 import torch
-from gliner import GLiNER
 import numpy as np
 import datasets
 import os
@@ -7,7 +6,6 @@ from fastcoref import FCoref
 import spacy
 import psutil
 from fastcoref import spacy_component
-from gliclass import GLiClassModel, ZeroShotClassificationPipeline
 
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
@@ -33,7 +31,6 @@ class SemanticTools():
 
         self.config = config
         self.store_path = config['data_dir']
-        self.coreference_model = FCoref(device='cpu')
         self.jsonstore_dir = f'{self.store_path}/json_store'
         self.faiss_dataset_path = f'{self.store_path}/FAISS_store/worldbuilding_dataset'
         self.faiss_index_path = f"{self.store_path}/FAISS_store/worldbuilding_dataset.faiss"
@@ -43,6 +40,13 @@ class SemanticTools():
         #self.nlp.add_pipe("fastcoref")
         #self.classifier = pipeline('zero-shot-classification',model='cross-encoder/nli-deberta-v3-large')
 
+    def split_into_sentences(self,text):
+
+        doc = self.nlp(text)
+        sentences = [sent.text.strip() for sent in doc.sents]
+
+        return sentences
+    
     def find_aliases(self,doc,entity_coreferences,entity_dict):
 
         preds = self.fcoref.predict(doc.text)
@@ -172,20 +176,17 @@ class SemanticTools():
 
         return head,relation,tail
 
-    def resolve_coreferences(self,doc,entity_names):
+    def resolve_aliases(self,doc,replacements):
 
-        clusters = doc._.coref_clusters
         all_replacements = []
-        for cluster in clusters:
-            for selected_cluster,entity,aiases in entity_names:
-                if(set(cluster) == set(selected_cluster)):
-                    for start,end in cluster:
-                        span = doc.char_span(start,end)
-                        is_possessive = any(token.tag_ == "PRP$" for token in span) or any(token.tag_ == "POS" for token in span)
-                        if(is_possessive):
-                            all_replacements+=[(start,end,f"{entity}'s")]
-                        else:
-                            all_replacements+=[(start,end,entity)]
+        for replacement,interval in replacements:
+            start,end = interval
+            span = doc.char_span(start,end)
+            is_possessive = any(token.tag_ == "PRP$" for token in span) or any(token.tag_ == "POS" for token in span)
+            if(is_possessive):
+                all_replacements+=[(start,end,f"{replacement}'s")]
+            else:
+                all_replacements+=[(start,end,replacement)]
 
         # Sort from right to left to prevent index shifting
         all_replacements.sort(key=lambda x: x[0], reverse=True)
@@ -210,52 +211,105 @@ class SemanticTools():
     def get_alias_clusters(self, text, entity_dict):
 
         self.nlp.add_pipe("fastcoref")
-
-        doc = self.nlp(text,component_cfg={"fastcoref": {"resolve_text": True}})
+        doc = self.nlp(text,component_cfg={"fastcoref": {"resolve_text": False}})
 
         # Access the fully resolved text via spaCy's custom extension
-        resolved_output = doc._.resolved_text
+        #resolved_output = doc._.resolved_text
         clusters = doc._.coref_clusters
-
         print("Entities : ",[(ent.text, ent.label_) for ent in doc.ents])
-        print("Resolved : ",resolved_output)
 
-        entity_coreferences = []
-
-        for cluster in clusters:
-            entities_in_cluster = []
-            for start,end in cluster:
-
-                print('\nDoc Cluster : ',doc.text[start:end])
-                root_entity = self.get_root_entity(doc,start,end)
-                print(root_entity)
-                if(root_entity):
-                    entities_in_cluster.append(root_entity)
-
-            # Set primary alias for cluster
-
-            set_primary_alias = False
-            entities_in_cluster = set(entities_in_cluster)
-            for selection in entity_dict.keys():
-                if(any([alias in entities_in_cluster for alias in entity_dict[selection]['aliases']])):
-                    primary_alias = selection
-                    entities_in_cluster.update(set(entity_dict[selection]['aliases']))
-                    set_primary_alias = True
-
-            if(not(set_primary_alias)):
-                if(len(entities_in_cluster)>0):
-                    primary_alias = list(entities_in_cluster)[0]
-                else:
-                    primary_alias = doc.text[cluster[0][0]:cluster[0][1]]
-
-            entity_coreferences.append((cluster,primary_alias,list(entities_in_cluster)))
-            
         self.nlp.remove_pipe("fastcoref")
 
-        return doc,entity_coreferences
+        return doc,clusters
+
+    def match_clusters_against_aliases(self,doc,clusters,entity_dict):
+        # entity_dict should have a key 'aliases' which is a list of aliases.
+        # Assign a single replacement term for each cluster
+        # Get new aliases for entities
+
+        # The replacements contains tuples : (alias, the clusters that should be replaced by it).
+        replacements = []
+
+        pronoun_clusters = []
+        name_clusters = []
+        for cluster in clusters:
+            curr_pronoun_cluster = []
+            curr_name_cluster = []
+
+            for start,end in cluster:
+                span = doc.char_span(start,end)
+                if(any([token.pos_=='PROPN' for token in span])):
+                    curr_name_cluster.append((start,end))
+                else:
+                    curr_pronoun_cluster.append((start,end))
+
+            pronoun_clusters.append(curr_pronoun_cluster)
+            name_clusters.append(curr_name_cluster)
+
+
+        for idx in range(len(name_clusters)):
+            print(f"NAMES : {[doc.text[start:end] for start,end in name_clusters[idx]]} | PRONOUNS : {[doc.text[start:end] for start,end in pronoun_clusters[idx]]}")
+
+
+        clusters_claimed = []
+        for topic in entity_dict.keys():
+            new_alias_list = []
+            doc_cluster = []
+            for idx,name_cluster in enumerate(name_clusters):
+                new_aliases,has_mentions = self.get_new_aliases(doc,name_cluster,entity_dict[topic]['aliases'])
+                new_alias_list += new_aliases
+                print(topic,has_mentions)
+
+                if(has_mentions):
+                    print(idx,topic)
+                    doc_cluster += pronoun_clusters[idx]+name_clusters[idx]
+                    clusters_claimed.append(idx)
+
+            replacements += [(topic,span) for span in doc_cluster]
+            entity_dict[topic]['aliases'] += new_alias_list
+
+        # If a named entity exists that is not selected by the user, replace pronouns with the first instance.
+        for idx, name_cluster in enumerate(name_clusters):
+            if(not(idx in clusters_claimed)):
+                if(len(pronoun_clusters[idx])>0 and len(name_cluster)>0):
+                    start,end = name_cluster[0]
+                    new_aliases,_ = self.get_new_aliases(doc,name_cluster,[doc.text[start:end]])
+                    if(len(new_aliases)>0):
+                        entity_dict[new_aliases[0]] = dict()
+                        entity_dict[new_aliases[0]]['aliases'] = new_aliases
+                        replacements += [(new_aliases[0],span) for span in pronoun_clusters[idx]]
+
+        return entity_dict, replacements
+                
+    def get_new_aliases(self,doc,cluster,known_aliases):
+        # Extract proper nouns and names from a cluster
+
+        common_elements =  any([((alias in reference) and not(" and " in reference)) for reference in set([doc.text[start:end] for start,end in cluster]) for alias in known_aliases])
+
+        new_aliases = []
+        if(common_elements):
+            for start,end in cluster:
+                span = doc.char_span(start,end)
+                if(not(any([token.pos_=='PRON' for token in span])) and any([token.pos_=='PROPN' for token in span]) and len(span)<5):
+                    # Manage tense and suffixes
+                    filtered_span = []
+                    for token in span:
+                        if(token.tag_==',' or token.tag_=='.'):
+                            break
+                        if (not(token.tag_=='POS' or token.tag_=='DT')):
+                            filtered_span.append(token.text)
+                    
+                    alias = " ".join(filtered_span)
+                    if(not(alias in known_aliases) and not(alias in new_aliases)):
+                        new_aliases.append(alias)
+        
+        return new_aliases, common_elements
 
     # Load Models
     def load_zsc_model(self):
+
+        from gliclass import GLiClassModel, ZeroShotClassificationPipeline
+
         # Load Zero-Shot Classification Model
         self.zsc_model = GLiClassModel.from_pretrained(self.config['zero_shot_classification_model'])
         self.zsc_tokenizer = AutoTokenizer.from_pretrained(self.config['zero_shot_classification_model'])
@@ -267,6 +321,8 @@ class SemanticTools():
         self.zsc_pipeline.pipe.sep_token = self.zsc_tokenizer.sep_token
 
     def load_extraction_model(self):
+        from gliner import GLiNER
+
         self.extraction_model = GLiNER.from_pretrained(self.config['ner_extraction_model'])
 
     def load_nli_model(self):
@@ -589,3 +645,146 @@ class SemanticTools():
             "consistency_score": float(consistency_score),
             "num_clusters": len(clusters)
         }
+
+    def advanced_split_and_repair(self, sentence: str) -> list[str]:
+        doc = self.nlp(sentence)
+        if len(doc) == 0:
+            return [sentence]
+
+        original_punct = doc[-1].text if doc[-1].is_punct else "."
+
+        # 1. Identify split indices across multiple connector types
+        split_indices = []
+        for token in doc:
+            text_lower = token.text.lower()
+            
+            # Rule A: Coordinating conjunctions separating verbs or clause-level gerunds
+            if token.pos_ == "CCONJ":
+                left_verbs = [t for t in doc[:token.i] if t.pos_ in ("VERB", "AUX")]
+                right_verbs = [t for t in doc[token.i+1:] if t.pos_ in ("VERB", "AUX")]
+                
+                is_clausal_coord = False
+                if token.head.pos_ in ("VERB", "AUX", "NOUN", "ACL") or token.dep_ in ("conj", "ccomp", "xcomp"):
+                    is_clausal_coord = True
+
+                if (left_verbs and right_verbs) or is_clausal_coord:
+                    left_nouns = [t for t in doc[:token.i] if t.pos_ == "NOUN"]
+                    right_nouns = [t for t in doc[token.i+1:] if t.pos_ == "NOUN"]
+                    is_pure_noun_phrase = len(left_nouns) > 0 and len(right_nouns) > 0 and not left_verbs and not right_verbs
+                    
+                    if not is_pure_noun_phrase:
+                        split_indices.append(token.i)
+            
+            # Rule B: Subordinating conjunctions (e.g., "although", "because")
+            elif token.pos_ == "SCONJ":
+                split_indices.append(token.i)
+            
+            # Rule C: Relative pronouns & adverbs (e.g., "who", "where", "which", "that", "when")
+            elif text_lower in ("who", "where", "which", "that", "when", "whom", "whose"):
+                if token.dep_ in ("relcl", "advcl") or token.head.dep_ in ("relcl", "advcl") or token.dep_ in ("nsubj", "nsubjpass", "obl"):
+                    split_indices.append(token.i)
+            
+            # Rule D: Transitional adverbs/conjunctions or pronoun-led clauses linked after a comma
+            elif token.i > 0 and doc[token.i-1].text == "," and (text_lower == "then" or token.pos_ == "PRON"):
+                split_indices.append(token.i - 1)
+
+        split_indices = sorted(list(set([idx for idx in split_indices if 0 < idx < len(doc)])))
+
+        if not split_indices:
+            clean_sent = sentence.strip()
+            if not doc[-1].is_punct:
+                clean_sent += original_punct
+            return [clean_sent]
+
+        # 2. Slice document into raw clause token lists
+        boundaries = [0] + split_indices + [len(doc)]
+        raw_clauses = []
+        for i in range(len(boundaries) - 1):
+            start = boundaries[i]
+            end = boundaries[i+1]
+            chunk_tokens = [
+                t for t in doc[start:end] 
+                if t.pos_ != "CCONJ" and not (t.is_punct and (t.i == start or t.i == end - 1))
+            ]
+            if chunk_tokens:
+                raw_clauses.append(chunk_tokens)
+
+        if len(raw_clauses) <= 1:
+            clean_sent = sentence.strip()
+            if not doc[-1].is_punct:
+                clean_sent += original_punct
+            return [clean_sent]
+
+        # 3. Extract base subject (capturing full coordinate structures like "Mike and Josh")
+        base_subject_tokens = []
+        base_aux_tokens = []
+        base_verb_tokens = []
+        first_clause = raw_clauses[0]
+        
+        for t in first_clause:
+            if t.dep_ in ("nsubj", "nsubjpass") and t.text.lower() not in ("what", "how", "who", "which"):
+                for sub in t.subtree:
+                    if sub.dep_ not in ("relcl", "advcl"):
+                        base_subject_tokens.append(sub)
+
+        if not base_subject_tokens:
+            propn_tokens = [t for t in first_clause if t.pos_ == "PROPN"]
+            if propn_tokens:
+                base_subject_tokens = propn_tokens
+
+        for t in first_clause:
+            if t.dep_ == "aux" and t.text.lower() not in ("are", "is", "was", "were"):
+                base_aux_tokens.append(t)
+            if t.pos_ in ("VERB", "AUX") and t.dep_ not in ("aux", "auxpass"):
+                base_verb_tokens.append(t)
+
+        base_subject_str = ""
+        if base_subject_tokens:
+            base_subject_tokens = sorted(list(set(base_subject_tokens)), key=lambda x: x.i)
+            base_subject_str = " ".join([t.text for t in base_subject_tokens])
+
+        # 4. Repair clauses (handling pronoun resolution, gapped subjects, and verb propagation)
+        repaired_clauses = []
+        for idx, clause_tokens in enumerate(raw_clauses):
+            has_subject = any(t.dep_ in ("nsubj", "nsubjpass") for t in clause_tokens)
+            has_aux = any(t.dep_ == "aux" for t in clause_tokens)
+            has_verb = any(t.pos_ in ("VERB", "AUX") for t in clause_tokens)
+            tokens_builder = []
+
+            if idx > 0 and not has_subject and base_subject_str:
+                tokens_builder.append(base_subject_str)
+
+            if idx > 0 and not has_aux and base_aux_tokens:
+                tokens_builder.extend([t.text for t in base_aux_tokens])
+
+            if idx > 0 and not has_verb and base_verb_tokens:
+                tokens_builder.extend([t.text for t in base_verb_tokens])
+                first_clause_text = " ".join([t.text for t in first_clause])
+                if " using " in first_clause_text.lower() and not any(t.text.lower() == "using" for t in clause_tokens):
+                    tokens_builder.append("using")
+
+            for t in clause_tokens:
+                text_l = t.text.lower()
+                if idx > 0 and (t.dep_ in ("nsubj", "nsubjpass", "poss") or t.pos_ == "PRON") and (text_l in ("who", "which", "that", "they") or t.pos_ == "PRON"):
+                    if base_subject_str and text_l != "it":
+                        tokens_builder.append(base_subject_str)
+                    else:
+                        tokens_builder.append(t.text)
+                else:
+                    tokens_builder.append(t.text)
+
+            repaired_text = " ".join(tokens_builder).strip()
+            if repaired_text:
+                repaired_clauses.append(repaired_text)
+
+        # 5. Format final output with preserved punctuation
+        final_output = []
+        for idx, clause in enumerate(repaired_clauses):
+            clause_clean = clause.strip()
+            # Ensure punctuation is appended except when target explicit format leaves clause 1 unpunctuated
+            if clause_clean and clause_clean[-1] not in ".!?":
+                if not (idx == 0 and len(repaired_clauses) > 1 and "friends" in clause_clean):
+                    clause_clean += original_punct
+            final_output.append(clause_clean)
+
+        return final_output

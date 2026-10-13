@@ -119,6 +119,16 @@ def get_query_evaluation_prompt(args_dict,history=[]):
 
 	return history
 
+def get_context_sufficiency_check_prompt(args_dict,history=[]):
+
+	assert 'context' in args_dict.keys()
+	assert 'query' in args_dict.keys()
+
+	history.append(process_prompt(prompts['context_sufficiency_check_prompt']['system']))
+	history.append(process_prompt(prompts['context_sufficiency_check_prompt']['user'],args_dict))
+
+	return history
+
 def get_brainstorming_prompt(args_dict,history=[]):
 
 	assert 'topic' in args_dict.keys()
@@ -147,12 +157,10 @@ def get_reordering_prompt(args_dict,history=[]):
 
 	assert 'phases' in args_dict.keys()
 	assert 'outline' in args_dict.keys()
-	assert 'text' in args_dict.keys()
 
 	if(len(history)==0):
 		history.append(process_prompt(prompts['plot_reordering_prompt']['system']))
 	history.append(process_prompt(prompts['plot_reordering_prompt']['user'],args_dict))
-	print(history[-1]['content'])
 
 	return history
 

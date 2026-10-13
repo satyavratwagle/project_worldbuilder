@@ -302,12 +302,10 @@
 						"system", 
 					"content": 
 						["[TASK INSTRUCTIONS]",
-						"IMPORTANT : You are given a list of events in {ID : event} pairs, and a story outline. Your task is to determine whether the given events happened concurrently, or whether the events happened sequentially based on the given story outline.",
-						"You must ALWAYS answer according to the provided schema. Always start your response with the reasoning to your answer in the 'thinking' field.",
-						"1. In the 'sequential_events' field : Respond with 'True' ONLY if the list of events can be split into 'before' and 'after' subsets based on chronological order. Respond with 'False' otherwise.",
-						"2. In the 'before' field, respond with the IDs of the events that happened first based on the given story outline ONLY if concurrent_events is False.",
-						"3. In the 'after' field, respond with the IDs of the events that happened AFTER the initial events based on the given story outline ONLY if concurrent_events is False.",
-						"4. You MUST include ALL IDs in your response, and each ID must appear EXACTLY ONCE."]
+						"IMPORTANT : You are given a list of events in [ID] : event pairs, and a story outline. Your task is to use the story outline to determine which of the given events happened first.",
+						"1. In the 'event_id' field : You must respond with ONLY the ID of the SINGLE event that happened first.",
+						"2. In the 'thinking' field : You must rewrite the story outline in chronological order.",
+						"3. Do NOT include any conversational preamble or text."]
 				},
 			"user":
 				{
@@ -316,9 +314,38 @@
 					"content": 
 						{
 							"chunk":
-								["\n<events>\n(TEXT)\n</events>\n"],
+								["(PHASES)\n"],
 							"topics":
-								["\n<story_outline>\n(OUTLINE)\n</story_outline>\nUse the story_outline to determine whether the events happened concurrently or sequentially."]
+								["\n<story_outline>\n(OUTLINE)\n</story_outline>\nUse the story_outline to determine which event happened first."]
+						} 
+						
+				}			
+		},
+	"context_sufficiency_check_prompt":
+		{
+			"system":
+				{
+					"role": 
+						"system", 
+					"content": 
+						["[TASK INSTRUCTIONS]",
+						"You are given a user query, and some context related to the user query. Your task is to determine whether the provided context is sufficient to provide an answer to the user query.",
+						"1. In the 'relevant_information' field : Respond with the parts of the provided context that are relevant to the user query.",
+						"2. In the 'information_needed' field : Respond with a description of the gaps in the provided context that prevent you from answering the user query correctly.",
+						"3. In the 'is_sufficient' field : Respond with an integer value between 0 and 10 (inclusive) based on how relevant the provided context is to the user query. Respond with 0 if the provided context contains NO information of relevance to the user query. Respond with values between 1 and 10 based on how many assumptions or extrapolations need to be made related to the given context in order to answer the user query. Respond with 10 if the provided context contains ALL information necessary to answer the user query without ANY assumptions or extrapolations.",
+						"4. In the 'additional_questions' field : ONLY IF the provided context is NOT sufficient to answer the query, respond with a list of multiple-choice questions whose answers will provide the additional context needed to answer the user query.",
+						"5. Your multiple choice questions not be too specific and build up on the provided context without making any assumptions or extrapolations."]
+				},
+			"user":
+				{
+					"role": 
+						"user",
+					"content": 
+						{
+							"chunk":
+								["(CONTEXT)\n"],
+							"topics":
+								["\n<user_query>\n(QUERY)\n</user_query>\nIs the provided context sufficient to answer the query?"]
 						} 
 						
 				}			
