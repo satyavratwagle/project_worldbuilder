@@ -69,11 +69,21 @@ def get_node_summary_prompt(args_dict, history=[]):
 	# Required args node_name, node_description, existing summary
 
 	assert 'node_name' in args_dict.keys()
-	assert 'Plot' in args_dict.keys()
-	assert 'Lore' in args_dict.keys()
+	assert 'information' in args_dict.keys()
 	
 	history.append(process_prompt(prompts['node_summary_prompt']['system']))
 	history.append(process_prompt(prompts['node_summary_prompt']['user'],args_dict))
+	return history
+
+def get_relationship_categorization_prompt(args_dict, history=[]):
+	# Required args node_name, node_description, existing summary
+
+	assert 'head' in args_dict.keys()
+	assert 'tail' in args_dict.keys()
+	assert 'relationship' in args_dict.keys()
+	
+	history.append(process_prompt(prompts['relationship_categorization_prompt']['system']))
+	history.append(process_prompt(prompts['relationship_categorization_prompt']['user'],args_dict))
 	return history
 
 def get_text_decomposition_prompt(args_dict,history=[]):

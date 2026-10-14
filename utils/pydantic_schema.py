@@ -2,6 +2,15 @@ from pydantic import BaseModel, Field, create_model
 from typing import Literal, List, Optional
 from typing_extensions import Annotated
 from pydantic.types import conlist
+import json
+
+with open('utils/semantic_definitions.json', "r", encoding="utf-8") as f:
+    definitions = json.load(f)
+
+entity_categories = [key for key in definitions['entity_types'].keys()]
+label_map = {'AXIOM' : "Lore", 'INCIDENT': "Plot"}
+
+relation_categories = [defn['definition'] for key,defn in definitions['relation_types'].items()]
 
 # Class for extracting relationship types from a prose
 SnakeCaseStr = Annotated[str, Field(pattern=r"^[a-z]+(_[a-z]+)*$", description="Lowercase snake_case relationship type")]
@@ -39,12 +48,13 @@ class DecomposedText(BaseModel):
     decomposed_text: list[TextTuple]
 
 # Node Summary Schema
-# Text Decomposition Schema
 class NodeSummary(BaseModel):
-    lore:       str = Field(description="A summary of the lore-related information related to the topic.")
-    plot:        str = Field(description="A summary of the plot-related information related to the topic.")
+    category: Literal[tuple(entity_categories)] = Field(description="The category of the given topic.")
+    summary: str = Field(description="A summary of the of the information related to the specified topic.")
 
-label_map = {'AXIOM' : "Lore", 'INCIDENT': "Plot"}
+# Entity Relationship Schema
+class RelationshipCategory(BaseModel):
+    category: Literal[tuple(relation_categories)] = Field(description="The category of the relationship between head and tail.")
 
 # Context Sufficiency Schema
 class MultipleChoiceAnswer(BaseModel):

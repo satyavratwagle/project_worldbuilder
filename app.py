@@ -65,6 +65,45 @@ def update_system_prompt(prompt_name):
 def uppercase(text):
     return text[0].upper()+text[1:]
 
+def create_node_card_dict(node,expanded=True, stack = []):
+
+    node_card_dict = dict()
+
+    node_card_dict['node_id'] = node
+    if(du.get_node_layer(node)=='topic'):
+        node_card_dict['name']  = du.get_node_name(node)
+    else:
+        relevant_topics = [du.get_node_name(r_topic) for r_topic in du.get_related_topics(node)]
+        if(len(relevant_topics)==1):
+            node_card_dict['name']  = relevant_topics[0]
+        else:
+            node_card_dict['name']  = ",".join(relevant_topics[:-1])+f" and {relevant_topics[-1]}"
+
+    node_card_dict['layer'] = uppercase(du.get_node_layer(node))
+    node_card_dict['type']  = uppercase(du.knowledge_graph.nodes[node]['type'])
+    if(du.get_node_layer(node)=='topic'):
+        node_card_dict['desc']  = du.get_node_summary(node)
+    else:
+        node_card_dict['desc']  = du.get_node_name(node)
+
+    if(du.get_node_layer(node)=='topic'):
+        node_card_dict['neighbors']  = [(uppercase(du.get_node_layer(neighbor)),du.get_node_name(neighbor),neighbor) for neighbor in du.get_neighbors(node)]
+    else:
+        node_card_dict['neighbors']  = [(uppercase(du.get_node_layer(neighbor)),du.get_node_name(neighbor),neighbor) for neighbor in du.get_related_topics(node)]
+
+    node_card_dict['expanded'] = expanded
+    node_card_dict['stack'] = stack
+
+    return node_card_dict
+
+def add_to_stack(node, node_card_dict):
+
+    assert 'stack' in node_card_dict.keys()
+
+    node_card_dict['stack'].append((du.get_node_layer(node),du.get_node_name(node),node))
+
+    return node_card_dict
+
 async def update_graph_element(node_info):
 
     print(node_info)
@@ -210,11 +249,102 @@ async def show_edges_to_add(sentence_tuples,message='Select topics.',top_text=""
 
     return edges_to_add
 
+async def show_information(user_text):
+
+    node = du.get_relevant_node(user_text,threshold=0.8)
+
+    if(node):
+        node_card_dict = create_node_card_dict(node)
+        node_card_dict['stack'] = [] # This is crucial. Idk why.
+        node_card_element = cl.user_session.get("node_card_element")
+        node_card_element.props = node_card_dict
+        cl.user_session.set("node_card_element",node_card_element)
+        node_card_message = cl.Message(content=f"Showing information about {du.get_node_name(node)}!",elements=[node_card_element])
+        cl.user_session.set("node_card_message",node_card_message)
+        await node_card_message.send()
+
+    else:
+        await cl.Message(content=f"No information to show about {user_text}!")
+
+
 #############
 
 # Callbacks
 
 #############
+
+@cl.action_callback("change_node")
+async def on_change_node(action: cl.Action):
+
+    node_card_element = cl.user_session.get("node_card_element")
+    current_stack = node_card_element.props['stack']
+    payload = action.payload
+    node_id = payload.get("node_id")
+
+    node_card_dict = create_node_card_dict(node_id,stack=current_stack)
+    node_card_element = cl.user_session.get("node_card_element")
+    node_card_element.props = node_card_dict
+    cl.user_session.set("node_card_element",node_card_element)
+    await node_card_element.update()
+
+@cl.action_callback("exit")
+async def on_exit(action: cl.Action):
+    payload = action.payload
+    save = payload.get("save")
+    node_card_element = cl.user_session.get("node_card_element")
+
+    if(save):
+        new_desc = payload.get("new_desc")
+        new_layer = payload.get("new_layer")
+        node_id = node_card_element.props['node_id']
+        
+        # Add function to update nodes.
+        # Update summary / desc + Extrapolate if needed
+        # Update layer + Update all related edges. Show error if there is a problem.
+        # Add edges between each consecutive pair in stack
+
+        await update_node_description(node_id,new_desc)
+
+        await update_node_layer(node_id,new_layer)
+
+        du.reload_graph()
+    else:
+        du.reload_graph()
+        node_card_element.props['stack'] = []
+        cl.user_session.set("node_card_element",node_card_element)
+
+        node_card_message = cl.user_session.get("node_card_message")
+        node_card_message.elements = []
+        node_card_message.content = "Closing information panel!"
+        await node_card_message.remove()
+
+@cl.action_callback("stack")
+async def on_stack(action: cl.Action):
+
+    node_id = action.payload.get("node_id")
+    idx = action.payload.get("idx")
+    remove = action.payload.get("rem")
+
+    print(node_id,idx,remove)
+
+    if(remove):
+        pass
+    else:
+        node_card_element = cl.user_session.get("node_card_element")
+        node_card_dict = node_card_element.props
+        node_card_dict = add_to_stack(node_id, node_card_dict)
+        node_card_element.props = node_card_dict
+        cl.user_session.set("node_card_element",node_card_element)
+        await node_card_element.update()
+
+    # Add or remove the relevant node
+    #node_card_dict = create_node_card_dict(node_id)
+    #node_card_message = cl.user_session.get("node_card_message")
+    #node_card_message.elements.append(node_card_element_side)
+    #node_card_message.content = "Adding card to the side!"
+    #await node_card_message.update()
+
+# Old Callbacks
 @cl.action_callback("switch_node")
 async def on_edge_click(action: cl.Action):
     payload = action.payload
@@ -268,20 +398,6 @@ async def on_update_node(action: cl.Action):
     cl.user_session.set("awaiting_input_node", True)
     cl.user_session.set("payload", payload)
     response = await cl.Message(content=f"Please provide a new summary for {node} in the chat.\n Current Summary is : '{summary}'").send()
-
-@cl.action_callback("exit")
-async def on_exit(action: cl.Action):
-    payload = action.payload
-    print(payload)
-    save = payload.get("save")
-    if(save):
-        du.save_graph()
-        du.reload_graph()
-    else:
-        du.reload_graph()
-
-    graph_message = cl.user_session.get("graph_message")
-    await graph_message.remove()
 
 @cl.action_callback("delete_edge")
 async def on_delete_edge(action: cl.Action):
@@ -444,8 +560,6 @@ async def add_modify(action: cl.Action):
 
     await cl.context.emitter.task_end()
 
-
-    
 #############
 
 # Datastore Operations
@@ -487,11 +601,13 @@ async def resolve_coreferences(user_text):
     existing_alias_dict = du.get_alias_dict(user_text)
 
     print(f"\nInitial Resolution : {user_text}")
-    print(f"\nExisting Entity Dict : {list(existing_alias_dict.keys())}")
+    
 
     doc,entity_coreferences = sem.get_alias_clusters(user_text,existing_alias_dict)
     entity_dict,replacements = sem.match_clusters_against_aliases(doc,entity_coreferences,existing_alias_dict)
     resolved_text = sem.resolve_aliases(doc,replacements)
+
+    print(f"\nExisting Entity Dict : {entity_dict}")
 
     return resolved_text, entity_dict    
 
@@ -514,15 +630,14 @@ async def choose_entities_to_track(resolved_text, entity_dict):
     # Add keys from entity dict based on selections
     keys_to_add = []
     for key in selected_keys:
-        if(not(key in entity_dict.keys())):
-            keys_to_add.append(key)
+        keys_to_add.append(key)
 
     for key in keys_to_add:
         entity_dict[key] = dict()
         entity_dict[key]['type'] = selection_response[key][0]
         entity_dict[key]['aliases'] = [key]
 
-    print(f"\nFinal Entity Dict : {list(entity_dict.keys())}")
+    print(f"\nFinal Entity Dict : {entity_dict}")
     
     # Check later if this is needed.
 
@@ -568,8 +683,11 @@ async def decompose_text_loop(resolved_text,entity_dict):
 
                 print('\nRaw Output : ',decomposed_tuples)
 
-                # Change this : Tuples will have labels as well.
+                await cl.Message(content="Working so far").send()
+
                 tuples_to_add = await show_edges_to_add(decomposed_tuples,message=f"Please select information about {selected_entity} to remember!")
+
+                await cl.Message(content="Working here too!").send()
 
                 for tuplet in tuples_to_add:
                     text,type = tuplet
@@ -652,18 +770,12 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
         resolved_text, entity_dict = await resolve_coreferences(og_text)
         entity_dict = await choose_entities_to_track(resolved_text, entity_dict)
 
-    # Final entity dict should only contain the names of the entities to be added.
-    # Final resolved text should be resolved against all aliases, irrespective of whether or not they have been added.
-        
-    # Extract node names from the existing Graph
-
     # Add all the new "topic" nodes to the graph and reload the maps
     for entity in entity_dict.keys():
         node_id = du.add_node(entity,"topic",entity_dict[entity]['type'],aliases=entity_dict[entity]['aliases'])
     du.reload_lookups()
 
     # Summarize the scenes
-    
     nodes_to_add = await decompose_text_loop(resolved_text, entity_dict)
 
     # Remove duplicate nodes.
@@ -691,49 +803,40 @@ async def audit_graph(graph_name='graph'):
 async def summarize_nodes():
 
     updated_nodes = []
-    for node in du.get_all_nodes():
+    for node in du.knowledge_graph.nodes():
 
         # Check if the node needs to be updated
-        if(du.has_new_edges(node['id'])):
+        if(du.check_summary_out_of_date(node)):
 
-            #du.reset_node_summary(node['id'])
-            edge_info_clusters = du.cluster_edge_info(node['id'])
-            print(edge_info_clusters)
+            node_name = du.get_node_name(node)
+            lore_nodes,_ = du.get_node_lore(node)
+            text_chunk = " ".join([du.get_node_name(node) for node in lore_nodes])
 
-            message = cl.Message(content=f"## {node['name']}")
-            await message.send()
+            summary_content = f"## {node_name}"
+            summary_message = cl.Message(content=summary_content)
+            await summary_message.send()
 
-            history = []
-            props_dict = dict()
-            props_dict["node_name"] = node['name']
+            args_dict = dict()
+            args_dict['node_name'] = node_name
+            args_dict['information'] = text_chunk
+            history = prompts.get_node_summary_prompt(args_dict,[])
 
-            for key in [label_map[schema] for schema in TextTuple.model_json_schema()['properties']['label']['enum']]:
-                if(key in edge_info_clusters.keys()):
-                    props_dict[key]  = f"{edge_info_clusters[key]}"
-                else:
-                    props_dict[key]  = f"No {key}-related information available."
-            
-            print(props_dict)
-            print(f"\n***\n")
+            cl.user_session.set("chat_history", [])
+            update_system_prompt('node_summary_prompt')
+            chat_history = cl.user_session.get("chat_history")
+            chat_history.append(history[-1])
+            cl.user_session.set("chat_history",chat_history)
 
-            history = prompts.get_node_summary_prompt(props_dict,history)
-            cl.user_session.set("chat_history",history)
+            response = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=NodeSummary)
 
-            print(history[-1]['content'])
+            summary_content = f"## {node_name}\n**{response.category}**\n> {response.summary}"
+            summary_message.content = summary_content
+            await summary_message.update()
 
-            response = await tokenize_and_generate(temperature=0.3,max_new_tokens=1024, template=NodeSummary)
+            du.set_node_summary(node,response.summary,response.category)
 
-
-            message.content = f"## {node['name']}\n\n### Lore\n{response.lore}\n\n\n### Events\n{response.plot}\n"
-            await message.update()
-
-            du.add_to_node_summary(node['id'],'lore',response.lore,)
-            du.add_to_node_summary(node['id'],'plot',response.plot,)
-
-            updated_nodes.append(node['id'])
-            #du.add_to_node_summary(node['id'],'attribute',response.attribute,)
-            #du.add_to_node_summary(node['id'],'time_period',response.time_period,)
-
+            print(du.knowledge_graph.nodes[node])
+        
     du.save_graph()
 
     fig = du.create_network_figure(updated_nodes,target_edges=[])
@@ -783,6 +886,48 @@ async def add_node_alias(node_name):
     else:
         await cl.Message(content=f"No topic named '{node_name}'' found!").send()
 
+async def update_node_description(node_name, new_description):
+
+    node_card_message = cl.user_session.get("node_card_message")
+
+    if(len(new_description.strip())>0 and not(new_description==du.get_node_name(node_name))):
+        node_id = du.get_node_id(node_name)
+        du.update_node_description(node_id,new_description)
+
+        # If node is plot
+        if(du.get_node_layer(node_id)=='plot'):
+            # topic --> plot
+            new_edges = added_edges = du.extrapolate_for_node(node_id,'involvement')
+
+        # If node is lore
+        if(du.get_node_layer(node_id)=='lore'):
+            # topic --> lore
+            new_edges = added_edges = du.extrapolate_for_node(node_id,'description')
+
+
+        # If node is topic, there is no change because the extrapolation happens because of the other nodes
+        node_card_message.content=f"Updated the description to {du.get_node_name(node_name)}"
+        await node_card_message.update()
+        print(new_edges)
+        du.save_graph()
+        du.reload_graph()
+
+async def update_node_layer(node_name,new_layer):
+    # Only allow transitions from plot to lore and vice versa.
+
+    node_card_message = cl.user_session.get("node_card_message")
+    print(new_layer)
+    if(not(new_layer==du.get_node_layer(node_name)) and not(new_layer=='topic' or du.get_node_layer(node_name)=='topic')):
+        new_layer = new_layer.lower()
+        du.update_node_layer(node_name,new_layer)
+        du.save_graph()
+        du.reload_graph()
+
+        node_card_message.content=f"Changed the layer to {uppercase(new_layer)}"
+        await node_card_message.update()
+
+
+
 #############
 
 # Core LLM Functions
@@ -814,7 +959,6 @@ async def show_knowledge_graph(user_message):
     fig = du.create_network_figure(nodes,target_edges=edges,layer=layer)
     element = cl.Plotly(name="network_graph", figure=fig, display="inline")
     msg = await cl.Message(content="Hover over the nodes or edges for more information!",elements=[element],actions=actions).send()
-
 
 async def reorder_plot(user_query):
 
@@ -956,11 +1100,22 @@ async def reorder_plot(user_query):
 async def decompose_text(text,topics=[],temperature=0.2):
     # topics : list (List of topics to focus on)
 
+    # Check if the datastore contains information about the topics.
+    background_knowledge = []
+    for topic in topics:
+        topic_summary = du.get_node_summary(topic)
+        if(len(topic_summary.strip())>0):
+            background_knowledge.append(topic_summary)
+
+    background_knowledge = "\n".join(background_knowledge)
+
     # Clear out chat history to avoid cross-contamination
     chat_history = cl.user_session.get("chat_history")
     props_dict = dict()
     props_dict['topics']                = '\n'.join([f"{topic}" for idx,topic in enumerate(topics)])
     props_dict['text']                  = text
+    props_dict['background']            = background_knowledge
+    print(props_dict)
     chat_history = prompts.get_text_decomposition_prompt(props_dict,history=[])
     cl.user_session.set("chat_history",chat_history)
     update_system_prompt("text_decomposition_prompt")
@@ -1208,13 +1363,22 @@ async def on_chat_start():
 
     #global mlx_executor 
 
-    props = {"title":"",
-                "subtitle":"",
-                "edges":""}
+    props = dict()
+    props['name'] = ""
+    props['layer'] = ""
+    props['type'] = ""
+    props['desc'] = ""
+    props['neighbors'] = []
 
     graph_element = cl.CustomElement(
                     name="GraphInfo",
                     display="side",
+                    props= props
+                )
+
+    node_card_element = cl.CustomElement(
+                    name="NodeCard",
+                    display="inline",
                     props= props
                 )
 
@@ -1227,6 +1391,8 @@ async def on_chat_start():
                 )
 
     cl.user_session.set("graph_element", graph_element)
+    cl.user_session.set("node_card_elements_side", [])
+    cl.user_session.set("node_card_element", node_card_element)
     cl.user_session.set("info_edit_element", info_edit_element)
     cl.user_session.set("chat_history", [])
 
@@ -1235,14 +1401,6 @@ async def on_chat_start():
 
     cl.user_session.set("additional_context", "")
     cl.user_session.set("additional_context_flag", False)
-
-
-    
-    #mx.metal.clear_cache()
-    #mlx_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-
-    #loop = asyncio.get_running_loop()
-    #await loop.run_in_executor(mlx_executor, _sync_load_models)
 
     settings = await cl.ChatSettings(
         [
@@ -1270,9 +1428,6 @@ async def on_chat_start():
 
     cl.user_session.set("settings", settings)
 
-    #await create_knowledge_graph()
-    #await cl.make_async(du.reload_faiss_dataset)()
-
     # Define System prompt
     cl.user_session.set("chat_history", [])
     cl.user_session.set("entities_to_track", [])
@@ -1282,17 +1437,7 @@ async def on_chat_start():
 
     await cl.context.emitter.set_commands(helpers)
     
-    #for id,node in du.knowledge_graph.nodes(data=True):
-    #    print(f"Found Node {node['desc']} ({node['layer']})")
-    #print(du.alias_pattern)
-
-    '''
-    du.knowledge_graph.clear_edges()
-    output = du.extrapolate_descriptions()
-    output = du.extrapolate_descriptions()
-    output = du.extrapolate_relationships()
-    du.save_graph()
-    '''
+    du.reload_graph()
 
     
     await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?").send()
@@ -1303,7 +1448,9 @@ async def on_message(user_message: cl.Message):
     selected_mode = user_message.command
 
     if(selected_mode=='Analyze'):
-        await reorder_plot(user_message.content)
+        #await reorder_plot(user_message.content)
+        #await summarize_nodes()
+        await show_information(user_message.content)
     elif(selected_mode=='Update'):
         await save_to_faiss()
     elif(selected_mode=='Ideate'):
@@ -1313,94 +1460,48 @@ async def on_message(user_message: cl.Message):
     elif(selected_mode=='View'):
         await show_knowledge_graph(user_message.content)
     elif(selected_mode=='Find'):
-        await find(user_message.content)
+        pass
     elif(selected_mode=='Forget'):
         cl.user_session.set("chat_history", [])
     else:
-        # Make this cleaner.
-        waiting_for_node_update = cl.user_session.get("awaiting_input_node")
-        waiting_for_edge_update = cl.user_session.get("awaiting_input_edge")
-        if(waiting_for_node_update):
-            payload = cl.user_session.get("payload")
-            print(payload)
-            node = payload.get("node")
-            du.add_node(node,user_message.content)
+        
+        if(True):
 
-            node_info = du.get_node_info(node)
+            #await decompose_text(user_message.content,['Krugrals (location)'])
 
-            if(node_info):
-                graph_element = cl.user_session.get("graph_element")
-                graph_element.props['title'] = node_info['node_name']
-                graph_element.props['subtitle'] = node_info['summary']
-                graph_element.props['edges'] = node_info['edge_info']
-                await graph_element.update()
+            final_response_stream = await choose_and_use_tool(user_message)
+            content = ""
 
-            cl.user_session.set("awaiting_input_node", False)
+            actions = [cl.Action(name='show_context_graph',payload={'nodes':cl.user_session.get("relevant_nodes"),'edges':cl.user_session.get("relevant_edges")},label='Show Context')]
 
+            if(cl.user_session.get("additional_context_flag")):
+                actions += [cl.Action(name='save_additional_context',payload={'context':cl.user_session.get("additional_context")},label='Save Additional Context')]
 
-        elif(waiting_for_edge_update):
+            msg = cl.Message(content="",actions=actions)
+            for chunk in final_response_stream:
+                print(chunk.message.content, end='', flush=True)
+                await msg.stream_token(chunk.message.content)
+                content += chunk.message.content
 
-            payload = cl.user_session.get("payload")
-            print(payload)
-            head = payload.get("head")
-            tail = payload.get("tail")
-            key = payload.get("key")
+                if chunk.get('done', False):
+                    prompt_tokens = chunk.get('prompt_eval_count',0)
+                    output_tokens = chunk.get('eval_count',0)
+                    print('Input prompt length is currently',prompt_tokens+output_tokens)
 
-            du.knowledge_graph.edges[head,tail,key]['desc'] = user_message.content
-            du.knowledge_graph.edges[head,tail,key]['parsed'] = False
-
-            node_info = du.get_node_info(head)
-
-            if(node_info):
-                graph_element = cl.user_session.get("graph_element")
-                graph_element.props['title'] = node_info['node_name']
-                graph_element.props['subtitle'] = node_info['summary']
-                graph_element.props['edges'] = node_info['edge_info']
-                await graph_element.update()
+            cl.user_session.set("source_message", msg)
+            response = await msg.update()
 
 
-            cl.user_session.set("awaiting_input_node", False)
+            chat_history = cl.user_session.get("chat_history")
 
-        else:
+            chat_history.append({
+                                    "role": "assistant",
+                                    "content": content,
+                                })
 
-            #result = await elaborate(user_message.content)
-            #print(result)
-
-            if(True):
-
-                #await decompose_text(user_message.content,['Krugrals (location)'])
-
-                final_response_stream = await choose_and_use_tool(user_message)
-                content = ""
-
-                actions = [cl.Action(name='show_context_graph',payload={'nodes':cl.user_session.get("relevant_nodes"),'edges':cl.user_session.get("relevant_edges")},label='Show Context')]
-
-                if(cl.user_session.get("additional_context_flag")):
-                    actions += [cl.Action(name='save_additional_context',payload={'context':cl.user_session.get("additional_context")},label='Save Additional Context')]
-
-                msg = cl.Message(content="",actions=actions)
-                for chunk in final_response_stream:
-                    print(chunk.message.content, end='', flush=True)
-                    await msg.stream_token(chunk.message.content)
-                    content += chunk.message.content
-
-                    if chunk.get('done', False):
-                        prompt_tokens = chunk.get('prompt_eval_count',0)
-                        output_tokens = chunk.get('eval_count',0)
-                        print('Input prompt length is currently',prompt_tokens+output_tokens)
-
-                cl.user_session.set("source_message", msg)
-                response = await msg.update()
+            cl.user_session.set("chat_history",chat_history)
 
 
-                chat_history = cl.user_session.get("chat_history")
-
-                chat_history.append({
-                                        "role": "assistant",
-                                        "content": content,
-                                    })
-
-                cl.user_session.set("chat_history",chat_history)
 
 
 

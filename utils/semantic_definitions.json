@@ -1,0 +1,60 @@
+{
+    "entity_types":
+        {
+            "Character":
+                {
+                    "definition" : "(NODE) is a character : An individual animate or sentient entity possessing independent agency."
+                },
+            "Faction":
+                {
+                    "definition" : "(NODE) is a faction : A collective organization formed by multiple members acting as a unified social, political, or institutional body."
+                },
+            "Location":
+                {
+                    "definition" : "(NODE) is a location : A bounded spatial environment, territory, or structural space."
+                },
+            "Event":
+                {
+                    "definition" : "(NODE) is an event : A temporal occurrence, duration, event or dynamic process that unfolds across a timeline."
+                },
+            "Artifact":
+                {
+                    "definition" : "(NODE) is an artifact : a temporal occurrence, duration, event or dynamic process that unfolds across a timeline."
+                },
+            "Abstract":
+                {
+                    "definition" : "(NODE) is a concept : An intangible rule, system, belief, or metaphysical framework that governs reality without physical substance."
+                }
+        },
+    "relation_types":
+        {
+            "is_instance_of":
+                {
+                    "definition" : "tail is an example of head"
+                },
+            "is_subclass_of":
+                {
+                    "definition" : "tail is a category or subclass of head"
+                },
+            "is_quality_of":
+                {
+                    "definition" : "head possesses a property described by tail "
+                },
+            "participates_in":
+                {
+                    "definition" : "head participates in tail"
+                },
+            "located_in":
+                {
+                    "definition" : "head is located in tail"
+                },
+            "precedes":
+                {
+                    "definition" : "head occurs before tail."
+                },
+            "other":
+                {
+                    "definition" : "Other"
+                }
+        }
+}

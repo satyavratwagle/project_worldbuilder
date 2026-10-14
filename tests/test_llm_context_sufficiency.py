@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 import re
 
+# is a discrete, tangible, non-sentient material object, artifact or substance that can be possessed, utilized, or consumed.
+
 with open('config.json', "r", encoding="utf-8") as f:
     config = json.load(f)
 
