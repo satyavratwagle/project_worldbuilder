@@ -154,7 +154,7 @@ export default function AtomicSentenceList() {
               </div>
 
 
-              <div style={{display: 'flex', alignItems: 'center', textAlign:'center'}} className="col-span-1 space-x-3 py-1 ">
+              <div style={{display: 'flex', alignItems: 'center', textAlign:'left'}} className="col-span-1 space-x-3 py-1 ">
                 {checkedItems[id][2] ? (<input 
                     type="text" 
                     value={editingText} 

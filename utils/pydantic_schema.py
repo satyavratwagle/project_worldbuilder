@@ -40,9 +40,9 @@ class QueryEvaluationSchema(BaseModel):
 
 # Text Decomposition Schema
 class TextTuple(BaseModel):
-    atomic_sentence: str = Field(description="An atomic sentence related to one of the user topics.")
-    topic: str = Field(description="Subject of 'atomic_sentence'")
-    label: Literal["AXIOM","INCIDENT"] = Field(description="Choose AXIOM only if 'atomic_sentence' describes permanent truths, core identities, immutable facts, or long-term properties that rarely or never change (e.g., parent-child, material composition, birthplace). Choose INCIDENT only 'atomic_sentence' describes temporary actions, plot events, transient states, situational possessions, or active conflicts that change or expire (e.g., carrying an item, fighting an enemy, temporary possession).")
+    fact: str = Field(description="A fact related to one of the user topics.")
+    topic: str = Field(description="Subject of 'fact'")
+    label: Literal["AXIOM","INCIDENT"] = Field(description="Choose AXIOM only if 'fact' describes permanent truths, core identities, immutable facts, or long-term properties that rarely or never change (e.g., parent-child, material composition, birthplace). Choose INCIDENT only 'fact' describes temporary actions, plot events, transient states, situational possessions, or active conflicts that change or expire (e.g., carrying an item, fighting an enemy, temporary possession).")
 
 class DecomposedText(BaseModel):
     decomposed_text: list[TextTuple]

@@ -36,9 +36,152 @@ class SemanticTools():
         self.faiss_index_path = f"{self.store_path}/FAISS_store/worldbuilding_dataset.faiss"
 
         self.nlp = spacy.load("en_core_web_lg")
-        self.fcoref = FCoref(device="mps")
-        #self.nlp.add_pipe("fastcoref")
+        self.nlp.add_pipe("fastcoref")
+        #self.fcoref = FCoref(device="mps")
         #self.classifier = pipeline('zero-shot-classification',model='cross-encoder/nli-deberta-v3-large')
+
+    def extract_named_entities(self,text):
+
+        doc = self.nlp(text,component_cfg={"fastcoref": {"resolve_text": False}})
+
+        entities = []
+        for ent in doc.ents:
+            # Ignore numerical values
+            print(ent.text, ent.label_)
+            if(not(ent.label_ in ['DATE','TIME','PERCENT','MONEY','QUANTITY','ORDINAL','CARDINAL'])):
+                entities.append(ent.text)
+
+        entities = set(entities)
+        clusters = doc._.coref_clusters
+
+        entity_groups = []
+
+        for cluster in clusters:
+            tokenized_spans = [doc.char_span(start,end) for start,end in cluster]
+
+            # Remove leading articles.
+            for idx in range(len(tokenized_spans)):
+                if(tokenized_spans[idx][0].pos_=='DET'):
+                    tokenized_spans[idx] = tokenized_spans[idx][1:]
+
+            aliases = set([span.text for span in tokenized_spans if any([(token.pos_=='PROPN' and not token.dep_=='poss') for token in span])])
+            
+            entity_group = list(entities&aliases)
+            if(len(entity_group)>0):
+                full_entity_group = list(set(list(aliases)+list(entities&aliases)))
+                entity_groups.append(full_entity_group)
+
+                for e in entity_group:
+                    entities.remove(e)
+
+        # Add remaining entities as single sets.
+        print(entities)
+
+        for remaining_entity in entities:
+            entity_groups.append([remaining_entity])            
+
+        return entity_groups
+
+    def merge_existing_aliases(self,entity_groups,existing_aliases):
+        # entity_groups : list(list)
+        # existing_aliases : dict(alias : primary_alias)
+
+        entity_dict = dict()
+        for idx,e_group in enumerate(entity_groups):
+
+            matched_aliases = list(set(e_group)&existing_aliases.keys())
+            if(len(matched_aliases)>0):
+                primary_alias = existing_aliases[matched_aliases[0]] # Ideally, all of the matched_aliases should map to the same primary alias.
+                known_aliases = list(set(matched_aliases+e_group+[existing_aliases[matched_aliases[0]]]))
+                alias_known = True
+            else:
+                known_aliases = e_group
+                alias_known = False
+
+            # Keep the smallest of the existing aliases
+            to_remove = []
+            for i, bigger_alias in enumerate(known_aliases):
+                for j, smaller_alias in enumerate(known_aliases):
+                    if i != j and smaller_alias in bigger_alias:
+                        to_remove.append(bigger_alias)
+
+            to_remove = list(set(to_remove))
+            for alias in to_remove:
+                known_aliases.remove(alias)
+
+            if(len(matched_aliases)==0):
+                primary_alias = known_aliases[0]
+
+            entity_dict[idx] = dict()
+            entity_dict[idx]['primary_alias'] = primary_alias
+            entity_dict[idx]['existing_aliases'] = known_aliases
+            entity_dict[idx]['alias_known'] = alias_known
+            entity_dict[idx]['to_add'] = False
+
+        return entity_dict
+
+    def resolve_aliases(self,text, entity_dict, resolve=False):
+        # text : str
+        # entity_dict : dict(entity_name,existing_aliases,new_aliases,cluster) : A list of entities with all of their aliases.
+
+        #self.nlp.add_pipe("fastcoref")
+        doc = self.nlp(text,component_cfg={"fastcoref": {"resolve_text": False}})
+        clusters = doc._.coref_clusters
+
+        clusters_with_replacement_text = []
+        for cluster in clusters:
+
+            cluster_claimed = False
+            tokenized_spans = [doc.char_span(start,end) for start,end in cluster]
+            aliases = set([span.text for span in tokenized_spans if any([(token.pos_=='PROPN' and not token.dep_=='poss') for token in span])])
+
+            print(entity_dict)
+            for idx,current_dict in entity_dict.items():
+
+                if(len(set(current_dict['existing_aliases'])&aliases)>0):
+                    clusters_with_replacement_text += [(current_dict['primary_alias'],(start,end)) for start,end in cluster]
+                    cluster_claimed = True
+                    break
+
+            if(not(cluster_claimed)):
+                # If no existing alias exists, replace only pronouns.
+                proxy_alias = doc.char_span(cluster[0][0],cluster[0][1]).text
+
+                if(len(proxy_alias)<15):
+                    proper_noun_cluster,pronoun_cluster = self.split_pronoun_clusters(doc,cluster)
+                    clusters_with_replacement_text += [(proxy_alias,(start,end)) for start,end in pronoun_cluster]
+
+        # Resolve Text
+
+        all_replacements = []
+        for replacement,interval in clusters_with_replacement_text:
+            start,end = interval
+            span = doc.char_span(start,end)
+            is_possessive = any(token.tag_ == "PRP$" for token in span) or any(token.tag_ == "POS" for token in span)
+            if(is_possessive):
+                all_replacements+=[(start,end,f"{replacement}'s")]
+            else:
+                all_replacements+=[(start,end,replacement)]
+
+        # Sort from right to left to prevent index shifting
+        all_replacements.sort(key=lambda x: x[0], reverse=True)
+
+        # Remove overlapping replacements
+        filtered_replacements = []
+        min_start_seen = float('inf')
+        
+        for start, end, replacement in all_replacements:
+            if end <= min_start_seen:
+                filtered_replacements.append((start, end, replacement))
+                min_start_seen = start
+            else:
+                continue
+
+        resolved_text = doc.text
+        for start, end, replacement in filtered_replacements:
+            resolved_text = resolved_text[:start] + replacement + resolved_text[end:]
+
+        return resolved_text
 
     def split_into_sentences(self,text):
 
@@ -46,24 +189,25 @@ class SemanticTools():
         sentences = [sent.text.strip() for sent in doc.sents]
 
         return sentences
+
+    def split_pronoun_clusters(self,doc,cluster):
+        pronoun_clusters = []
+        name_clusters = []
     
-    def find_aliases(self,doc,entity_coreferences,entity_dict):
+        curr_pronoun_cluster = []
+        curr_name_cluster = []
 
-        preds = self.fcoref.predict(doc.text)
+        for start,end in cluster:
+            span = doc.char_span(start,end)
+            if(any([token.pos_=='PROPN' for token in span])):
+                curr_name_cluster.append((start,end))
+            else:
+                curr_pronoun_cluster.append((start,end))
 
-        for cluster,entity_name in entity_coreferences:
+        pronoun_clusters = curr_pronoun_cluster
+        name_clusters = curr_name_cluster
 
-            aliases = []
-            for start,end in cluster:
-                span = doc.char_span(start,end)
-
-                if(any([(token.pos_=='PROPN' and not token.dep_=='poss') for token in span])):
-                    entity_dict[entity_name]['aliases'].append(span.text)
-
-        for key in entity_dict.keys():
-            entity_dict[key]['aliases'] = list(set(entity_dict[key]['aliases']))
-
-        return entity_dict
+        return name_clusters,pronoun_clusters
 
     def get_root_entity(self,doc,start,end):
         # Get the root entity within a span of text defined by start and end
@@ -176,134 +320,41 @@ class SemanticTools():
 
         return head,relation,tail
 
-    def resolve_aliases(self,doc,replacements):
+    def extract_common_nouns(self,text):
 
-        all_replacements = []
-        for replacement,interval in replacements:
-            start,end = interval
-            span = doc.char_span(start,end)
-            is_possessive = any(token.tag_ == "PRP$" for token in span) or any(token.tag_ == "POS" for token in span)
-            if(is_possessive):
-                all_replacements+=[(start,end,f"{replacement}'s")]
-            else:
-                all_replacements+=[(start,end,replacement)]
+        doc = self.nlp(text)
 
-        # Sort from right to left to prevent index shifting
-        all_replacements.sort(key=lambda x: x[0], reverse=True)
+        physical_anchors = self.nlp("physical")
+        abstract_anchors = self.nlp("abstract")
 
-        # Remove overlapping replacements
-        filtered_replacements = []
-        min_start_seen = float('inf')
-        
-        for start, end, replacement in all_replacements:
-            if end <= min_start_seen:
-                filtered_replacements.append((start, end, replacement))
-                min_start_seen = start
-            else:
-                continue
+        physical_nouns = []
+        abstract_nouns = []
 
-        final_text = doc.text
-        for start, end, replacement in filtered_replacements:
-            final_text = final_text[:start] + replacement + final_text[end:]
-
-        return final_text
-
-    def get_alias_clusters(self, text, entity_dict):
-
-        self.nlp.add_pipe("fastcoref")
-        doc = self.nlp(text,component_cfg={"fastcoref": {"resolve_text": False}})
-
-        # Access the fully resolved text via spaCy's custom extension
-        #resolved_output = doc._.resolved_text
-        clusters = doc._.coref_clusters
-        print("Entities : ",[(ent.text, ent.label_) for ent in doc.ents])
-
-        self.nlp.remove_pipe("fastcoref")
-
-        return doc,clusters
-
-    def match_clusters_against_aliases(self,doc,clusters,entity_dict):
-        # entity_dict should have a key 'aliases' which is a list of aliases.
-        # Assign a single replacement term for each cluster
-        # Get new aliases for entities
-
-        # The replacements contains tuples : (alias, the clusters that should be replaced by it).
-        replacements = []
-
-        pronoun_clusters = []
-        name_clusters = []
-        for cluster in clusters:
-            curr_pronoun_cluster = []
-            curr_name_cluster = []
-
-            for start,end in cluster:
-                span = doc.char_span(start,end)
-                if(any([token.pos_=='PROPN' for token in span])):
-                    curr_name_cluster.append((start,end))
-                else:
-                    curr_pronoun_cluster.append((start,end))
-
-            pronoun_clusters.append(curr_pronoun_cluster)
-            name_clusters.append(curr_name_cluster)
-
-
-        for idx in range(len(name_clusters)):
-            print(f"NAMES : {[doc.text[start:end] for start,end in name_clusters[idx]]} | PRONOUNS : {[doc.text[start:end] for start,end in pronoun_clusters[idx]]}")
-
-
-        clusters_claimed = []
-        for topic in entity_dict.keys():
-            new_alias_list = []
-            doc_cluster = []
-            for idx,name_cluster in enumerate(name_clusters):
-                new_aliases,has_mentions = self.get_new_aliases(doc,name_cluster,entity_dict[topic]['aliases'])
-                new_alias_list += new_aliases
-                print(topic,has_mentions)
-
-                if(has_mentions):
-                    print(idx,topic)
-                    doc_cluster += pronoun_clusters[idx]+name_clusters[idx]
-                    clusters_claimed.append(idx)
-
-            replacements += [(topic,span) for span in doc_cluster]
-            entity_dict[topic]['aliases'] += new_alias_list
-
-        # If a named entity exists that is not selected by the user, replace pronouns with the first instance.
-        for idx, name_cluster in enumerate(name_clusters):
-            if(not(idx in clusters_claimed)):
-                if(len(pronoun_clusters[idx])>0 and len(name_cluster)>0):
-                    start,end = name_cluster[0]
-                    new_aliases,_ = self.get_new_aliases(doc,name_cluster,[doc.text[start:end]])
-                    if(len(new_aliases)>0):
-                        entity_dict[new_aliases[0]] = dict()
-                        entity_dict[new_aliases[0]]['aliases'] = new_aliases
-                        replacements += [(new_aliases[0],span) for span in pronoun_clusters[idx]]
-
-        return entity_dict, replacements
+        for token in doc:
+            if token.pos_ == "NOUN":
+                # Calculate similarity to physical vs abstract anchors
+                phys_score = token.similarity(physical_anchors)
+                abst_score = token.similarity(abstract_anchors)
                 
-    def get_new_aliases(self,doc,cluster,known_aliases):
-        # Extract proper nouns and names from a cluster
+                # Classify based on which score is higher
 
-        common_elements =  any([((alias in reference) and not(" and " in reference)) for reference in set([doc.text[start:end] for start,end in cluster]) for alias in known_aliases])
+                print(f"{token.text} : PHY = {phys_score} | ABS = {abst_score}")
+                if phys_score > abst_score:
+                    physical_nouns.append(token.text)
+                else:
+                    abstract_nouns.append(token.text)
 
-        new_aliases = []
-        if(common_elements):
-            for start,end in cluster:
-                span = doc.char_span(start,end)
-                if(not(any([token.pos_=='PRON' for token in span])) and any([token.pos_=='PROPN' for token in span]) and len(span)<5):
-                    # Manage tense and suffixes
-                    filtered_span = []
-                    for token in span:
-                        if(token.tag_==',' or token.tag_=='.'):
-                            break
-                        if (not(token.tag_=='POS' or token.tag_=='DT')):
-                            filtered_span.append(token.text)
-                    
-                    alias = " ".join(filtered_span)
-                    if(not(alias in known_aliases) and not(alias in new_aliases)):
-                        new_aliases.append(alias)
-        
-        return new_aliases, common_elements
+        return physical_nouns
+
+    def compare_common_nouns(self,noun1,noun2):
+
+        noun1_anchor = self.nlp(noun1)
+        noun2_anchor = self.nlp(noun2)
+
+        score = noun1_anchor.similarity(noun2_anchor)
+
+        return score
+
 
     # Load Models
     def load_zsc_model(self):

@@ -110,18 +110,16 @@
 						"system", 
 					"content": 
 						["[SYSTEM ROLE AND GUARDRAILS]",
-						"1. You are an advanced text simplification engine specialized for fictional lore.",
-						"2. Your task is to read the provided new information and simplify it into small, atomic sentences. You must ONLY include descriptions related to the user topic in your response.",
-						"3. In the 'atomic_sentence' field, you must respond with an atomic sentence AT MOST twelve (12) words long.",
-						"4. Each atomic sentence must have EXACTLY one subject, one verb and one object.",				
-						"5. The subject of each atomic sentence MUST by the user topic and MUST come before the object and the verb.",
-						"6. You are may also be given some known information. You must ONLY use the known information as a basis for your simplification of new information. DO NOT include known information in your response.",
-						"7. You must cover all descriptions related to the user topic found ONLY in the new information.",
-						"8. You must ONLY use descriptions in the new information to inform your response. Do NOT extrapolate or invent new descriptions.",
-						"9. You must NOT use conjunctions such as 'and','also','with' or 'but' in your response.",
-						"10. In the 'topics' field, you must respond with the subject of the 'atomic_sentence'. The subject MUST be the user topic.",
-						"11. In the 'labels' field, you MUST ALWAYS respond with a label for the 'atomic_sentence' from one of the following labels: 'AXIOM' or 'INCIDENT' based on the given schema descriptions.",
-						"12. NEVER include any conversational preamble or text."]
+						"1. You are an advanced fact extraction engine specialized for fictional lore.",
+						"2. Your task is to read the provided new information and extract facts related to certain topics. You must ONLY include facts related to the user topic in your response.",
+						"3. In the 'fact' field, you must respond with an atomic fact about the user topic.",
+						"4. Each fact must be ONLY one (1) sentence, and the sentence must have EXACTLY one subject, one verb and one object. You must NEVER use conjunctions in your response such as 'and','or','also',etc.",				
+						"5. The subject of each atomic sentence MUST be the user topic and MUST come before the object and the verb.",
+						"6. You may also be given some known information. You must ONLY use the known information as a basis for facts extracted from the new information. DO NOT include known information in your response.",
+						"7. You must cover descriptions related to the user topic found ONLY in the new information. Do NOT extrapolate or invent new descriptions.",
+						"8. In the 'topics' field, you must respond with the subject of the 'atomic_sentence'. The subject MUST be the user topic.",
+						"9. In the 'labels' field, you MUST ALWAYS respond with a label for the 'atomic_sentence' from one of the following labels: 'AXIOM' or 'INCIDENT' based on the given schema descriptions.",
+						"10. NEVER include any conversational preamble or text."]
 				},
 			"user":
 				{
