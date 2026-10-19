@@ -6,7 +6,11 @@ from fastcoref import FCoref
 import spacy
 import psutil
 from fastcoref import spacy_component
-
+from sklearn.neighbors import NearestNeighbors
+import re
+from collections import defaultdict
+import networkx as nx
+import json
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 _orig_getattr = torch.nn.Module.__getattr__
@@ -37,6 +41,8 @@ class SemanticTools():
 
         self.nlp = spacy.load("en_core_web_lg")
         self.nlp.add_pipe("fastcoref")
+        self.physical_anchors = self.nlp("physical")
+        self.abstract_anchors = self.nlp("abstract")
         #self.fcoref = FCoref(device="mps")
         #self.classifier = pipeline('zero-shot-classification',model='cross-encoder/nli-deberta-v3-large')
 
@@ -320,30 +326,115 @@ class SemanticTools():
 
         return head,relation,tail
 
-    def extract_common_nouns(self,text):
+    def extract_common_nouns(self,text, window_size=6, target=None, threshold=0.1, boost=5.0):
 
         doc = self.nlp(text)
-
-        physical_anchors = self.nlp("physical")
-        abstract_anchors = self.nlp("abstract")
 
         physical_nouns = []
         abstract_nouns = []
 
+        all_nouns = []
+        all_vectors = []
         for token in doc:
             if token.pos_ == "NOUN":
-                # Calculate similarity to physical vs abstract anchors
-                phys_score = token.similarity(physical_anchors)
-                abst_score = token.similarity(abstract_anchors)
-                
-                # Classify based on which score is higher
+                all_nouns.append(token.lemma_)
+                all_vectors.append(token.vector)
 
-                print(f"{token.text} : PHY = {phys_score} | ABS = {abst_score}")
-                if phys_score > abst_score:
-                    physical_nouns.append(token.text)
+        # TextRank to filter out the unimportant nouns
+
+        # Normalize target words to lowercase for accurate matching
+        target_words = {w.lower().strip() for w in all_nouns}
+        token_map = {w.lower().strip():all_vectors[idx] for idx,w in enumerate(all_nouns)}
+
+        if(target):
+            target = target.lower().strip()
+            target_words.add(target)
+
+        # Clean and tokenize the text into a sequence of words
+        tokens = [re.sub(r"[^\w\s]", "", word).lower() for word in text.split()]
+        tokens = [t for t in tokens if t]  # Remove empty strings
+
+        # Filter to only keep tokens that exist in our target word list
+        present_words = [t for t in target_words if t in tokens]
+        if not present_words:
+            sorted_scores = dict()
+        else:
+            # Initialize an undirected graph
+            graph = nx.Graph()
+            graph.add_nodes_from(set(present_words))
+
+            # Build co-occurrence edges using a sliding window
+            for i in range(len(tokens)):
+                if tokens[i] in target_words:
+                  # Look ahead within the defined window size
+                  end = min(i + window_size, len(tokens))
+                  for j in range(i + 1, end):
+                    if tokens[j] in target_words and tokens[i] != tokens[j]:
+                      # Add or increment the edge weight between co-occurring words
+                      if graph.has_edge(tokens[i], tokens[j]):
+                        graph[tokens[i]][tokens[j]]["weight"] += 1
+                      else:
+                        graph.add_edge(tokens[i], tokens[j], weight=1)
+
+            # If no edges were formed (e.g., words never appear near each other), return empty
+            if len(graph.edges) == 0:
+                sorted_scores = {word: 0.0 for word in set(present_words)}
+            else:
+
+                if(target):
+                    # Create a personalization dictionary for PageRank
+                    personalization = {}
+                    for node in graph.nodes():
+                        if node == target:
+                          personalization[node] = boost  # Heavy bias toward target
+                        else:
+                          personalization[node] = 1.0  # Standard weight for other nodes
+
+                    # Run PageRank on the graph using edge weights
+                    scores = nx.pagerank(graph,weight='weight',personalization=personalization, alpha=0.85)
+
                 else:
-                    abstract_nouns.append(token.text)
+                    # Vanilla pagerank
+                    scores = nx.pagerank(graph, weight="weight")
 
+                # Sort the results by score in descending order
+                sorted_scores = dict(
+                  sorted(scores.items(), key=lambda item: item[1], reverse=True)
+                )
+
+        for word,score in sorted_scores.items():
+            print(f"{word} : {score}")
+
+        important_noun_vectors = []
+        important_noun_text = []
+        for word,score in sorted_scores.items():
+            if(score>threshold and not(word==target)):
+                print(f"{word} : {score}")
+                important_noun_vectors.append(token_map[word])
+                important_noun_text.append(word)
+
+        matrix = np.vstack(important_noun_vectors)
+        phy_vec = self.physical_anchors.vector
+        abs_vec = self.abstract_anchors.vector
+
+        # Calculate similarity to physical vs abstract anchors
+
+        # 2. Compute vectorized cosine similarity in one go
+        dot_products = np.dot(matrix, phy_vec)
+        norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(phy_vec)
+        phy_similarities = dot_products / norms
+
+        dot_products = np.dot(matrix, abs_vec)
+        norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(abs_vec)
+        abs_similarities = dot_products / norms
+
+        for idx,sim in enumerate(phy_similarities):
+            #print(f"{important_noun_text[idx]} : PHY = {phy_similarities[idx]} | ABS = {abs_similarities[idx]}")
+            # Classify based on which score is higher
+            if phy_similarities[idx] > abs_similarities[idx]:
+                physical_nouns.append((important_noun_text[idx],important_noun_vectors[idx]))
+
+        
         return physical_nouns
 
     def compare_common_nouns(self,noun1,noun2):
@@ -354,6 +445,30 @@ class SemanticTools():
         score = noun1_anchor.similarity(noun2_anchor)
 
         return score
+
+    def cluster_common_nouns(self,new_vectors,existing_nouns,n_neighbors=1):
+
+        #new_vectors = np.array([self.nlp(noun).vector for noun in new_nouns])
+        existing_vectors = np.array([self.nlp(noun).vector for noun in existing_nouns])
+
+        # Fit on existing vectors
+        nn = NearestNeighbors(n_neighbors=n_neighbors, metric='cosine')
+        nn.fit(existing_vectors)
+
+        # Query on new vectors
+        distances, indices = nn.kneighbors(new_vectors)
+
+        # Print results (converting cosine distance to similarity: 1 - distance)
+        neighbors = []
+        for i in range(len(new_vectors)):
+            current_neighbors = []
+            for neighbor_idx, dist in zip(indices[i], distances[i]):
+                if neighbor_idx != i:  # Skip self-match
+                    similarity = 1 - dist
+                    current_neighbors.append((neighbor_idx,similarity))
+            neighbors.append(current_neighbors)
+
+        return neighbors
 
 
     # Load Models
@@ -839,3 +954,16 @@ class SemanticTools():
             final_output.append(clause_clean)
 
         return final_output
+
+if __name__ == "__main__":
+
+    # Checks for Semantic
+
+    with open('config.json', "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    sem = SemanticTools(config)
+    #sem.load_extraction_model()
+
+    text = "Shovzogr is the dead sea that lies to the south of the Archipelago belt. It is so named because there are no currents coming from this sea, and the ones going south die down eventually. No ships can sail south on the Shovzogr because the currents die out, leaving the ship stranded in the still water, away from land. If ships try to return, they are opposed by the currents, being pushed back to the still water. Criminals with the death penalty are shipped into Shovzogr alive in a small boat, where they will die far away from the Archipelago."
+    sem.extract_common_nouns(text,window_size=6,target="Shovzogr",boost=5.0)

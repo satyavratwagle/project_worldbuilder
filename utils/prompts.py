@@ -88,6 +88,7 @@ def get_relationship_categorization_prompt(args_dict, history=[]):
 
 def get_text_decomposition_prompt(args_dict,history=[]):
 	# topics, text
+	assert 'other_topics' in args_dict.keys()
 	assert 'topics' in args_dict.keys()
 	assert 'text' in args_dict.keys()
 
@@ -95,6 +96,16 @@ def get_text_decomposition_prompt(args_dict,history=[]):
 	history.append(process_prompt(prompts['text_decomposition_prompt']['user'],args_dict))
 
 	return history
+
+def get_cluster_description_prompt(args_dict,history=[]):
+	assert 'cluster_descriptions' in args_dict.keys()
+	assert 'topic' in args_dict.keys()
+
+	history.append(process_prompt(prompts['cluster_theme_prompt']['system']))
+	history.append(process_prompt(prompts['cluster_theme_prompt']['user'],args_dict))
+
+	return history
+
 
 def get_reasoned_generation_prompt(args_dict,history=[]):
 

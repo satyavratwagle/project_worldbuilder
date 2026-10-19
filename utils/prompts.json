@@ -76,18 +76,20 @@
 					} 
 			}
 		},
-	"node_definition_prompt":
+	"cluster_theme_prompt":
 		{"system":
 			{
 				"role": 
 					"system", 
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
-					"You are a summarizing assistant for fictional lore. Your job is to provide a definition of the given topic with the help of the given description IN EXACTLY ONE (1) sentence.",
-					"- Your response must include ALL the important information specified in the given description.",
-					"- Your response must NOT be longer than one (1) sentence.",
-					"- Your response must begin with the name of the given topic.",
-					"- Do NOT include any conversational preamble or text."]
+					"You are a writing assistant for fictional lore. You are given a set of descriptions related to a topic. Your task is to summarize each description and define its theme in relation to the given topic according to the given schema.",
+					"1. Each description is provided between <description> and </description> tags.",
+					"2. In the 'summary' field, you must provide brief summaries for EACH of the descriptions.",
+					"3. In the 'theme' field, you must respond with the themes of EACH of the descriptions.",
+					"4. The theme of each description must convey what part of the topic is being described. (e.g., for '<description>\nBelzegor is an island city. Belzegor has several ports. The inner district of Belzegor is the financial district\n</description>\n\n<topic>Belzegor</topic>\n'; the theme would be 'City Planning of Belzegor'.)",
+					"5. Each theme must be at most five (5) words long.",
+					"6. Do NOT include any conversational preamble or text."]
 			},
 		"user":
 			{
@@ -96,9 +98,9 @@
 				"content": 
 					{
 					"node_description":
-						["\n[DESCRIPTION OF (NODE_NAME)]\n<description>\n(NODE_DESCRIPTION)\n</description>\n"],
+						["\n(CLUSTER_DESCRIPTIONS)\n"],
 					"node_name":
-						["\n[TOPIC TO DEFINE]\n<topic>\n(NODE_NAME)\n</topic>\n\n The definition of (NODE_NAME) is as follows :"]
+						["\n<topic>\n(TOPIC)\n</topic>"]
 					}
 			}
 		},
@@ -116,10 +118,11 @@
 						"4. Each fact must be ONLY one (1) sentence, and the sentence must have EXACTLY one subject, one verb and one object. You must NEVER use conjunctions in your response such as 'and','or','also',etc.",				
 						"5. The subject of each atomic sentence MUST be the user topic and MUST come before the object and the verb.",
 						"6. You may also be given some known information. You must ONLY use the known information as a basis for facts extracted from the new information. DO NOT include known information in your response.",
-						"7. You must cover descriptions related to the user topic found ONLY in the new information. Do NOT extrapolate or invent new descriptions.",
-						"8. In the 'topics' field, you must respond with the subject of the 'atomic_sentence'. The subject MUST be the user topic.",
-						"9. In the 'labels' field, you MUST ALWAYS respond with a label for the 'atomic_sentence' from one of the following labels: 'AXIOM' or 'INCIDENT' based on the given schema descriptions.",
-						"10. NEVER include any conversational preamble or text."]
+						"7. You must cover ALL descriptions of the user topic found ONLY in the new information. Do NOT extrapolate or invent new descriptions.",
+						"8. You must the other topics in your descriptions if they are relevant to the description.",
+						"9. In the 'topics' field, you must respond with the subject of the 'atomic_sentence'. The subject MUST be the user topic.",
+						"10. In the 'labels' field, you MUST ALWAYS respond with a label for the 'atomic_sentence' from one of the following labels: 'AXIOM' or 'INCIDENT' based on the given schema descriptions.",
+						"11. NEVER include any conversational preamble or text."]
 				},
 			"user":
 				{
@@ -131,8 +134,10 @@
 								["\n<known_background>\n(BACKGROUND)\n</known_background>\n"],
 							"descriptions":
 								["\n<new_information>\n(TEXT)\n</new_information>\n"],
+							"relevant_topics":
+								["\n<other_topics>\n(OTHER_TOPICS)\n</other_topics>\n"],
 							"user_query":
-								["\n<user_topic>\n(TOPICS)\n</user_topic>\n"]
+								["\n[MAIN TOPIC]\n<user_topic>\n(TOPICS)\n</user_topic>\n"]
 						}
 				}			
 		},

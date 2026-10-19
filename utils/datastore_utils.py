@@ -21,6 +21,8 @@ import itertools
 import string
 import umap
 from sklearn.neighbors import NearestNeighbors
+import ahocorasick
+import math
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 '''
@@ -33,7 +35,8 @@ def _patched_getattr(self, name):
 torch.nn.Module.__getattr__ = _patched_getattr
 '''
 
-allowed_edge_labels = ['relationship','involvement','scene','description']
+allowed_layers = ['topic','lore','plot','fact']
+allowed_edge_labels = ['relationship','involvement','scene','description','info']
 
 def uppercase(text):
     return text[0].upper()+text[1:]
@@ -135,9 +138,9 @@ class DatastoreUtilities():
             self.knowledge_graph = nx.read_gml(f"{self.knowledge_graph_path}.gml")
         else:
             self.knowledge_graph = nx.DiGraph()
-            self.knowledge_graph.graph['lore_idx'] = 0
-            self.knowledge_graph.graph['plot_idx'] = 0
-            self.knowledge_graph.graph['topic_idx'] = 0
+
+            for layer in allowed_layers:
+                self.knowledge_graph.graph[f'{layer}_idx'] = 0
             nx.write_gml(self.knowledge_graph, f"{self.knowledge_graph_path}.gml")
 
         print(f"Loaded Graph Version : {self.knowledge_graph_path} : {self.knowledge_graph}")
@@ -214,6 +217,16 @@ class DatastoreUtilities():
         self.node_finder = re.compile(self.alias_pattern, flags=re.IGNORECASE)
         self.node_lookup = {alias:node[0] for node in topic_nodes for alias in node[1]['metadata']['aliases']} | {node[1]['desc']:node[0] for node in descriptive_nodes}
         self.inverse_lookup = {alias:node[1]['desc'] for node in topic_nodes for alias in node[1]['metadata']['aliases']}
+
+        # Initialize ahocorasic automaton for mention detection
+        self.topic_finder = ahocorasick.Automaton()
+
+        for topic in topic_nodes:
+            for alias in self.knowledge_graph.nodes[topic[0]]['metadata']['aliases']:
+                self.topic_finder.add_word(alias.lower(), (self.knowledge_graph.nodes[topic[0]]['desc'], alias))
+                
+        # Compile the automaton for lightning-fast multi-pattern searching
+        self.topic_finder.make_automaton()
 
     def get_alias_dict(self,text):
         nodes_in_text = [self.knowledge_graph.nodes[self.node_lookup[name]] for name in list(set(self.node_finder.findall(text))) if len(name)>0]
@@ -394,6 +407,7 @@ class DatastoreUtilities():
         if(label=='involvement'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='plot'), f"Node type mismatch for 'involvement' type edge! expected head='topic' and tail='plot'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
         if(label=='description'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='lore'), f"Node type mismatch for 'description' type edge! expected head='topic' and tail='lore'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
         if(label=='scene'): assert (self.get_node_layer(head)=='plot' and self.get_node_layer(tail)=='plot'), f"Node type mismatch for 'scene' type edge! expected head='plot' and tail='plot'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
+        if(label=='info'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='fact'), f"Node type mismatch for 'info' type edge! expected head='topic' and tail='fact'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
 
         time_now = int(time.time())
 
@@ -442,7 +456,7 @@ class DatastoreUtilities():
     def add_node(self,node_name,layer,type="misc",**metadata):
         # NOTE : Aliases needed for relevant topic retrieval
         layer = layer.lower()
-        assert layer in ['plot','lore','topic']
+        assert layer in allowed_layers
 
         # Check if the node exists in the graph (Mostly useful for `topic` nodes)
         if(not(node_name in self.node_lookup.keys()) and not(node_name in self.knowledge_graph.nodes())):
@@ -453,70 +467,72 @@ class DatastoreUtilities():
             # Create a new node if knowledge graph does not exist
             node_id = f"{layer.lower()}_{self.knowledge_graph.graph[f"{layer}_idx"]}"
 
-            if('aliases' in metadata.keys()):
-                metadata['aliases'] = list(set(metadata['aliases']+[node_name]))
-
-            
             self.knowledge_graph.add_node(node_id,
                                             updated=int(time.time()),
                                             desc=node_name,
                                             layer=layer,
                                             type=type,
-                                            metadata=metadata)
+                                            metadata=dict())
 
-            if(layer=='topic'):
-                self.knowledge_graph.nodes[node_id]['metadata']['summary'] = ""
-                self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'] = 0
-
+            self.add_metadata(node_id,**metadata)
 
             print(f"Added node {node_id} ({self.get_node_layer(node_id)}) : {self.get_node_name(node_id)}!")
             self.knowledge_graph.graph[f"{layer}_idx"] += 1
 
+        # If the node exists, but does not exist in the correct layer
         elif(not(self.get_node_layer(node_name)==layer)):
             # If the node is 'lore' or 'plot', resolve any preliminary aliases.
             node_name,_ = self.resolve_aliases(node_name)
-
-            # Create a new node if knowledge graph does not exist
             node_id = f"{layer.lower()}_{self.knowledge_graph.graph[f"{layer}_idx"]}"
 
-            if('aliases' in metadata.keys()):
-                metadata['aliases'] = list(set(metadata['aliases']+[node_name]))
             
             self.knowledge_graph.add_node(node_id,
                                             updated=int(time.time()),
                                             desc=node_name,
                                             layer=layer,
                                             type=type,
-                                            metadata=metadata)
-
-            if(layer=='topic'):
-                self.knowledge_graph.nodes[node_id]['metadata']['summary'] = ""
-                self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'] = 0
-
+                                            metadata=dict())
+            self.add_metadata(node_id,**metadata)
 
             print(f"Added node {node_id} ({self.get_node_layer(node_id)}) : {self.get_node_name(node_id)}!")
             self.knowledge_graph.graph[f"{layer}_idx"] += 1
 
+        # If the node already exists in the right layer, just add the metadata
         else:
-
-            if(node_name in self.knowledge_graph.nodes()):
-                node_id = node_name
-            else:
-                node_id = self.get_node_id(node_name)
-
-            new_metadata = metadata
-            # If node already exists, overwrite the properties.
-            if(len(new_metadata.keys())>0):
-
-                if('aliases' in new_metadata.keys()):
-                    self.knowledge_graph.nodes[node_id]['metadata']['aliases'] = list(set(self.knowledge_graph.nodes[node_id]['metadata']['aliases']+new_metadata['aliases']))
-                    self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
-
-                if('summary' in new_metadata.keys()):
-                    self.knowledge_graph.nodes[node_id]['metadata']['summary'] = new_metadata['summary']
-                    self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'] = int(time.time())
+            node_id = self.get_node_id(node_name)
+            self.add_metadata(node_id,**metadata)
 
         return node_id
+
+    def add_metadata(self,node_name,**metadata):
+        node_id = self.get_node_id(node_name)
+
+        # Create keys in node metadata if not already set (Useful in node creation)
+        if(self.get_node_layer(node_id)=='topic' and not('summary' in self.knowledge_graph.nodes[node_id]['metadata'].keys())):
+            self.knowledge_graph.nodes[node_id]['metadata']['summary'] = ""
+            self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'] = 0
+
+        if(self.get_node_layer(node_id)=='topic' and not('aliases' in self.knowledge_graph.nodes[node_id]['metadata'].keys())):
+            self.knowledge_graph.nodes[node_id]['metadata']['aliases'] = []
+
+        if(self.get_node_layer(node_id)=='lore' and not('facts' in self.knowledge_graph.nodes[node_id]['metadata'].keys())):
+            self.knowledge_graph.nodes[node_id]['metadata']['facts'] = []
+
+        # Add keys in new metadata
+        if('summary' in metadata.keys() and self.get_node_layer(node_id)=='topic'):
+            self.knowledge_graph.nodes[node_id]['metadata']['summary'] = metadata['summary']
+            self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'] = int(time.time())
+
+        if('aliases' in metadata.keys() and self.get_node_layer(node_id)=='topic'):    
+            if(not(node_name==node_id)):
+                metadata['aliases'] = list(set(metadata['aliases']+[node_name]))
+            self.knowledge_graph.nodes[node_id]['metadata']['aliases'] = list(set(self.knowledge_graph.nodes[node_id]['metadata']['aliases']+metadata['aliases']))
+            self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
+
+        if('facts' in metadata.keys() and self.get_node_layer(node_id)=='lore'):
+            self.knowledge_graph.nodes[node_id]['metadata']['facts'] += metadata['facts']
+
+        print(f"Added Metadata for [{node_id}] : {node_name} = {metadata}")
                 
     def remove_node(self,node):
         # Cleanly remove a node from the knowledge graph
@@ -665,7 +681,7 @@ class DatastoreUtilities():
             self.kg2ds_map = json.load(f)
 
         # Get only the non-topic nodes that have been updated after the last datastore save.
-        return [node for node in self.knowledge_graph.nodes(data=True) if (node[1]['updated']>self.kg2ds_map[self.project_name][self.current_graph]['datastore_last_saved'] and not(node[1]['layer']=='topic'))]
+        return [node for node in self.knowledge_graph.nodes(data=True) if (node[1]['updated']>self.kg2ds_map[self.project_name][self.current_graph]['datastore_last_saved'] and not(node[1]['layer']=='topic') and not(node[1]['layer']=='fact'))]
 
     def get_node_summary(self,node):
         node_id = self.get_node_id(node)
@@ -746,6 +762,36 @@ class DatastoreUtilities():
 
     # GRAPH FUNCTIONS
 
+    def find_topic_mentions(self, text):
+        
+        matches = []
+        text_lower = text.lower()
+        text_len = len(text)
+        
+        # 2. Scan the text chunk in a single pass
+        for end_index, (canonical_name, matched_alias) in self.topic_finder.iter(text_lower):
+            start_index = end_index - len(matched_alias) + 1
+            
+            # 3. Apply a Word Boundary Check (prevents sub-string collisions like "Cat" in "Catalog")
+            is_start_boundary = (start_index == 0) or (not text[start_index - 1].isalnum())
+            is_end_boundary = (end_index + 1 == text_len) or (not text[end_index + 1].isalnum())
+            
+            if not (is_start_boundary and is_end_boundary):
+                continue  # Skip partial word matches
+                
+            # 4. Record the match, extracting the exact casing from the original text chunk
+            '''
+            matches.append({
+                "canonical_name": canonical_name,
+                "matched_text": text[start_index:end_index + 1],
+                "start_offset": start_index,
+                "end_offset": end_index + 1
+            })
+            '''
+            matches.append(text[start_index:end_index + 1])
+            
+        return list(set(matches))
+
     def extrapolate_for_node(self,node_id,mode):
 
         if(not node_id in self.knowledge_graph.nodes()):
@@ -755,7 +801,10 @@ class DatastoreUtilities():
 
         mentioned_topics = [name for name in list(set(self.node_finder.findall(node['desc']))) if len(name)>0]
 
+        new_edge = None
         for topic in mentioned_topics:
+            if(mode=='info'):
+                new_edge = self.add_edge(self.node_lookup[topic],node_id,'info')
             if(mode=='description'):
                 new_edge = self.add_edge(self.node_lookup[topic],node_id,'description')
             elif(mode=='involvement'):
@@ -1148,6 +1197,18 @@ class DatastoreUtilities():
 
         return lore_nodes
 
+    def collect_fact_nodes(self,node,chosen_layer):
+
+        node_id = self.get_node_id(node)
+
+        fact_nodes = []
+        for head,tail,edge_info in self.knowledge_graph.edges(node_id,data=True):
+            #if (edge_info['label']=='info' and self.knowledge_graph.nodes[tail]['type']==chosen_layer):
+            if (edge_info['label']=='info'):
+                fact_nodes.append(tail)
+
+        return fact_nodes
+
     def get_lore_from_nodes(self,nodes):
 
         lore_nodes = []
@@ -1172,35 +1233,49 @@ class DatastoreUtilities():
                             random_state=42
                         )
 
+        # Get the closest `topic` node
         node_id = self.get_node_id(node)
 
         if(not(self.get_node_layer(node_id)=='topic')):
             node_id = self.get_related_topics(node_id)[0]
 
-        lore_nodes = set(self.collect_lore_nodes(node_id))
 
-        rows = [idx for idx in range(len(self.dataset)) if self.dataset['node_id'][idx] in set(lore_nodes)]
-        embeddings = torch.stack([torch.tensor(self.dataset['embeddings'][idx]) for idx in rows])
-        print(embeddings.shape)
+        # Expand existing `lore` nodes --> old `facts`
+        lore_nodes = self.collect_lore_nodes(node_id)
+        old_facts = []
+        for lore_node in lore_nodes:
+            old_facts += self.get_node_metadata(lore_node,'facts')
 
-        reduced_embeddings = umap_reducer.fit_transform(embeddings)
+        # Collect new `facts`
+        new_facts = self.collect_fact_nodes(node_id,'lore')
 
-        k = 4  # Number of neighbors per node
-        nn = NearestNeighbors(n_neighbors=k, metric='cosine')
-        nn.fit(reduced_embeddings)
-        adjacency_matrix = nn.kneighbors_graph(reduced_embeddings).toarray()
+        # Generate `fact` embeddings 
+        all_facts_text = old_facts + [self.get_node_name(fact_node) for fact_node in new_facts]
 
-        # 5. Convert adjacency matrix to a NetworkX Graph
-        graph = nx.from_numpy_array(adjacency_matrix)
-
-        # 6. Apply Graph-Based Community Detection (Louvain Algorithm)
-        # This partitions the graph into tightly knit communities (clusters)
-        communities = nx.community.louvain_communities(graph, seed=42)
-
-        # 7. Map clusters back to the original texts
         output = []
-        for cluster_id, community in enumerate(communities):
-            output.append([self.dataset['node_id'][rows[node_idx]] for node_idx in community])
+        if(len(all_facts_text)>5):
+            print(all_facts_text)
+            embeddings = self.embed_text(all_facts_text) # This may not work.
+            #embeddings = torch.stack([torch.tensor(self.dataset['embeddings'][idx]) for idx in rows])
+            print(embeddings.shape)
+
+            reduced_embeddings = umap_reducer.fit_transform(embeddings)
+
+            k = 3  # Number of neighbors per node
+            nn = NearestNeighbors(n_neighbors=k, metric='cosine')
+            nn.fit(reduced_embeddings)
+            adjacency_matrix = nn.kneighbors_graph(reduced_embeddings).toarray()
+
+            # 5. Convert adjacency matrix to a NetworkX Graph
+            graph = nx.from_numpy_array(adjacency_matrix)
+
+            # 6. Apply Graph-Based Community Detection (Louvain Algorithm)
+            # This partitions the graph into tightly knit communities (clusters)
+            communities = nx.community.louvain_communities(graph, seed=42)
+
+            # 7. Map clusters back to the original texts
+            for cluster_id, community in enumerate(communities):
+                output.append([all_facts_text[node_idx] for node_idx in community])
 
         return output
 
@@ -1338,6 +1413,8 @@ class DatastoreUtilities():
                 if(score>threshold):
                     logging_info.append((examples['node_id'][idx],score,examples['text'][idx]))
                     similar_nodes.append(examples['node_id'][idx])
+
+        similar_nodes += [self.get_node_id(match) for match in self.find_topic_mentions(query) if match]
 
         print('similar_nodes : ',similar_nodes)
 
@@ -1529,41 +1606,38 @@ class DatastoreUtilities():
         # target_edges : list((head,tail,key))
 
         # Create a subgraph with the target nodes and target edges
+        marker_size = 20
 
         if(focus_on==None):
             focus_on = dict()
             focus_on['nodes'] = []
             focus_on['edges'] = []
 
+        focus_on['nodes'] += target_nodes
         all_neighbors = []
         for node in target_nodes:
-            all_neighbors += self.knowledge_graph.neighbors(node)
+            if(self.get_node_layer(node)=='topic'):
+                all_neighbors += self.knowledge_graph.neighbors(node)
+            else:
+                relevant_topics = self.get_related_topics(node)
+                for topic in relevant_topics:
+                    if(self.knowledge_graph.nodes[topic]['type']=='unique'):
+                        all_neighbors += self.knowledge_graph.neighbors(topic)
 
         all_neighbors = list(set(all_neighbors))
+        #all_neighbors = []
 
-        all_neighbors = []
         G = self.knowledge_graph.subgraph(target_nodes+all_neighbors).copy()
         # 2. Extract the edge-induced subgraph
 
-        if(add_edges):
-            if(target_edges):
-                G = G.edge_subgraph(target_edges)
-            else:
-                target_edges = []
-                for node in target_nodes:
-                    target_edges += [(node,neighbor) for neighbor in self.knowledge_graph.neighbors(node) if self.get_node_layer(neighbor)==layer] 
-
-                target_edges = list(set(target_edges))
-
         if(layer=='plot'):
-            pos = nx.planar_layout(G)
+            pos = nx.kamada_kawai_layout(G)
         elif(layer=='topic'):
-            pos = nx.spring_layout(G)
+            pos = nx.kamada_kawai_layout(G)
         elif(layer=='lore'):
-            pos = nx.spring_layout(G)
+            pos = nx.kamada_kawai_layout(G)
         else:
             pos = nx.kamada_kawai_layout(G)
-
 
         # 2. Extract unique edges and aggregate data
         focus_edge_x, focus_edge_y = [], []
@@ -1585,9 +1659,16 @@ class DatastoreUtilities():
 
                 endpoints.append((u,v))
 
-                if(u in target_nodes and v in target_nodes):
-                    x0, y0 = pos[u]
-                    x1, y1 = pos[v]
+                x0, y0 = pos[u]
+                x1, y1 = pos[v]
+
+                u_pos = (x0*(self.fig_width),y0*(self.fig_height))
+                v_pos = (x1*(self.fig_width),y1*(self.fig_height))
+
+                standoff_value = math.dist(u_pos,v_pos)
+
+
+                if(u in target_nodes or v in target_nodes):
 
                     label = self.knowledge_graph.edges[u,v]['label']
                     print(u,v,label)
@@ -1604,52 +1685,30 @@ class DatastoreUtilities():
                     else:
                         pair_text = []
 
-                    if((u,v) in focus_on['edges']):
-
-                        focus_edge_x.extend([x0, x1, None])
-                        focus_edge_y.extend([y0, y1, None])
-                        # Add arrowhead annotation for primary target edges
-                        annotations.append(
-                            dict(
-                                x=(x1+x0)/2, y=(y1+y0)/2,      # Arrow head target
-                                ax=x0, ay=y0,    # Arrow tail start
-                                xref="x", yref="y",
-                                axref="x", ayref="y",
-                                showarrow=True,
-                                arrowhead=2,     # Style of arrowhead (1 to 8)
-                                arrowsize=1.8,   # Size multiplier
-                                arrowwidth=3.5,  # Line width matching edge trace
-                                arrowcolor="#d50e11"# Match your primary edge color
-                            )
+                    focus_edge_x.extend([x0, x1, None])
+                    focus_edge_y.extend([y0, y1, None])
+                    # Add arrowhead annotation for primary target edges
+                    annotations.append(
+                        dict(
+                            x=x1, y=y1,      # Arrow head target
+                            ax=x0, ay=y0,    # Arrow tail start
+                            xref="x", yref="y",
+                            axref="x", ayref="y",
+                            showarrow=True,
+                            arrowhead=2,     # Style of arrowhead (1 to 8)
+                            arrowsize=1.0,   # Size multiplier
+                            arrowwidth=2.2,  # Line width matching edge trace
+                            arrowcolor='red',
+                            standoff = standoff_value
                         )
-                    else:
-
-                        edge_x.extend([x0, x1, None])
-                        edge_y.extend([y0, y1, None])
-                        # Add arrowhead annotation for primary target edges
-                        annotations.append(
-                            dict(
-                                x=(x1+x0)/2, y=(y1+y0)/2,      # Arrow head target
-                                ax=x0, ay=y0,    # Arrow tail start
-                                xref="x", yref="y",
-                                axref="x", ayref="y",
-                                showarrow=True,
-                                arrowhead=2,     # Style of arrowhead (1 to 8)
-                                arrowsize=1.2,   # Size multiplier
-                                arrowwidth=2.0,  # Line width matching edge trace
-                                arrowcolor=arrow_color# Match your primary edge color
-                            )
                         )
-
+                    
                     # Midpoint coordinates for edge hover triggering
                     if(not(u==v)):
                         mid_x.append((x0 + x1) / 2)
                         mid_y.append((y0 + y1) / 2)
                         edge_text.append("<br>".join([text for text in pair_text]))
                 else:
-                    x0, y0 = pos[u]
-                    x1, y1 = pos[v]
-
                     other_edge_x.extend([x0, x1, None])
                     other_edge_y.extend([y0, y1, None])
 
@@ -1664,7 +1723,8 @@ class DatastoreUtilities():
                             arrowhead=2,
                             arrowsize=0.8,
                             arrowwidth=2.0,
-                            arrowcolor="#666" # Match your secondary edge color
+                            arrowcolor="#EEE", # Match your secondary edge color
+                            standoff = standoff_value
                         )
                     )
 
@@ -1674,8 +1734,7 @@ class DatastoreUtilities():
           y=focus_edge_y,
           line=dict(width=3.0, color="#d50e11"),
           hoverinfo="none",
-          mode="lines",
-          zorder=0
+          mode="lines"
         )
 
         edge_trace = go.Scatter(
@@ -1683,17 +1742,15 @@ class DatastoreUtilities():
           y=edge_y,
           line=dict(width=2.0, color="#EEE"),
           hoverinfo="none",
-          mode="lines",
-          zorder=0
+          mode="lines"
         )
 
         other_edge_trace = go.Scatter(
           x=other_edge_x,
           y=other_edge_y,
-          line=dict(width=2.0, color="#666"),
+          line=dict(width=2.0, color="#EEE"),
           hoverinfo="none",
-          mode="lines",
-          zorder=0
+          mode="lines"
         )
 
         # Transparent marker trace placed at midpoints to capture edge hover events
@@ -1704,7 +1761,6 @@ class DatastoreUtilities():
           hoverinfo="text",
           text=edge_text,
           marker=dict(opacity=0, size=20),  # Invisible, but sized to easily catch the mouse
-          zorder=0
         )
 
         # 4. Extract node coordinates and attributes for Plotly markers
@@ -1714,6 +1770,8 @@ class DatastoreUtilities():
         node_ids = []
         node_labels = []
         node_colors = []
+        border_widths = []
+        border_colors = []
         for node in G.nodes(data=True):
             x, y = pos[node[0]]
             node_x.append(x)
@@ -1724,27 +1782,31 @@ class DatastoreUtilities():
             node_ids.append(node[0])
 
             if(len(focus_on['nodes'])>0):
+
                 if(node[0] in focus_on['nodes']):
-                    node_colors.append("#d50e11")
-                    node_labels.append("")
-                elif(node[0] in target_nodes):
-                    node_colors.append("#EEE")
-                    node_labels.append("")
+                    border_widths.append(5)
+                    border_colors.append('red')
                 else:
-                    node_colors.append("#333")
-                    node_labels.append("")
+                    border_widths.append(0)
+                    border_colors.append("#444444")
             else:
+                border_widths.append(0)
+                border_colors.append("#444444")
                 # Color code based on layer
-                layer = self.get_node_layer(node[0])
-                if(layer=='topic'):
-                    node_colors.append("#EEE")
-                    node_labels.append("")
-                elif(layer=='plot'):
-                    node_colors.append("#5a7c66")
-                    node_labels.append("")
-                elif(layer=='lore'):
-                    node_colors.append("#a77846")
-                    node_labels.append("")
+
+            layer = self.get_node_layer(node[0])
+            if(layer=='topic'):
+                node_colors.append("#EEE")
+                node_labels.append("")
+            elif(layer=='plot'):
+                node_colors.append("#5a7c66")
+                node_labels.append("")
+            elif(layer=='lore'):
+                node_colors.append("#a77846")
+                node_labels.append("")
+            else:
+                node_colors.append("#a77846")
+                node_labels.append("")
 
 
 
@@ -1758,14 +1820,17 @@ class DatastoreUtilities():
           text=node_labels,
           textfont=dict(
                 color="#EEE",  
-                size=12,  
+                size=marker_size,  
                 family=('system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif')
             ),
           marker=dict(
                 showscale=False,
                 color="#EEE",
-                size=30),
-          zorder=5
+                line = dict(
+                        width = border_widths,
+                        color = border_colors
+                    ),
+                size=30)
         )
 
         node_trace.marker.color = node_colors
@@ -1818,7 +1883,10 @@ class DatastoreUtilities():
           ),
         )
 
-        fig.update_annotations(startstandoff=12)
+        fig.update_annotations(startstandoff=marker_size)
         fig.add_trace(node_trace)
         return fig
+
+
+
 

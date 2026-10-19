@@ -52,6 +52,15 @@ class NodeSummary(BaseModel):
     category: Literal[tuple(entity_categories)] = Field(description="The category of the given topic.")
     summary: str = Field(description="A summary of the of the information related to the specified topic.")
 
+# Lore Cluster Theme Schema
+
+class ClusterDescription(BaseModel):
+    summary: str = Field(description="Summary of a description.")
+    theme: str = Field(description="Theme of a descriptions.")
+
+class ClusterThemes(BaseModel):
+    description_summaries: conlist(ClusterDescription) = Field(description="Summaries and themes of each of the descriptions.")
+
 # Entity Relationship Schema
 class RelationshipCategory(BaseModel):
     category: Literal[tuple(relation_categories)] = Field(description="The category of the relationship between head and tail.")
