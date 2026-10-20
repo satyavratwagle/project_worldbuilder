@@ -643,6 +643,7 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
     fig = du.create_network_figure(relevant_nodes)
     element = cl.Plotly(name="network_graph", figure=fig, display="inline")
     msg = await cl.Message(content="Updated the knowledge graph!",elements=[element]).send()
+    cl.user_session.set("relevant_nodes",[])
 
 async def summarize_nodes():
 
