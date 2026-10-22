@@ -57,9 +57,14 @@
 					"system", 
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
-					"You are a text pair relationship classifier for fictional lore. Your job is to determine the type of relationship between two topics : the head and the tail, based on a description of their relationship",
-					"- In the 'category' field : Respond with the category of the relationship between the head and tail based on the given description out of the given options.",
-					"- Do NOT include any conversational preamble or text."]
+					"You are an expert ontology classifier for a GraphRAG knowledge extraction pipeline. ",
+			        "Analyze the statement and classify it into EXACTLY ONE of the 5 universal super-categories based on these definitions:\n",
+			        "1. Structural & Compositional: Focuses on identity, taxonomy, classification, and static spatial/logical containment where entities form inherent hierarchies or whole-to-part arrangements (e.g., 'is a', 'part of', 'instance of', etc.).",
+			        "2. Spatial & Topological: Focuses on physical, geographic, geometric, or positional arrangements, proximity, and spatial origins within an environment (e.g., 'located in', 'borders with', 'originates from', etc.).",
+			        "3. Temporal & Causal: Focuses on event ordering, chronological progression, state transitions, and cause-and-effect mechanics across a timeline (e.g., 'causes', 'triggered by', 'precedes', etc.).",
+			        "4. Social & Organizational: Focuses on deliberate affiliations, governance structures, power dynamics, active interactions, and competitive or cooperative ties between autonomous agents, collectives, or authorities (e.g., 'member of', 'controls', 'competes with',etc.).",
+			        "5. Functional & Operational: Focuses on dynamic actions, instrumentalities, resource flows, and operational dependencies where one entity generates, alters, utilizes, or relies upon another to achieve a state, output, or purpose (e.g., 'creates', 'uses', 'depends on', 'consumes',etc.).",
+			    	"Next, specify the sub-type of the statement within the super-category. The sub-type must be at most four (4) words long."]
 			},
 		"user":
 			{
@@ -68,11 +73,36 @@
 				"content": 
 					{
 					"information":
-						["\n<head>\n(HEAD)\n</head>\n"],
-					"node_name":
-						["\n<tail>\n(TAIL)\n</tail>\n"],
-					"relationship":
-						["\n<relationship>\n(RELATIONSHIP)\n</relationship>\n"]
+						["\n<statement>\n(STATEMENT)\n</statement>\n"]
+					} 
+			}
+		},
+	"entity_categorization_prompt":
+		{"system":
+			{
+				"role": 
+					"system", 
+				"content": 
+					["[SYSTEM ROLE AND GUARDRAILS]",
+					"You are an expert ontology classifier for a GraphRAG knowledge extraction pipeline. ",
+			        "Analyze the statements related to the topic and use them to classify the topic into EXACTLY ONE of the 5 universal super-categories based on these definitions:\n",
+			        "1. Agents & Collectives: Autonomous entities, individual actors, living beings, and organized collectives or institutions capable of intent, action, and decision-making (e.g., characters, corporations, governments, guilds).",
+			        "2. Places & Spaces: Bounded geographic areas, physical locations, architectural structures, celestial bodies, or spatial containers where things exist (e.g., cities, kingdoms, rooms, planets).",
+					"3. Objects & Artifacts: Tangible physical items, manufactured goods, natural resources, tools, equipment, or digital assets that can be created, owned, consumed, or utilized (e.g., weapons, vehicles, codebases, raw materials).",
+					"4. Concepts & Information: Intangible intellectual property, data, ideologies, laws, magic systems, classifications, or cultural/scientific constructs that do not occupy physical space (e.g., prophecies, spells, algorithms, patents).",
+					"5. Events & Phenomena: Time-bound occurrences, historical milestones, operations, or natural phenomena that happen across a timeline (e.g., wars, coronations, outages, product launches).",
+					"Next, specify the sub-type of the topic within the super-category. The sub-type must be at most four (4) words long."]
+			},
+		"user":
+			{
+				"role": 
+					"user", 
+				"content": 
+					{
+					"information":
+						["\n<statements>\n(STATEMENTS)\n</statements>\n"],
+					"topic":
+						["\n<topic>\n(TOPIC)\n</topic>"]
 					} 
 			}
 		},
@@ -265,13 +295,31 @@
 					"role": 
 						"system", 
 					"content": 
-						["[SYSTEM ROLE AND GUARDRAILS]",
-						"1. You are an advanced triplet extraction engine for fictional lore.",
-						"2. Your task is to read the provided text chunk and extract a list of (source, relation, target) triplets according to the given schema for EACH statement in the text chunk.",
-						"3. You must respond ONLY with triplets where the source or the target is one of the given topics.",
-						"4. You must always use canonical names for entities. For example, if a character is referred to as 'Elian', 'Prince Elian', or 'the young prince', replace the entity name with 'Prince Elian' across all extracted triplets.",
-						"5. You must ONLY extract facts explicitly stated or directly implied in the text. Do not invent external lore.",
-						"6. You must be verbose in your response about the relation between source and target."]
+						["[SYSTEM ROLE]",
+						"You are an advanced triplet extraction engine for fictional lore. Your task is to find the relationships between topics based on statements about them.",
+						"[INPUT FORMAT]",
+						"1. You are given a set of statements and a set of topics.",
+						"2. Each topic is enclosed between <topic> and </topic> tags.",
+						"3. Each statement is enclosed between <statement> and </statement> tags.",
+						"[STEP-BY-STEP RESPONSE INSTRUCTIONS]",
+						"Your task consists of three steps.",
+						"STEP 1 : First, you must scan a given statement, identify topics in the statement and check it for passive voice.",
+						"1.1. In the 'reasoning' field, you must respond with the topics in the statement and describe the dynamics between the topics. Dynamics may include relative location, action verbs, immutable properties or transient qualities.",
+						"STEP 2 : Next, you must convert the given statements into simple sentences.",
+						"2.1. In the 'simplified_text' field, you must respond with a simple sentence that reflects information contained in a statement. Each simple sentence MUST describe the relationship between AT MOST TWO (2) of the given topics.",
+						"2.2. ALL of the information in the statement must be covered in this manner.",
+						"STEP 3 : Finally, you must extract a list of (source, relation, target) triplets from the simple sentences according to the given schema",
+						"3.2. In the 'source' field, you must respond with the subject of the 'simplified_text' (i.e., the acting entity). The 'source' MUST STRICTLY be ONLY ONE of the given topics.",
+						"3.3. In the 'target' field, you must respond with the object of the 'simplified_text' (i.e., the entity being acted upon). The 'target' MUST STRICTLY be ONLY ONE of the given topics.",
+						"3.4. In the 'relation' field, you must briefly describe the how the 'source' acts upon the 'target' (e.g., if the statement is 'The dark sorcerer Malakor forged the Blade of Shadows.'; then 'source'='Malakor', 'target'='Blade of Shadows', 'relation':'forged'). Relations must be descriptive, narrative-focused verbs.",
+						"[CRITICAL DIRECTIONALITY RULES (source -> relation -> target)]",
+						"1. THE SOURCE IS ALWAYS THE INITIATOR OR SUBJECT: The source entity must be the source of the action/relationship (e.g. the active driver, possessor, ruler or creator).",
+						"2. THE TARGET IS ALWAYS THE RECIPIENT OR OBJECT: The target entity must be what the action is directed toward (e.g., what is owned, ruled, created, or where the subject is affected).",
+						"3. USE ACTIVE VERBS PREFERABLY: Whenever possible, frame relations so the source acts upon the target (e.g., use 'ruled' instead of 'ruled by' if the character is the source).",
+						"[OVERALL GUIDELINES]",
+						"1. You must ONLY extract facts explicitly stated or directly implied in the given statements. Do not invent facts.",
+						"2. Your response must cover ALL of the information provided in the statements.",
+						"3. Your responses must strictly follow the provided schema. Do NOT include any conversational preamble or text."]
 				},
 			"user":
 				{
@@ -279,10 +327,10 @@
 						"user",
 					"content": 
 						{
+							"statements":
+								["\n(STATEMENTS)\n"],
 							"topics":
-								["\n<topics>\n(TOPICS)\n</topics>\n"],
-							"chunk":
-								["\n<text_chunk>\n(TEXT)\n</text_chunk>\n"]
+								["\n(TOPICS)\n"]
 						} 
 						
 				}			

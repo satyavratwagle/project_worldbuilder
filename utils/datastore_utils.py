@@ -23,6 +23,7 @@ import umap
 from sklearn.neighbors import NearestNeighbors
 import ahocorasick
 import math
+import base64
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 '''
@@ -34,9 +35,6 @@ def _patched_getattr(self, name):
 
 torch.nn.Module.__getattr__ = _patched_getattr
 '''
-
-allowed_layers = ['topic','lore','plot','fact']
-allowed_edge_labels = ['relationship','involvement','scene','description','info']
 
 def uppercase(text):
     return text[0].upper()+text[1:]
@@ -52,31 +50,56 @@ def slugify_key(text: str) -> str:
     # Strip leading/trailing underscores
     return text.strip('_')
 
-def id_to_code(n):
+# Generating alphanumeric node ids
+ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
-    n = int(n)
+def get_code(text: str) -> str:
+  byte_data = text.encode("utf-8")
 
-    result = ""
-    while n > 0:
-        n, remainder = divmod(n - 1, 26)
-        result = chr(65 + remainder) + result
+  # Count leading zero bytes to preserve them during conversion
+  leading_zeros = 0
+  for byte in byte_data:
+    if byte == 0:
+      leading_zeros += 1
+    else:
+      break
 
-    return result
+  # Convert bytes to a massive integer
+  num = int.from_bytes(byte_data, "big")
+  if num == 0:
+    return ALPHABET[0] * max(1, leading_zeros)
 
-def code_to_id(code):
+  # Convert integer to Base62
+  res = []
+  while num > 0:
+    num, rem = divmod(num, 62)
+    res.append(ALPHABET[rem])
 
-    letters = code
+  encoded = "".join(reversed(res))
+  # Prefix leading zeros back into the string representation
+  return (ALPHABET[0] * leading_zeros) + encoded
 
-    idx = len(code)-1
-    value = 0
-    for letter in letters:
+def get_name(encoded_str: str) -> str:
+  # Count leading '0' characters
+  leading_zeros = 0
+  for char in encoded_str:
+    if char == ALPHABET[0]:
+      leading_zeros += 1
+    else:
+      break
 
-        
-        adding = ord(letter)-65
-        value += (adding+1)*(26**idx)
-        idx-=1
+  # Convert Base62 string back to an integer
+  num = 0
+  for char in encoded_str:
+    num = num * 62 + ALPHABET.index(char)
 
-    return value
+  if num == 0:
+    byte_data = b"\x00" * leading_zeros
+  else:
+    byte_len = (num.bit_length() + 7) // 8
+    byte_data = (b"\x00" * leading_zeros) + num.to_bytes(byte_len, "big")
+
+  return byte_data.decode("utf-8")
 
 def generate_alphanumeric_code(length=4):
     # Combine ascii letters (a-z, A-Z) and digits (0-9)
@@ -137,10 +160,7 @@ class DatastoreUtilities():
         if(os.path.exists(f"{self.knowledge_graph_path}.gml")):
             self.knowledge_graph = nx.read_gml(f"{self.knowledge_graph_path}.gml")
         else:
-            self.knowledge_graph = nx.DiGraph()
-
-            for layer in allowed_layers:
-                self.knowledge_graph.graph[f'{layer}_idx'] = 0
+            self.knowledge_graph = nx.MultiDiGraph()
             nx.write_gml(self.knowledge_graph, f"{self.knowledge_graph_path}.gml")
 
         print(f"Loaded Graph Version : {self.knowledge_graph_path} : {self.knowledge_graph}")
@@ -208,22 +228,21 @@ class DatastoreUtilities():
         return self.knowledge_graph.nodes[node_id]['metadata']['aliases']
 
     def reload_lookups(self):
-        topic_nodes = list(filter(lambda node:node[1]['layer']=='topic',self.knowledge_graph.nodes(data=True)))
-        descriptive_nodes = list(filter(lambda node:not(node[1]['layer']=='topic'),self.knowledge_graph.nodes(data=True)))
+        topic_nodes = list(filter(lambda node:'aliases' in node[1]['metadata'].keys(),self.knowledge_graph.nodes(data=True)))
 
         # Lookups for Topic nodes
         self.all_aliases = sorted([alias for node in topic_nodes for alias in node[1]['metadata']['aliases']],key=len,reverse=True)
         self.alias_pattern = rf"\b({'|'.join(re.escape(alias) for alias in self.all_aliases)})\b"
         self.node_finder = re.compile(self.alias_pattern, flags=re.IGNORECASE)
-        self.node_lookup = {alias:node[0] for node in topic_nodes for alias in node[1]['metadata']['aliases']} | {node[1]['desc']:node[0] for node in descriptive_nodes}
-        self.inverse_lookup = {alias:node[1]['desc'] for node in topic_nodes for alias in node[1]['metadata']['aliases']}
+        self.node_lookup = {alias:node[0] for node in topic_nodes for alias in node[1]['metadata']['aliases']}
+        self.inverse_lookup = {alias:node[1]['text'] for node in topic_nodes for alias in node[1]['metadata']['aliases']}
 
         # Initialize ahocorasic automaton for mention detection
         self.topic_finder = ahocorasick.Automaton()
 
         for topic in topic_nodes:
             for alias in self.knowledge_graph.nodes[topic[0]]['metadata']['aliases']:
-                self.topic_finder.add_word(alias.lower(), (self.knowledge_graph.nodes[topic[0]]['desc'], alias))
+                self.topic_finder.add_word(alias.lower(), (self.knowledge_graph.nodes[topic[0]]['text'], alias))
                 
         # Compile the automaton for lightning-fast multi-pattern searching
         self.topic_finder.make_automaton()
@@ -233,9 +252,9 @@ class DatastoreUtilities():
 
         alias_dict = dict()
         for node in nodes_in_text:
-            alias_dict[node['desc']] = dict()
-            alias_dict[node['desc']]['type'] = node['type']
-            alias_dict[node['desc']]['aliases'] = node['metadata']['aliases']
+            alias_dict[node['text']] = dict()
+            alias_dict[node['text']]['type'] = node['type']
+            alias_dict[node['text']]['aliases'] = node['metadata']['aliases']
 
         return alias_dict
 
@@ -248,10 +267,10 @@ class DatastoreUtilities():
 
         node_documents = []
         for node in nodes_to_add:
-            assert not(node[1]['layer']=='topic'), f"Node {node[1]['desc']} of type {node[1]['layer']} cannot be added to the dataset!"
+            assert not(node[1]['layer']=='topic'), f"Node {node[1]['text']} of type {node[1]['layer']} cannot be added to the dataset!"
             node_documents.append({
                                 'node_id':node[0],
-                                'text':node[1]['desc'],
+                                'text':node[1]['text'],
                                 'layer':node[1]['layer'],
                                 'type':node[1]['type'],
                             })
@@ -395,187 +414,177 @@ class DatastoreUtilities():
 
     # EDGE FUNCTIONS
 
-    def add_edge(self,head,tail,label):
+    def add_edge(self,head,tail,type,tag,text):
         # Add an edge to the graph
         # Keep edges as light as possible
 
         # Check if the labels and heads and tails match up
-        assert label in allowed_edge_labels, f"Label must be one of {allowed_edge_labels}, but got '{label}'"
+        #assert label in allowed_edge_labels, f"Label must be one of {allowed_edge_labels}, but got '{label}'"
         assert self.get_node_id(head) in self.knowledge_graph.nodes(), f"Head node '{head}' not found in knowledge graph!"
         assert self.get_node_id(tail) in self.knowledge_graph.nodes(), f"Tail node '{tail}' not found in knowledge graph!"
-        if(label=='relationship'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='topic'), f"Node type mismatch for 'relationship' type edge! expected head='topic' and tail='topic'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
-        if(label=='involvement'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='plot'), f"Node type mismatch for 'involvement' type edge! expected head='topic' and tail='plot'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
-        if(label=='description'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='lore'), f"Node type mismatch for 'description' type edge! expected head='topic' and tail='lore'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
-        if(label=='scene'): assert (self.get_node_layer(head)=='plot' and self.get_node_layer(tail)=='plot'), f"Node type mismatch for 'scene' type edge! expected head='plot' and tail='plot'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
-        if(label=='info'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='fact'), f"Node type mismatch for 'info' type edge! expected head='topic' and tail='fact'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
+        #if(label=='relationship'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='topic'), f"Node type mismatch for 'relationship' type edge! expected head='topic' and tail='topic'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
+        #if(label=='involvement'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='plot'), f"Node type mismatch for 'involvement' type edge! expected head='topic' and tail='plot'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
+        #if(label=='description'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='lore'), f"Node type mismatch for 'description' type edge! expected head='topic' and tail='lore'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
+        #if(label=='scene'): assert (self.get_node_layer(head)=='plot' and self.get_node_layer(tail)=='plot'), f"Node type mismatch for 'scene' type edge! expected head='plot' and tail='plot'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
+        #if(label=='info'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='fact'), f"Node type mismatch for 'info' type edge! expected head='topic' and tail='fact'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
 
         time_now = int(time.time())
 
-        if(self.knowledge_graph.has_edge(self.get_node_id(head),self.get_node_id(tail))):
-            print(f"Edge already exists between '{self.get_node_name(head)}' and '{self.get_node_name(tail)}'")
-            return None
-        else:
-            self.knowledge_graph.add_edge(  self.get_node_id(head),
+        # Check if similar edge already exists.
+        key = self.knowledge_graph.add_edge(self.get_node_id(head),
                                             self.get_node_id(tail),
-                                            label=label.lower(),
+                                            type=type,
+                                            tag=tag,
+                                            text=text,
                                             updated=time_now)
 
-            print(f"ADDED NEW EDGE BETWEEN '{self.get_node_name(head)}' and '{self.get_node_name(tail)}'!!")
+        print(f"ADDED NEW EDGE BETWEEN '{self.get_node_name(head)}' and '{self.get_node_name(tail)}' with key {key}!!")
 
-            return (self.get_node_id(head),self.get_node_id(tail),self.knowledge_graph.edges[self.get_node_id(head),self.get_node_id(tail)])
+        return (self.get_node_id(head),self.get_node_id(tail),key)
 
-    def remove_edge(self,head,tail):
+    def remove_edge(self,head,tail,type=None,tag=None):
         head_id = self.get_node_id(head)
         tail_id = self.get_node_id(tail)
+
+
         if(self.knowledge_graph.has_edge(head_id,tail_id)):
-            edge_data = self.knowledge_graph.edges[head_id,tail_id]
-            self.knowledge_graph.remove_edge(head_id,tail_id)
-            return edge_data
+            edge_data = self.knowledge_graph.get_edge_data(head_id,tail_id)
+            removed_edges = dict()
+
+            if(type):
+                if(tag):
+                    # Remove all edges with type and tag
+                    keys_to_remove = [key for key in edge_data.keys() if edge_data[key]['type']==type and edge_data[key]['tag']==tag]
+                else:
+                    # Remove all edges with type
+                    keys_to_remove = [key for key in edge_data.keys() if edge_data[key]['type']==type]
+            else:
+                # Remove all edges
+                keys_to_remove = [key for key in edge_data.keys()]
+
+            print(f"Removing edges between {self.get_node_name(head_id)} and {self.get_node_name(tail_id)} with keys {keys_to_remove}")
+            for key in keys_to_remove:
+                removed_edges[key] = (head_id,tail_id,self.knowledge_graph.edges[head_id,tail_id,key]['text'])
+                self.knowledge_graph.remove_edge(head_id,tail_id,key)
+
+            return removed_edges
         else:
-            return None
-
-    def update_edge_label(self,head,tail,label):
-
-        # Check if the labels and heads and tails match up
-        assert label in allowed_edge_labels, f"Label must be one of {allowed_edge_labels}, but got '{label}'"
-        assert self.get_node_id(head) in self.knowledge_graph.nodes(), f"Head node '{head}' not found in knowledge graph!"
-        assert self.get_node_id(tail) in self.knowledge_graph.nodes(), f"Tail node '{tail}' not found in knowledge graph!"
-        if(label=='relationship'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='topic'), f"Node type mismatch for 'relationship' type edge! expected head='topic' and tail='topic'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
-        if(label=='involvement'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='plot'), f"Node type mismatch for 'involvement' type edge! expected head='topic' and tail='plot'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
-        if(label=='description'): assert (self.get_node_layer(head)=='topic' and self.get_node_layer(tail)=='lore'), f"Node type mismatch for 'description' type edge! expected head='topic' and tail='lore'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
-        if(label=='scene'): assert (self.get_node_layer(head)=='plot' and self.get_node_layer(tail)=='plot'), f"Node type mismatch for 'scene' type edge! expected head='plot' and tail='plot'. Got head='{self.get_node_layer(head)}' and tail='{self.get_node_layer(tail)}'"
-        assert self.knowledge_graph.has_edge(self.get_node_id(head),self.get_node_id(tail)), f"No edge exists between {head} and {tail}!"
-
-        print(f"Updated edge between {head} and {tail} from '{self.knowledge_graph.edges[head,tail]['label']}' to '{label}'!")
-        self.knowledge_graph.edges[head,tail]['label'] = label
-        self.knowledge_graph.edges[head,tail]['updated'] = int(time.time())
+            return dict()
 
     # NODE FUNCTIONS
 
     # Create and Delete functions
-    def add_node(self,node_name,layer,type="misc",**metadata):
+    def add_node(self,node_name,type,tag,**metadata):
         # NOTE : Aliases needed for relevant topic retrieval
-        layer = layer.lower()
-        assert layer in allowed_layers
-
+        
         # Check if the node exists in the graph (Mostly useful for `topic` nodes)
-        if(not(node_name in self.node_lookup.keys()) and not(node_name in self.knowledge_graph.nodes())):
 
-            # If the node is 'lore' or 'plot', resolve any preliminary aliases.
+        node_id = None
+        if(not(self.get_node_id(node_name))):
+
             node_name,_ = self.resolve_aliases(node_name)
 
             # Create a new node if knowledge graph does not exist
-            node_id = f"{layer.lower()}_{self.knowledge_graph.graph[f"{layer}_idx"]}"
+            node_id = get_code(node_name)
 
             self.knowledge_graph.add_node(node_id,
-                                            updated=int(time.time()),
-                                            desc=node_name,
-                                            layer=layer,
-                                            type=type,
-                                            metadata=dict())
+                                        updated=int(time.time()),
+                                        text=node_name,
+                                        type=type,
+                                        tags=[tag],
+                                        metadata=dict())
 
-            self.add_metadata(node_id,**metadata)
+            if(metadata):
+                if('aliases' in metadata.keys()):
+                    metadata['aliases'].append(node_name)
+                    metadata['aliases'] = list(set(metadata['aliases']))
+                else:
+                    metadata['aliases'] = node_name
+            else:
+                metadata = dict()        
+                metadata['aliases'] = node_name
 
-            print(f"Added node {node_id} ({self.get_node_layer(node_id)}) : {self.get_node_name(node_id)}!")
-            self.knowledge_graph.graph[f"{layer}_idx"] += 1
+            self.add_metadata(node_id,metadata)
 
-        # If the node exists, but does not exist in the correct layer
-        elif(not(self.get_node_layer(node_name)==layer)):
-            # If the node is 'lore' or 'plot', resolve any preliminary aliases.
-            node_name,_ = self.resolve_aliases(node_name)
-            node_id = f"{layer.lower()}_{self.knowledge_graph.graph[f"{layer}_idx"]}"
-
-            
-            self.knowledge_graph.add_node(node_id,
-                                            updated=int(time.time()),
-                                            desc=node_name,
-                                            layer=layer,
-                                            type=type,
-                                            metadata=dict())
-            self.add_metadata(node_id,**metadata)
-
-            print(f"Added node {node_id} ({self.get_node_layer(node_id)}) : {self.get_node_name(node_id)}!")
-            self.knowledge_graph.graph[f"{layer}_idx"] += 1
-
-        # If the node already exists in the right layer, just add the metadata
+            print(f"Added node [{node_id}] {self.get_node_name(node_id)} --> {type} : {tag}!")
         else:
             node_id = self.get_node_id(node_name)
-            self.add_metadata(node_id,**metadata)
+            self.add_metadata(node_id,metadata,replace=False)
+            self.knowledge_graph.nodes[node_id]['tags'].append(tag)
+            print(f"Node already exists! Updated Node : {self.knowledge_graph.nodes[node_id]}")
+
+
 
         return node_id
-
-    def add_metadata(self,node_name,**metadata):
-        node_id = self.get_node_id(node_name)
-
-        # Create keys in node metadata if not already set (Useful in node creation)
-        if(self.get_node_layer(node_id)=='topic' and not('summary' in self.knowledge_graph.nodes[node_id]['metadata'].keys())):
-            self.knowledge_graph.nodes[node_id]['metadata']['summary'] = ""
-            self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'] = 0
-
-        if(self.get_node_layer(node_id)=='topic' and not('aliases' in self.knowledge_graph.nodes[node_id]['metadata'].keys())):
-            self.knowledge_graph.nodes[node_id]['metadata']['aliases'] = []
-
-        if(self.get_node_layer(node_id)=='lore' and not('facts' in self.knowledge_graph.nodes[node_id]['metadata'].keys())):
-            self.knowledge_graph.nodes[node_id]['metadata']['facts'] = []
-
-        # Add keys in new metadata
-        if('summary' in metadata.keys() and self.get_node_layer(node_id)=='topic'):
-            self.knowledge_graph.nodes[node_id]['metadata']['summary'] = metadata['summary']
-            self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'] = int(time.time())
-
-        if('aliases' in metadata.keys() and self.get_node_layer(node_id)=='topic'):    
-            if(not(node_name==node_id)):
-                metadata['aliases'] = list(set(metadata['aliases']+[node_name]))
-            self.knowledge_graph.nodes[node_id]['metadata']['aliases'] = list(set(self.knowledge_graph.nodes[node_id]['metadata']['aliases']+metadata['aliases']))
-            self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
-
-        if('facts' in metadata.keys() and self.get_node_layer(node_id)=='lore'):
-            self.knowledge_graph.nodes[node_id]['metadata']['facts'] += metadata['facts']
-
-        print(f"Added Metadata for [{node_id}] : {node_name} = {metadata}")
                 
     def remove_node(self,node):
         # Cleanly remove a node from the knowledge graph
+        node_id = self.get_node_id(node)
+        
+        if(node_id):
+            node_data = self.knowledge_graph.nodes[node_id]
 
-        if(node in self.node_lookup.keys() or node in self.knowledge_graph.nodes()):
-            node_id = self.get_node_id(node)
+            edges_to_remove = []
+            for edge in self.knowledge_graph.out_edges([node_id],data=True):
+                edges_to_remove.append((edge[0],edge[1],edge[2]))
+            for edge in self.knowledge_graph.in_edges([node_id],data=True):
+                edges_to_remove.append((edge[0],edge[1],edge[2]))
+
+            for head,tail,key in edges_to_remove:
+                # If head or tail is different, create a new edge that loops back to the head or tail that is not the node to be removed.
+
+                edge_type       = self.knowledge_graph.edges[head,tail,key]['type']
+                edge_tag    = self.knowledge_graph.edges[head,tail,key]['tag']
+                edge_text       = self.knowledge_graph.edges[head,tail,key]['text']
+                if(not(head==node_id)):
+                    self.add_edge(head,head,edge_type,edge_tag,edge_text)
+                if(not(tail==node_id)):
+                    self.add_edge(tail,tail,edge_type,edge_tag,edge_text)
+
+                self.knowledge_graph.remove_edge(head,tail,key)
+                print(f"Removed edge between {head} and {tail} with key {key} : {self.knowledge_graph.edges[head,tail,key]['text']}")
+
+            print(f"Removing node [{node_id}] ({self.get_node_name(node_id)})")
+            self.knowledge_graph.remove_node(node_id)
+
+            return node_data
         else:
-            node,_ = self.resolve_aliases(node)
-            node_id = self.get_node_id(node)
+            print(f"No node similar to {node} found!")
+            return None
 
-        node_data = self.knowledge_graph.nodes[node_id]
+    def add_metadata(self,node,metadata,replace=True):
 
-        # Heal the edges between its neighbors so that the graph stays continuous.
-        predecessors = self.knowledge_graph.predecessors(node_id)
-        successors = self.knowledge_graph.successors(node_id)
+        node_id = self.get_node_id(node)
 
-        # Connect each predecessor to each successor only if the edge type is the same. (Prevents crossing between node layers)
-        for successor in successors:
-            for predecessor in predecessors:
-                if(self.knowledge_graph.edges[node_id,successor]['label']==self.knowledge_graph.edges[predecessor,node_id]['label']):
-                    label = self.knowledge_graph.edges[predecessor,node_id]['label']
-                    self.add_edge(predecessor,successor,label)
+        if(replace):
+            for key in metadata.keys():
+                self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
+                print(f"Replaced Metadata : {key} = {self.knowledge_graph.nodes[node_id]['metadata'][key]}")
+        else:
+            # Make separate functions if metadata is a list or a dict
 
-        edges_to_remove = []
-        for edge in self.knowledge_graph.edges([node_id],data=True):
-            edges_to_remove.append((edge[0],edge[1]))
-            print(f"Removed edge between {edge[0]} and {edge[1]}")
-
-        for head,tail in edges_to_remove:
-            self.knowledge_graph.remove_edge(head,tail)
-
-        print(f"Removing node {node_id} ({self.get_node_layer(node_id)}) : {self.get_node_name(node_id)}!")
-        self.knowledge_graph.remove_node(node_id)
-
-        return node_data
+            # If list
+            for key in metadata.keys():
+                if(key in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
+                    self.knowledge_graph.nodes[node_id]['metadata'][key] += metadata[key]
+                else:
+                    self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
+                print(f"Added Metadata : {key} = {self.knowledge_graph.nodes[node_id]['metadata'][key]}")
 
     # Read functions
     def get_node_name(self,node_id):
-        return self.knowledge_graph.nodes[node_id]['desc']
+        if(node_id in self.knowledge_graph.nodes()):
+            return self.knowledge_graph.nodes[node_id]['text']
+        elif(get_code(node_id) in self.knowledge_graph.nodes()):
+            return self.knowledge_graph.nodes[get_code(node_id)]['text']
+        else:
+            return None
 
     def get_node_id(self,node_name):
 
-        if(node_name in self.knowledge_graph.nodes()):
+        if(get_code(node_name) in self.knowledge_graph.nodes()):
+            return get_code(node_name)
+        elif(node_name in self.knowledge_graph.nodes()):
             return node_name
         elif(node_name in self.node_lookup.keys()):
             return self.node_lookup[node_name]
@@ -594,7 +603,7 @@ class DatastoreUtilities():
         assert self.knowledge_graph.nodes[node_id]['layer']=='topic',f"{node_name} is not a valid topic node!"
 
         node = self.knowledge_graph.nodes[node_id]
-        return (node['desc'],node['metadata']['aliases'])
+        return (node['text'],node['metadata']['aliases'])
 
     def get_node_metadata(self,node_name,key):
 
@@ -726,7 +735,7 @@ class DatastoreUtilities():
         node_id = self.get_node_id(node)
 
         if(self.get_node_layer(node_id) in ['plot','lore']):
-            self.knowledge_graph.nodes[node_id]['desc'] = new_description
+            self.knowledge_graph.nodes[node_id]['text'] = new_description
             self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
         else:
             # If the node is a topic, update summary
@@ -799,7 +808,7 @@ class DatastoreUtilities():
 
         node = self.knowledge_graph.nodes[node_id]
 
-        mentioned_topics = [name for name in list(set(self.node_finder.findall(node['desc']))) if len(name)>0]
+        mentioned_topics = [name for name in list(set(self.node_finder.findall(node['text']))) if len(name)>0]
 
         new_edge = None
         for topic in mentioned_topics:
@@ -1217,7 +1226,7 @@ class DatastoreUtilities():
             
         lore_nodes = list(set(lore_nodes))
 
-        lore = [self.knowledge_graph.nodes[lore_node]['desc'] for lore_node in lore_nodes]
+        lore = [self.knowledge_graph.nodes[lore_node]['text'] for lore_node in lore_nodes]
 
         for lore_info in lore:
             print(lore_info)
@@ -1328,7 +1337,7 @@ class DatastoreUtilities():
             edge_data['head'] = edge[0]
             edge_data['tail'] = edge[1]
             edge_data['key'] = edge[2]
-            edge_data['text'] = edge[3]['desc']
+            edge_data['text'] = edge[3]['text']
             edges.append(edge_data)
         
         nodes = dict()
@@ -1432,9 +1441,9 @@ class DatastoreUtilities():
         if(add_code):
             for idx in range(len(paths)):
                 random.shuffle(paths[idx])
-            path_info = {str(idx):[f"[{node[0].capitalize()}{node[-1]}] : {self.knowledge_graph.nodes[node]['desc']}" for node in path] for idx,path in enumerate(paths)}
+            path_info = {str(idx):[f"[{node[0].capitalize()}{node[-1]}] : {self.knowledge_graph.nodes[node]['text']}" for node in path] for idx,path in enumerate(paths)}
         else:
-            path_info = {str(idx):[self.knowledge_graph.nodes[node]['desc'] for node in path] for idx,path in enumerate(paths)}
+            path_info = {str(idx):[self.knowledge_graph.nodes[node]['text'] for node in path] for idx,path in enumerate(paths)}
 
         all_path_nodes = []
         all_path_edges = []
@@ -1532,7 +1541,7 @@ class DatastoreUtilities():
         node_dict = dict()
         for node in nodes:
             nodecode = generate_alphanumeric_code()
-            info_dict[nodecode] = self.knowledge_graph.nodes[node]['desc']
+            info_dict[nodecode] = self.knowledge_graph.nodes[node]['text']
             node_dict[nodecode] = node
        
         context_to_reorder = self.format_for_reordering(info_dict)
@@ -1601,7 +1610,7 @@ class DatastoreUtilities():
             
         return context_text
 
-    def create_network_figure(self, target_nodes, target_edges=None, layer='plot', add_edges=True, focus_on = None):
+    def create_network_figure(self, target_nodes, target_edges=None, add_edges=True, focus_on = None):
         # target_nodes : list(node_ids)
         # target_edges : list((head,tail,key))
 
@@ -1616,29 +1625,18 @@ class DatastoreUtilities():
         focus_on['nodes'] += target_nodes
         all_neighbors = []
         for node in target_nodes:
-            if(self.get_node_layer(node)=='topic'):
-                all_neighbors += self.knowledge_graph.neighbors(node)
-            else:
-                relevant_topics = self.get_related_topics(node)
-                for topic in relevant_topics:
-                    if(self.knowledge_graph.nodes[topic]['type']=='unique'):
-                        all_neighbors += self.knowledge_graph.neighbors(topic)
-
+            all_neighbors += self.knowledge_graph.predecessors(node)
+            all_neighbors += self.knowledge_graph.successors(node)
+            
         all_neighbors = list(set(all_neighbors))
         #all_neighbors = []
 
         G = self.knowledge_graph.subgraph(target_nodes+all_neighbors).copy()
         # 2. Extract the edge-induced subgraph
 
-        if(layer=='plot'):
-            pos = nx.kamada_kawai_layout(G)
-        elif(layer=='topic'):
-            pos = nx.kamada_kawai_layout(G)
-        elif(layer=='lore'):
-            pos = nx.kamada_kawai_layout(G)
-        else:
-            pos = nx.kamada_kawai_layout(G)
-
+        
+        pos = nx.kamada_kawai_layout(G)
+        
         # 2. Extract unique edges and aggregate data
         focus_edge_x, focus_edge_y = [], []
         edge_x, edge_y = [], []
@@ -1670,20 +1668,19 @@ class DatastoreUtilities():
 
                 if(u in target_nodes or v in target_nodes):
 
-                    label = self.knowledge_graph.edges[u,v]['label']
-                    print(u,v,label)
-                    if(label=='relationship'):
-                        arrow_color = "#EEE"
-                    if(label=='description'):
-                        arrow_color = "#a77846"
-                    if(label=='involvement'):
-                        arrow_color = "#5a7c66"
+                    #label = self.knowledge_graph.edges[u,v]['text']
+                    #print(u,v,label)
+                    arrow_color = "#EEE"
                     
                     if(not(u==v)):
                         edges = G.adj[u][v]
-                        pair_text = [edges['label']]
+                        print('Edges : ',edges)
+                        pair_text = [edges[key]['text'] for key in edges.keys()]
                     else:
                         pair_text = []
+
+                    print(pair_text)
+
 
                     focus_edge_x.extend([x0, x1, None])
                     focus_edge_y.extend([y0, y1, None])
@@ -1707,7 +1704,7 @@ class DatastoreUtilities():
                     if(not(u==v)):
                         mid_x.append((x0 + x1) / 2)
                         mid_y.append((y0 + y1) / 2)
-                        edge_text.append("<br>".join([text for text in pair_text]))
+                        edge_text.append("<br>".join(textwrap.wrap(" ".join([text for text in pair_text]), width=20)))
                 else:
                     other_edge_x.extend([x0, x1, None])
                     other_edge_y.extend([y0, y1, None])
@@ -1778,7 +1775,7 @@ class DatastoreUtilities():
             node_y.append(y)
 
             wrapped_desc = ""
-            node_text.append(f"<i>{node[0]}</i><br>"+"<br>".join(textwrap.wrap(self.get_node_name(node[0]), width=20)))
+            node_text.append("<b>"+"<br>".join(textwrap.wrap(self.get_node_name(node[0]), width=20))+"</b><br>"+"<br>".join(textwrap.wrap(self.knowledge_graph.nodes[node[0]]['type'], width=20))+"<br>"+"Tags : <i>"+"<br>".join(textwrap.wrap(", ".join(self.knowledge_graph.nodes[node[0]]['tags']), width=20))+"</i>")
             node_ids.append(node[0])
 
             if(len(focus_on['nodes'])>0):
@@ -1794,20 +1791,9 @@ class DatastoreUtilities():
                 border_colors.append("#444444")
                 # Color code based on layer
 
-            layer = self.get_node_layer(node[0])
-            if(layer=='topic'):
-                node_colors.append("#EEE")
-                node_labels.append("")
-            elif(layer=='plot'):
-                node_colors.append("#5a7c66")
-                node_labels.append("")
-            elif(layer=='lore'):
-                node_colors.append("#a77846")
-                node_labels.append("")
-            else:
-                node_colors.append("#a77846")
-                node_labels.append("")
-
+            node_colors.append("#EEE")
+            node_labels.append("")
+            
 
 
         node_trace = go.Scatter(
@@ -1837,8 +1823,8 @@ class DatastoreUtilities():
         node_trace.text = node_labels
 
         # 2. Extract coordinates for just these nodes
-        subset_x = [pos[node][0] for node in target_nodes if node in pos]
-        subset_y = [pos[node][1] for node in target_nodes if node in pos]
+        subset_x = [pos[node][0] for node in target_nodes+all_neighbors if node in pos]
+        subset_y = [pos[node][1] for node in target_nodes+all_neighbors if node in pos]
 
         # 3. Calculate bounding box ranges with a 20% padding margin
         if subset_x and subset_y:
@@ -1855,7 +1841,7 @@ class DatastoreUtilities():
 
         # 5. Build the final Plotly figure with annotations included
         fig = go.Figure(
-          data=[focus_edge_trace, edge_trace, other_edge_trace, edge_hover_trace],
+          data=[focus_edge_trace, edge_trace, other_edge_trace],
           layout=go.Layout(
               showlegend=False,
               hovermode="closest",
@@ -1884,8 +1870,11 @@ class DatastoreUtilities():
         )
 
         fig.update_annotations(startstandoff=marker_size)
+        fig.add_trace(edge_hover_trace)
         fig.add_trace(node_trace)
         return fig
+
+
 
 
 

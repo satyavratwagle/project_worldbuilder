@@ -6,7 +6,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 
 
 export default function SelectToTrack() {
-  const [timeLeft, setTimeLeft] = useState(props.timeout || 6000);
   const [openDropdownId, setOpenDropdownId] = useState(null);
   const [editingText, setText] = useState("") 
   
@@ -23,14 +22,12 @@ export default function SelectToTrack() {
   const handleEdit = (id) => {
 
     const finalText = editingText;
+    const newKey = Math.max(...Object.keys(checkedItems).map(Number));
+    const uniqueAliases = [...new Set([finalText,...checkedItems[id][1]])];
     setCheckedItems((prev) => ({
       ...prev,
-      [finalText]: [finalText,prev[id][1],true,false],
+      [id]: [finalText,uniqueAliases,true,false],
     }));
-    setCheckedItems((prev) => 
-      Object.fromEntries(
-        Object.entries(prev).filter(([key]) => key !== id)
-    ));
     setText("")
   };
 
@@ -38,7 +35,7 @@ export default function SelectToTrack() {
   const handleAddItem = () => {
     setCheckedItems((prev) => ({
       ...prev,
-      ["New Topic"]: ["New Topic","",false,false],
+      [(Object.keys(checkedItems).length)]: ["New Topic",[],false,false],
     }));
     console.log(checkedItems)
   };
@@ -60,14 +57,6 @@ export default function SelectToTrack() {
     }));
   };
 
-  const handleSelectOption = (id, option) => {
-    setCheckedItems((prev) => ({
-      ...prev,
-      [id]: [prev[id][0], option, true, false],
-    }));
-    console.log(checkedItems)
-  };
-
   // Reset all checkboxes to their initial state
   const handleReset = () => {
     const init = {};
@@ -86,7 +75,7 @@ export default function SelectToTrack() {
           {"Please completetete all required items before submission."}
         </p>
         <CardTitle>{props.Title || "Action Checklist"}</CardTitle>
-        <CardDescription>Complete the steps outlined below. {timeLeft}s left</CardDescription>
+        <CardDescription>Change this later.</CardDescription>
       </CardHeader>
 
       <CardContent className="w-full pt-2">
@@ -140,7 +129,7 @@ export default function SelectToTrack() {
 
       <CardFooter className="flex justify-end gap-2 border-t-2 border-indigo-500 pt-4">
         <Button id="checklist-reset" variant="ghost" onClick={handleAddItem}>
-          New Topic
+          Add Topic
         </Button>
         <Button id="checklist-reset" variant="ghost" onClick={handleReset}>
           Reset

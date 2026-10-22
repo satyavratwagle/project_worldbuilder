@@ -78,12 +78,20 @@ def get_node_summary_prompt(args_dict, history=[]):
 def get_relationship_categorization_prompt(args_dict, history=[]):
 	# Required args node_name, node_description, existing summary
 
-	assert 'head' in args_dict.keys()
-	assert 'tail' in args_dict.keys()
-	assert 'relationship' in args_dict.keys()
+	assert 'statement' in args_dict.keys()
 	
 	history.append(process_prompt(prompts['relationship_categorization_prompt']['system']))
 	history.append(process_prompt(prompts['relationship_categorization_prompt']['user'],args_dict))
+	return history
+
+def get_entity_categorization_prompt(args_dict, history=[]):
+	# Required args node_name, node_description, existing summary
+
+	assert 'statements' in args_dict.keys()
+	assert 'topic' in args_dict.keys()
+	
+	history.append(process_prompt(prompts['entity_categorization_prompt']['system']))
+	history.append(process_prompt(prompts['entity_categorization_prompt']['user'],args_dict))
 	return history
 
 def get_text_decomposition_prompt(args_dict,history=[]):
@@ -106,7 +114,6 @@ def get_cluster_description_prompt(args_dict,history=[]):
 
 	return history
 
-
 def get_reasoned_generation_prompt(args_dict,history=[]):
 
 	assert 'user_query' in args_dict.keys()
@@ -122,11 +129,21 @@ def get_reasoned_generation_prompt(args_dict,history=[]):
 
 def get_triplet_extraction_prompt(args_dict,history=[]):
 
-	assert 'text' in args_dict.keys()
+	assert 'statements' in args_dict.keys()
 	assert 'topics' in args_dict.keys()
 
 	history.append(process_prompt(prompts['triplet_extraction_prompt']['system']))
 	history.append(process_prompt(prompts['triplet_extraction_prompt']['user'],args_dict))
+
+	return history
+
+def get_triplet_correction_prompt(args_dict,history=[]):
+
+	assert 'statements' in args_dict.keys()
+	assert 'triplets' in args_dict.keys()
+
+	history.append(process_prompt(prompts['recheck_triplets_prompt']['system']))
+	history.append(process_prompt(prompts['recheck_triplets_prompt']['user'],args_dict))
 
 	return history
 

@@ -3,6 +3,35 @@ from typing import Literal, List, Optional
 from typing_extensions import Annotated
 from pydantic.types import conlist
 import json
+from enum import Enum
+
+def create_custom_triplet_schema(topics):
+
+    class Triplet(BaseModel):        
+        reasoning: str = Field(description="Identify topics and describe which topic is acting on which topic.")
+        simplified_text: str = Field(description="Simple sentences describing the statement being analyzed.")
+        source: Literal[tuple(topics)] = Field(description="The subject of the 'simplified_text'.")
+        target: Literal[tuple(topics)] = Field(description="The object of the 'simplified_text'.")
+        relation: str = Field(description="The relation between the 'source' and 'target'.")
+
+    class TripletList(BaseModel):   
+        triplets: list[Triplet]
+
+    return TripletList
+
+class RelationCategory(str, Enum):
+    STRUCTURAL = "Structural & Compositional"
+    SPATIAL = "Spatial & Topological"
+    TEMPORAL = "Temporal & Causal"
+    SOCIAL = "Social & Organizational"
+    FUNCTIONAL = "Functional & Operational"
+
+class EntityType(str, Enum):
+    AGENT = "Agents & Collectives"
+    PLACE = "Places & Spaces"
+    OBJECT = "Objects & Artifacts"
+    CONCEPT = "Concepts & Information"
+    EVENT = "Events & Phenomena"
 
 with open('utils/semantic_definitions.json', "r", encoding="utf-8") as f:
     definitions = json.load(f)
@@ -13,9 +42,33 @@ label_map = {'AXIOM' : "Lore", 'INCIDENT': "Plot"}
 relation_categories = [defn['definition'] for key,defn in definitions['relation_types'].items()]
 
 # Class for extracting relationship types from a prose
-SnakeCaseStr = Annotated[str, Field(pattern=r"^[a-z]+(_[a-z]+)*$", description="Lowercase snake_case relationship type")]
+
 class RelationshipType(BaseModel):
-    relation_types: conlist(SnakeCaseStr, min_length=1, max_length=20) = Field(description="A unique list of high-value, story-driven relationship types derived from the provided text.")
+    relation_type: RelationCategory = Field(
+        description=("The primary relation category. Must be one of: "
+                    "1. Structural & Compositional (identity, hierarchies, parts); "
+                    "2. Spatial & Topological (geography, containment, borders); "
+                    "3. Temporal & Causal (event ordering, causality, triggers); "
+                    "4. Social & Organizational (affiliations, power, conflict); "
+                    "5. Functional & Operational (actions, tools, dependencies, outputs)."))
+    reasoning: str = Field(description="A brief, one-sentence explanation for the classification.")
+    relation_subcategory: str = Field(description="A one-word sub-category of the relation, a type of the primary relation category.")
+
+# 1. Keep Enum values short and clean for database indexing
+# 2. Use Field descriptions for schema-level context in OpenAI Structured Outputs
+class EntityType(BaseModel):
+    entity_type: EntityType = Field(
+        description=(
+            "The primary entity category. Must be one of: "
+            "1. Agents & Collectives (people, groups, institutions); "
+            "2. Places & Spaces (locations, regions, structures); "
+            "3. Objects & Artifacts (tangible items, equipment, assets); "
+            "4. Concepts & Information (abstract ideas, data, lore, laws); "
+            "5. Events & Phenomena (time-bound occurrences, battles, processes)."
+        )
+    )
+    reasoning: str = Field(description="A brief, one-sentence explanation for the classification.")
+    entity_subcategory: str = Field(description="A one-word sub-category of the entity, a type of the primary entity category.")
 
 class ReasonedResponse(BaseModel):
     scratchpad: str  # The step-by-step chain of thought
@@ -92,10 +145,9 @@ class PhaseList(BaseModel):
     event_id: str = Field(description="The ID of the event that happened first based on the given story outline.")
 
 class Triplet(BaseModel):
-    source: str = Field(description="Normalized canonical name of the source entity in simple_sentence, e.g., 'Prince Elian'")
-    target: str = Field(description="Normalized canonical name of the target entity in simple_sentence, e.g., 'Sunblade'")
-    relation: str = Field(description="A description of the relation between the source and target in  in simple_sentence.")
+    source: str = Field(description="The subject of the statement.")
+    target: str = Field(description="The object of the statement")
+    relation: str = Field(description="The relation between the 'source' and 'target'.")
 
 class TripletList(BaseModel):
-    simplified_text: str
     triplets: list[Triplet]
