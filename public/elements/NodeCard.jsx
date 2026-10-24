@@ -18,13 +18,15 @@ export default function NodeCard() {
 
   const [neighbor_idx, changePage] = useState(0)
   const [EditMode, setEditMode] = useState(false);
-  const [node_layer, setLayer] = useState(props.layer);
+  const [node_layer, setLayer] = useState(props.type);
   const [node_text, setText] = useState(props.desc);
   const isExpanded = props.expanded
   const nextLayer = {
-    'Lore': 'Topic',
-    'Topic': 'Plot',
-    'Plot': 'Lore'
+    "Agents & Collectives": "Places & Spaces",
+    "Places & Spaces": "Objects & Artifacts",
+    "Objects & Artifacts": "Concepts & Information",
+    "Concepts & Information": "Events & Phenomena",
+    "Events & Phenomena": "Agents & Collectives",
   };
 
   const handleClick = async (node) => {
@@ -50,7 +52,7 @@ export default function NodeCard() {
   };
 
   const handleLayerChange = () => {
-    setLayer(prevLayer => nextLayer[prevLayer] || 'Lore');    
+    setLayer(prevLayer => nextLayer[prevLayer] || "Agents & Collectives");    
   };
 
   const handleEditToggle = (state) => {
@@ -108,6 +110,7 @@ export default function NodeCard() {
   return (
     <Card id="jira-ticket" className="mt-4 w-[340px] max-w-[340px]">
       <CardHeader className="space-y-1">
+        <CardTitle className="col-span-1">{props.name}</CardTitle>
         <div>
           <span onClick={() => handleLayerChange()} className="cursor-pointer flex">
             <p className="text-sm font-medium text-muted-foreground">
@@ -115,11 +118,11 @@ export default function NodeCard() {
             </p>
           </span>
         </div>
-        <CardTitle className="col-span-1">{props.name}</CardTitle>
-        <div style={{padding:'8px'}}></div>
+        <div style={{padding:'4px'}}></div>
         <div style={{border: "2px solid #666666", 'border-radius':'8px', padding:'10px'}} className="col-span-2 flex-col space-y-2">
         <CardDescription className="col-span-2">
           {EditMode ? (<textarea 
+                    rows={4}
                     type="text" 
                     value={node_text} 
                     onChange={(e) => setText(e.target.value)}
@@ -135,7 +138,7 @@ export default function NodeCard() {
                     }}
                     placeholder="Enter new name..."
                     autoFocus
-                    className="border-2 rounded text-base focus:outline-none focus:ring-gray-50 bg-card text-muted-foreground"
+                    className="border-2 rounded text-base focus:outline-none focus:ring-gray-50 bg-card text-muted-foreground leading-normal"
                     style={{width:'100%', fontSize:'14px', wordBreak: 'break-word'}}
                   />):
                    (<span onClick={() => handleEditToggle(true)} >{node_text}</span>)}
@@ -145,11 +148,11 @@ export default function NodeCard() {
 
       <CardContent className="space-y-1">
         <div className="flex-col space-y-2">
-          <div className="text-lg font-bold">Related Nodes</div>
+          <div className="text-lg font-bold">Related Topics</div>
           {Object.entries(props.neighbors).slice(neighbor_idx,neighbor_idx+5).map(([idx]) =>(
               <div>
                 <span onClick={() => handleNodeChange(props.neighbors[idx][2])} className="cursor-pointer flex">
-                  <p className="text-sm font-medium text-muted-foreground"> • (<b>{props.neighbors[idx][0]}</b>) {props.neighbors[idx][1]}</p>
+                  <p className="text-sm font-medium text-muted-foreground"> • <u><b>{props.neighbors[idx][0]}</b> ({props.neighbors[idx][1]})</u></p>
                 </span>
               </div>
             ))

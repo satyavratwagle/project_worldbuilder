@@ -42,21 +42,9 @@ label_map = {'AXIOM' : "Lore", 'INCIDENT': "Plot"}
 relation_categories = [defn['definition'] for key,defn in definitions['relation_types'].items()]
 
 # Class for extracting relationship types from a prose
-
-class RelationshipType(BaseModel):
-    relation_type: RelationCategory = Field(
-        description=("The primary relation category. Must be one of: "
-                    "1. Structural & Compositional (identity, hierarchies, parts); "
-                    "2. Spatial & Topological (geography, containment, borders); "
-                    "3. Temporal & Causal (event ordering, causality, triggers); "
-                    "4. Social & Organizational (affiliations, power, conflict); "
-                    "5. Functional & Operational (actions, tools, dependencies, outputs)."))
-    reasoning: str = Field(description="A brief, one-sentence explanation for the classification.")
-    relation_subcategory: str = Field(description="A one-word sub-category of the relation, a type of the primary relation category.")
-
-# 1. Keep Enum values short and clean for database indexing
-# 2. Use Field descriptions for schema-level context in OpenAI Structured Outputs
-class EntityType(BaseModel):
+class EntityDiscovery(BaseModel):
+    entity_name: str = Field(description="The name of the entity discovered.")
+    reasoning: str = Field(description="A brief, one-sentence analysis of the core nature of the entity and justification of why it belongs to the chosen primary category.")
     entity_type: EntityType = Field(
         description=(
             "The primary entity category. Must be one of: "
@@ -67,7 +55,36 @@ class EntityType(BaseModel):
             "5. Events & Phenomena (time-bound occurrences, battles, processes)."
         )
     )
-    reasoning: str = Field(description="A brief, one-sentence explanation for the classification.")
+    entity_subcategory: str = Field(description="A one-word sub-category of the entity, a type of the primary entity category.")
+
+class EntityDiscoveryList(BaseModel):
+    entities_discovered: list[EntityDiscovery] = Field(description="A list of discovered entities.")
+
+class RelationshipType(BaseModel):
+    reasoning: str = Field(description="A brief, one-sentence analysis of the core nature of the relationship and justification of why it belongs to the chosen primary category.")
+    relation_type: RelationCategory = Field(
+        description=("The primary relation category. Must be one of: "
+                    "1. Structural & Compositional (identity, hierarchies, parts); "
+                    "2. Spatial & Topological (geography, containment, borders); "
+                    "3. Temporal & Causal (event ordering, causality, triggers); "
+                    "4. Social & Organizational (affiliations, power, conflict); "
+                    "5. Functional & Operational (actions, tools, dependencies, outputs)."))
+    relation_subcategory: str = Field(description="A one-word sub-category of the relation, a type of the primary relation category.")
+
+# 1. Keep Enum values short and clean for database indexing
+# 2. Use Field descriptions for schema-level context in OpenAI Structured Outputs
+class EntityType(BaseModel):
+    reasoning: str = Field(description="A brief, one-sentence analysis of the core nature of the entity and justification of why it belongs to the chosen primary category.")
+    entity_type: EntityType = Field(
+        description=(
+            "The primary entity category. Must be one of: "
+            "1. Agents & Collectives (people, groups, institutions); "
+            "2. Places & Spaces (locations, regions, structures); "
+            "3. Objects & Artifacts (tangible items, equipment, assets); "
+            "4. Concepts & Information (abstract ideas, data, lore, laws); "
+            "5. Events & Phenomena (time-bound occurrences, battles, processes)."
+        )
+    )
     entity_subcategory: str = Field(description="A one-word sub-category of the entity, a type of the primary entity category.")
 
 class ReasonedResponse(BaseModel):

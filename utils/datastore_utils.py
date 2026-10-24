@@ -267,12 +267,11 @@ class DatastoreUtilities():
 
         node_documents = []
         for node in nodes_to_add:
-            assert not(node[1]['layer']=='topic'), f"Node {node[1]['text']} of type {node[1]['layer']} cannot be added to the dataset!"
             node_documents.append({
                                 'node_id':node[0],
-                                'text':node[1]['text'],
-                                'layer':node[1]['layer'],
-                                'type':node[1]['type'],
+                                'name':node[1]['text'],
+                                'text':node[1]['metadata']['summary'],
+                                'type':node[1]['type']
                             })
 
         graph_dataset = Dataset.from_list(node_documents)
@@ -434,7 +433,7 @@ class DatastoreUtilities():
         key = self.knowledge_graph.add_edge(self.get_node_id(head),
                                             self.get_node_id(tail),
                                             type=type,
-                                            tag=tag,
+                                            tags=[tag],
                                             text=text,
                                             updated=time_now)
 
@@ -471,6 +470,36 @@ class DatastoreUtilities():
         else:
             return dict()
 
+    def get_edges_of_type(self,type,tag=None):
+
+        for edge in self.knowledge_graph.edges(keys=True):
+            print(edge)
+            print(self.knowledge_graph.edges[edge[0],edge[1],edge[2]])
+
+        if(tag):
+            # Check tag similarity later if needed.
+            return [(head, tail, key) for head,tail,key in self.knowledge_graph.edges(keys=True) if (self.knowledge_graph.edges[head,tail,key]['type']==type and tag in self.knowledge_graph.edges[head,tail,key]['tags'])]
+        else:
+            return [(head, tail, key) for head,tail,key in self.knowledge_graph.edges(keys=True) if (self.knowledge_graph.edges[head,tail,key]['type']==type)]
+
+    def check_edges_for_redundancy(self,head,tail,new_edge_text,threshold=0.9):
+        head = self.get_node_id(head)
+        tail = self.get_node_id(tail)
+
+        edge_texts = []
+        if(self.knowledge_graph.get_edge_data(head,tail)):
+            for key,edge_info in self.knowledge_graph.get_edge_data(head,tail).items():
+                edge_texts.append(edge_info['text'])
+
+            cosine_sims = self.get_cosine_similarity([new_edge_text],edge_texts)[0]
+
+            for idx in range(len(edge_texts)):
+                print(f"{cosine_sims[idx]} --> {edge_texts[idx]}")
+            
+            return (torch.any(cosine_sims>threshold))
+        else:
+            return False
+
     # NODE FUNCTIONS
 
     # Create and Delete functions
@@ -495,22 +524,33 @@ class DatastoreUtilities():
                                         metadata=dict())
 
             if(metadata):
-                if('aliases' in metadata.keys()):
-                    metadata['aliases'].append(node_name)
-                    metadata['aliases'] = list(set(metadata['aliases']))
-                else:
-                    metadata['aliases'] = node_name
+                pass
             else:
                 metadata = dict()        
-                metadata['aliases'] = node_name
 
-            self.add_metadata(node_id,metadata)
+            if('aliases' in metadata.keys()):
+                metadata['aliases'].append(node_name)
+                metadata['aliases'] = list(set(metadata['aliases']))
+            else:
+                metadata['aliases'] = node_name
+                
+            if('summary' in metadata.keys()):
+                metadata['summary_updated'] = int(time.time())
+            else:
+                metadata['summary'] = ""
+                metadata['summary_updated'] = 0
+
+
+            self.add_metadata(node_id,replace=True,**metadata)
 
             print(f"Added node [{node_id}] {self.get_node_name(node_id)} --> {type} : {tag}!")
         else:
             node_id = self.get_node_id(node_name)
-            self.add_metadata(node_id,metadata,replace=False)
+            self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
+            self.knowledge_graph.nodes[node_id]['type'] = type
             self.knowledge_graph.nodes[node_id]['tags'].append(tag)
+            self.knowledge_graph.nodes[node_id]['tags'] = list(set(tags))
+            self.add_metadata(node_id,metadata,replace=False)
             print(f"Node already exists! Updated Node : {self.knowledge_graph.nodes[node_id]}")
 
 
@@ -552,24 +592,33 @@ class DatastoreUtilities():
             print(f"No node similar to {node} found!")
             return None
 
-    def add_metadata(self,node,metadata,replace=True):
+    def add_metadata(self,node,replace=True,**metadata):
 
         node_id = self.get_node_id(node)
 
-        if(replace):
-            for key in metadata.keys():
-                self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
-                print(f"Replaced Metadata : {key} = {self.knowledge_graph.nodes[node_id]['metadata'][key]}")
-        else:
-            # Make separate functions if metadata is a list or a dict
-
-            # If list
-            for key in metadata.keys():
-                if(key in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
-                    self.knowledge_graph.nodes[node_id]['metadata'][key] += metadata[key]
-                else:
+        if(node_id):
+            if(replace):
+                for key in metadata.keys():
                     self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
-                print(f"Added Metadata : {key} = {self.knowledge_graph.nodes[node_id]['metadata'][key]}")
+                    print(f"Replaced Metadata : {key} = {self.knowledge_graph.nodes[node_id]['metadata'][key]}")
+
+                self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
+
+                if('summary' in metadata.keys()):
+                    self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'] = int(time.time())
+            else:
+                # Make separate functions if metadata is a list or a dict
+
+                # If list
+                for key in metadata.keys():
+                    if(key in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
+                        self.knowledge_graph.nodes[node_id]['metadata'][key] += metadata[key]
+                        self.knowledge_graph.nodes[node_id]['metadata'][key] = list(set(self.knowledge_graph.nodes[node_id]['metadata'][key]))
+                    else:
+                        self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
+                    print(f"Added Metadata : {key} = {self.knowledge_graph.nodes[node_id]['metadata'][key]}")
+
+                self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
 
     # Read functions
     def get_node_name(self,node_id):
@@ -591,30 +640,73 @@ class DatastoreUtilities():
         else:
             return None
 
-    def get_node_layer(self,node_name):
+    def get_node_type(self,node_name):
 
         node_id = self.get_node_id(node_name)
-        return self.knowledge_graph.nodes[node_id]['layer']
+        if(node_id):
+            return self.knowledge_graph.nodes[node_id]['type']
+        else:
+            return None
+
+    def get_node_tags(self,node_name):
+
+        node_id = self.get_node_id(node_name)
+        return self.knowledge_graph.nodes[node_id]['tags']
 
     def get_node_aliases(self,node_name):
 
         node_id = self.get_node_id(node_name)
 
-        assert self.knowledge_graph.nodes[node_id]['layer']=='topic',f"{node_name} is not a valid topic node!"
+        if('aliases' in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
+            return self.knowledge_graph.nodes[node_id]['metadata']['aliases']
+        else:
+            return []
 
-        node = self.knowledge_graph.nodes[node_id]
-        return (node['text'],node['metadata']['aliases'])
+    def get_nodes_of_type(self,type,tag=None):
 
-    def get_node_metadata(self,node_name,key):
+        if(tag):
+            # Check tag similarity later if needed.
+            return [node for node in self.knowledge_graph.nodes() if (self.knowledge_graph.nodes[node]['type']==type and tag in self.knowledge_graph.nodes[node]['tags'])]
+        else:
+            return [node for node in self.knowledge_graph.nodes() if self.knowledge_graph.nodes[node]['type']==type]
+
+    def get_all_neighbors(self,node_name):
 
         node_id = self.get_node_id(node_name)
 
-        assert key in self.knowledge_graph.nodes[node_id]['metadata'], f"'{key}' not found in metadata for '{node_name}'. Available metadata keys are : {", ".join([f"'{key}'" for key in self.knowledge_graph.nodes[node_id]['metadata'].keys()])}"
+        all_neighbors = dict()
+        all_neighbors['predecessors'] = list(self.knowledge_graph.predecessors(node_id))
+        all_neighbors['successors'] = list(self.knowledge_graph.successors(node_id))
+        all_neighbors['all'] = list(set(list(self.knowledge_graph.successors(node_id))+list(self.knowledge_graph.predecessors(node_id))))
 
-        return self.knowledge_graph.nodes[node_id]['metadata'][key]
+        return all_neighbors
 
-    def get_nodes_in_layer(self,layer):
-        return [node for node in self.knowledge_graph.nodes(data=True) if node[1]['layer']==layer]
+
+    def get_all_edges(self,node_name):
+        node_id = self.get_node_id(node_name)
+
+        all_neighbors = self.get_all_neighbors(node_id)
+        # Load predecessors and successors individually
+
+        all_edges = []
+        for neighbor in all_neighbors['successors']:
+            edge_dict = self.knowledge_graph.get_edge_data(node_id,neighbor)
+            all_edges += [(key,edge_dict[key]) for key in edge_dict.keys()]
+
+        for neighbor in all_neighbors['predecessors']:
+            edge_dict = self.knowledge_graph.get_edge_data(neighbor,node_id)
+            all_edges += [(key,edge_dict[key]) for key in edge_dict.keys()]
+
+        return all_edges
+
+    def get_mentioned_topic(self,text):
+
+        mentioned_topics = [name for name in list(set(self.node_finder.findall(text))) if len(name)>0]
+
+        return self.get_node_id(mentioned_topics[0])
+
+
+    # Old functions
 
     def get_relevant_node(self,text,threshold=0.8):
 
@@ -635,53 +727,6 @@ class DatastoreUtilities():
                 if(score>threshold):
                     return examples['node_id'][idx]
 
-    def get_node_lore(self,node):
-
-        node_id = self.get_node_id(node)
-
-        # First, get the associated topic.
-        if(self.get_node_layer(node_id)=='topic'):
-            topic_node_ids = [node_id]
-        else:
-            topic_node_ids = self.get_related_topics(node_id)
-
-        # From each topic, get the related `lore` and `plot` nodes and edges
-        stack_nodes = []
-        stack_edges = []
-        for topic_node in topic_node_ids:
-            neighbors = self.knowledge_graph.successors(topic_node)
-            stack_nodes += [neighbor_id for neighbor_id in neighbors if (self.knowledge_graph.nodes[neighbor_id]['layer']=='lore')]
-            stack_edges += [(topic_node,neighbor_id) for neighbor_id in stack_nodes]
-
-        stack_nodes = list(set(stack_nodes))
-        stack_edges = list(set(stack_edges))
-
-        return stack_nodes, stack_edges
-
-    def get_node_stack(self,node):
-        # Returns the `lore`, `topic` and `plot` related to a specific node.
-
-        node_id = self.get_node_id(node)
-
-        # First, get the associated topic.
-        if(self.get_node_layer(node_id)=='topic'):
-            topic_node_ids = [node_id]
-        else:
-            topic_node_ids = self.get_related_topics(node_id)
-
-        # From each topic, get the related `lore` and `plot` nodes and edges
-        stack_nodes = topic_node_ids
-        stack_edges = []
-        for topic_node in topic_node_ids:
-            neighbors = self.knowledge_graph.successors(topic_node)
-            stack_nodes += [neighbor_id for neighbor_id in neighbors if not(self.knowledge_graph.nodes[neighbor_id]['layer']=='topic')]
-            stack_edges += [(topic_node,neighbor_id) for neighbor_id in stack_nodes]
-
-        stack_nodes = list(set(stack_nodes))
-        stack_edges = list(set(stack_edges))
-
-        return stack_nodes, stack_edges
-
     def get_nodes_to_add_to_faiss(self):
         # Return a list of nodes that have been updated, but not added to the FAISS dataset
         # Decompose a node into wiki keys and check if the ids are in the dataset.
@@ -690,84 +735,12 @@ class DatastoreUtilities():
             self.kg2ds_map = json.load(f)
 
         # Get only the non-topic nodes that have been updated after the last datastore save.
-        return [node for node in self.knowledge_graph.nodes(data=True) if (node[1]['updated']>self.kg2ds_map[self.project_name][self.current_graph]['datastore_last_saved'] and not(node[1]['layer']=='topic') and not(node[1]['layer']=='fact'))]
+        return [node for node in self.knowledge_graph.nodes(data=True) if (node[1]['updated']>self.kg2ds_map[self.project_name][self.current_graph]['datastore_last_saved'])]
 
-    def get_node_summary(self,node):
+    def get_adjacent_nodes(self,node):
+        # For a given node, get all neighbors irrespective of direction
         node_id = self.get_node_id(node)
-
-        if(self.get_node_layer(node_id)=='topic'): 
-            return self.knowledge_graph.nodes[node_id]['metadata']['summary']
-        else:
-            return self.get_node_name(node_id)
-
-    def get_neighbors(self,node):
-        node_id = self.get_node_id(node)
-        return self.knowledge_graph.neighbors(node_id)
-
-    # Check functions
-    def does_node_exist(self,node):
-        if(self.get_node_id(node)):
-            return True
-        else:
-            return False
-
-    def check_summary_out_of_date(self,node):
-        node_id = self.get_node_id(node)
-
-        if(self.get_node_layer(node_id)=='topic' and not(self.knowledge_graph.nodes[node_id]=='common')):
-            return (self.knowledge_graph.nodes[node_id]['updated']>self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'])
-        else:
-            return False
-
-    # Write Functions
-    def set_node_summary(self,node,summary,type=None):
-        node_id = self.get_node_id(node)
-
-        assert self.get_node_layer(node_id)=='topic', f"{node} is not a topic that needs to be summarized!"
-
-        self.knowledge_graph.nodes[node_id]['metadata']['summary'] = summary
-        self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'] = int(time.time())
-
-        if(type):
-            self.knowledge_graph.nodes[node_id]['type'] = type
-
-    def update_node_description(self,node,new_description):
-        node_id = self.get_node_id(node)
-
-        if(self.get_node_layer(node_id) in ['plot','lore']):
-            self.knowledge_graph.nodes[node_id]['text'] = new_description
-            self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
-        else:
-            # If the node is a topic, update summary
-            self.set_node_summary(node_id,new_description)
-
-    def update_node_layer(self,node,new_layer):
-        old_node_id = self.get_node_id(node)
-
-        assert self.get_node_layer(old_node_id) in ['plot','lore']
-
-        old_layer = self.get_node_layer(old_node_id)
-
-        if(not(new_layer=='topic')):
-            # Add a new node and later remove the old layers
-            node_id = self.add_node(self.get_node_name(old_node_id),new_layer,type="misc")
-            print(node_id)
-
-        # If `plot` --> `lore`
-        if(old_layer=='plot'):
-
-            for n in self.get_hop_neighbors([old_node_id]):
-                if(self.get_node_layer(n)=='topic'):
-                    self.add_edge(n,node_id,'description')
-
-        # If `lore` --> `plot`
-        if(old_layer=='lore'):
-            for n in self.get_hop_neighbors([node_id]):
-                if(self.get_node_layer(n)=='topic'):
-                    self.add_edge(n,node_id,'involvement')
-        
-        # Delete the old node
-        self.remove_node(old_node_id)
+        return self.knowledge_graph.successors(node_id)|self.knowledge_graph.predecessors(node_id)
 
     # GRAPH FUNCTIONS
 
@@ -840,46 +813,6 @@ class DatastoreUtilities():
                     new_edge = self.add_edge(node_id,n_topic,'relationship')
 
         return new_edge
-
-    def extrapolate_descriptions(self):
-        # For all lore nodes, find mentions of topics and create edges
-
-        added_edges = []
-        lore_nodes = self.get_nodes_in_layer('lore')
-
-        for id,node in lore_nodes:
-            new_edge = self.extrapolate_for_node(id,'description')
-            if(new_edge):
-                added_edges.append(new_edge)
-
-        return added_edges
-
-    def extrapolate_involvements(self):
-        # For all lore nodes, find mentions of topics and create edges
-
-        added_edges = []
-        plot_nodes = self.get_nodes_in_layer('plot')
-
-        for id,node in plot_nodes:
-            new_edge = self.extrapolate_for_node(id,'involvement')
-            if(new_edge):
-                added_edges.append(new_edge)
-                    
-        return added_edges
-
-    def extrapolate_relationships(self):
-        # Connect Topics based on common neighbors in Lore and Plot layers.
-
-        # For Lore nodes, check if the outgoing neighbors are connected.
-        added_edges = []
-        topic_nodes = self.get_nodes_in_layer('topic')
-
-        for id,node in topic_nodes:
-            new_edge = self.extrapolate_for_node(id,'relationship')
-            if(new_edge):
-                added_edges.append(new_edge)
-
-        return added_edges
 
     def order_scenes(self,ordered_nodes):
 
@@ -1553,6 +1486,8 @@ class DatastoreUtilities():
 
     def get_cosine_similarity(self,source_text,target_text=None):
         # Both source text and target text must be lists
+        # source_text size = S
+        # target_text size = T
 
         source_embeddings = torch.from_numpy(self.text_embedding_model.encode(source_text, normalize_embeddings=True))
         if(target_text):
@@ -1561,6 +1496,7 @@ class DatastoreUtilities():
         else:
             cosine_sim = torch.matmul(source_embeddings,source_embeddings.T)
 
+        # Cosine sim shape = S x T
         return cosine_sim
 
     def compare_against_existing_nodes(self,source_text: list, threshold=0.8)-> dict:
@@ -1675,7 +1611,7 @@ class DatastoreUtilities():
                     if(not(u==v)):
                         edges = G.adj[u][v]
                         print('Edges : ',edges)
-                        pair_text = [edges[key]['text'] for key in edges.keys()]
+                        pair_text = [f"<i>{edges[key]['type']}</i> : {edges[key]['text']}" for key in edges.keys()]
                     else:
                         pair_text = []
 
@@ -1704,7 +1640,7 @@ class DatastoreUtilities():
                     if(not(u==v)):
                         mid_x.append((x0 + x1) / 2)
                         mid_y.append((y0 + y1) / 2)
-                        edge_text.append("<br>".join(textwrap.wrap(" ".join([text for text in pair_text]), width=20)))
+                        edge_text.append("<br>".join(textwrap.wrap("<br>".join([text for text in pair_text]), width=36)))
                 else:
                     other_edge_x.extend([x0, x1, None])
                     other_edge_y.extend([y0, y1, None])
@@ -1873,6 +1809,7 @@ class DatastoreUtilities():
         fig.add_trace(edge_hover_trace)
         fig.add_trace(node_trace)
         return fig
+
 
 
 

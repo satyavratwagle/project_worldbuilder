@@ -25,16 +25,15 @@
 					} 
 			}
 		},	
-	"node_summary_prompt":
+	"node_definition_prompt":
 		{"system":
 			{
 				"role": 
 					"system", 
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
-					"You are a summarizing assistant for fictional lore. Your job is to summarize given information related to a specific topic.",
-					"- In the 'category' field : Respond with the category of the topic out of the given options.",
-					"- In the 'summary' field : Respond with a summary of the information given by the user in AT MOST THREE (3) sentences. The summary must include all of the important points that describe the topic in the description given by the user.",
+					"You are an expert definition-writing assistant for fictional lore.",
+					"- Your job is to analyze the given information and use it to write a 2-sentence core profile defining who or what the given topic is.",
 					"- Do NOT include any conversational preamble or text."]
 			},
 		"user":
@@ -43,10 +42,42 @@
 					"user", 
 				"content": 
 					{
-					"information":
-						["\n<information>\n(INFORMATION)\n</information>\n"],
 					"node_name":
-						["\n<topic>\n(NODE_NAME)\n</topic>\n"]
+						["\n<topic>\n(NODE_NAME)\n</topic>\n\nInformation about (NODE_NAME):"],
+					"information":
+						["\n<information>\n(INFORMATION)\n</information>\n"]
+					} 
+			}
+		},
+	"entity_discovery_prompt":
+		{"system":
+			{
+				"role": 
+					"system", 
+				"content": 
+					["[SYSTEM ROLE AND GUARDRAILS]",
+					"You are an expert entity discovery agent for a GraphRAG knowledge extraction pipeline. ",
+			        "Analyze the statements and use them to discover new entities. You must respond with the name, type and sub-category of the entity.",
+			        "Do not include any of the known topics in your response. Do not include common or generic objects and nouns in your response.",
+			        "The type of the entity must belong to EXACTLY ONE of the 5 universal super-categories based on these definitions:\n",
+			        "1. Agents & Collectives: Autonomous entities, individual actors, living beings, and organized collectives or institutions capable of intent, action, and decision-making (e.g., characters, corporations, governments, guilds).",
+			        "2. Places & Spaces: Bounded geographic areas, physical locations, architectural structures, celestial bodies, or spatial containers where things exist (e.g., cities, kingdoms, rooms, planets).",
+					"3. Objects & Artifacts: Tangible physical items, manufactured goods, natural resources, tools, equipment, or digital assets that can be created, owned, consumed, or utilized (e.g., weapons, vehicles, codebases, raw materials).",
+					"4. Concepts & Information: Intangible intellectual property, data, ideologies, laws, magic systems, classifications, or cultural/scientific constructs that do not occupy physical space (e.g., prophecies, spells, algorithms, patents).",
+					"5. Events & Phenomena: Time-bound occurrences, historical milestones, operations, or natural phenomena that happen across a timeline (e.g., wars, coronations, outages, product launches).",
+					"Next, specify the sub-category of the entity within the super-category. The sub-type must be at most four (4) words long.",
+					"IMPORTANT : You must NEVER respond with any of the known topics."]
+			},
+		"user":
+			{
+				"role": 
+					"user", 
+				"content": 
+					{
+					"information":
+						["\n<statements>\n(STATEMENTS)\n</statements>\n"],
+					"topic":
+						["\n[KNOWN TOPICS]\n<known_topics>\n(KNOWN_TOPICS)\n</known_topics>"]
 					} 
 			}
 		},
