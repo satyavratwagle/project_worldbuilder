@@ -203,6 +203,7 @@ class DatastoreUtilities():
 
         nodes_not_in_graph = [row['node_id'] for row in self.dataset if not(self.knowledge_graph.has_node(row['node_id']))]
         nodes_not_in_dataset = [node for node in self.knowledge_graph.nodes() if not(node in self.dataset['node_id'])]
+        nodes_with_unsaved_changes = [node for node in self.knowledge_graph.nodes() if not(self.knowledge_graph.nodes[node]['updated']>self.kg2ds_map[self.project_name][self.current_graph]['datastore_last_saved'])]
 
         if(write_to_kg2ds):
             self.kg2ds_map[self.project_name][self.current_graph]['nodes_not_in_graph'] = nodes_not_in_graph
@@ -211,7 +212,7 @@ class DatastoreUtilities():
             with open(self.config['kg_to_ds_map'], "w") as f:
                 json.dump(self.kg2ds_map, f, indent=4)
 
-        return nodes_not_in_graph,nodes_not_in_dataset
+        return nodes_not_in_graph,nodes_not_in_dataset,nodes_with_unsaved_changes
 
     def add_alias(self,node_name, alias):
         node_id = self.get_node_id(node_name)
@@ -413,7 +414,7 @@ class DatastoreUtilities():
 
     # EDGE FUNCTIONS
 
-    def add_edge(self,head,tail,type,tag,text):
+    def add_edge(self,head,tail,type,tag,text,**edge_metadata):
         # Add an edge to the graph
         # Keep edges as light as possible
 
@@ -429,15 +430,21 @@ class DatastoreUtilities():
 
         time_now = int(time.time())
 
+        metadata = dict()
+        if(len(edge_metadata.keys())>0):
+            for key in edge_metadata.keys():
+                metadata[key] = edge_metadata[key]
+
         # Check if similar edge already exists.
         key = self.knowledge_graph.add_edge(self.get_node_id(head),
                                             self.get_node_id(tail),
                                             type=type,
                                             tags=[tag],
                                             text=text,
-                                            updated=time_now)
+                                            updated=time_now,
+                                            metadata=metadata)
 
-        print(f"ADDED NEW EDGE BETWEEN '{self.get_node_name(head)}' and '{self.get_node_name(tail)}' with key {key}!!")
+        print(f"ADDED NEW EDGE BETWEEN '{self.get_node_name(head)}' and '{self.get_node_name(tail)}' : {self.knowledge_graph.edges[self.get_node_id(head),self.get_node_id(tail),key]}")
 
         return (self.get_node_id(head),self.get_node_id(tail),key)
 
@@ -549,8 +556,8 @@ class DatastoreUtilities():
             self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
             self.knowledge_graph.nodes[node_id]['type'] = type
             self.knowledge_graph.nodes[node_id]['tags'].append(tag)
-            self.knowledge_graph.nodes[node_id]['tags'] = list(set(tags))
-            self.add_metadata(node_id,metadata,replace=False)
+            self.knowledge_graph.nodes[node_id]['tags'] = list(set(self.knowledge_graph.nodes[node_id]['tags']))
+            self.add_metadata(node_id,replace=False,**metadata)
             print(f"Node already exists! Updated Node : {self.knowledge_graph.nodes[node_id]}")
 
 
@@ -681,7 +688,6 @@ class DatastoreUtilities():
 
         return all_neighbors
 
-
     def get_all_edges(self,node_name):
         node_id = self.get_node_id(node_name)
 
@@ -699,33 +705,59 @@ class DatastoreUtilities():
 
         return all_edges
 
+    def get_all_edges_of_type(self,node_name,allowed_edge_types):
+        node_id = self.get_node_id(node_name)
+
+        all_edges = dict()
+        if(node_id):
+            all_neighbors = self.get_all_neighbors(node_id)
+            # Load predecessors and successors individually
+
+            for neighbor in all_neighbors['all']:
+                all_edges[self.get_node_name(neighbor)] = []
+
+            for neighbor in all_neighbors['successors']:
+                edge_dict = self.knowledge_graph.get_edge_data(node_id,neighbor)
+                all_edges[self.get_node_name(neighbor)] += [(key,edge_dict[key]) for key in edge_dict.keys() if edge_dict[key]['type'] in allowed_edge_types]
+
+            for neighbor in all_neighbors['predecessors']:
+                edge_dict = self.knowledge_graph.get_edge_data(neighbor,node_id)
+                all_edges[self.get_node_name(neighbor)] += [(key,edge_dict[key]) for key in edge_dict.keys() if edge_dict[key]['type'] in allowed_edge_types]
+
+        return all_edges
+
     def get_mentioned_topic(self,text):
 
         mentioned_topics = [name for name in list(set(self.node_finder.findall(text))) if len(name)>0]
 
         return self.get_node_id(mentioned_topics[0])
 
-
     # Old functions
 
-    def get_relevant_node(self,text,threshold=0.8):
+    def get_relevant_topics(self,text,threshold=0.8,all=True):
 
         # Based on text, find the most similar node and return.
 
-        mentioned_topics = [name for name in list(set(self.node_finder.findall(text))) if len(name)>0]
+        mentioned_topics = [self.get_node_id(name) for name in list(set(self.node_finder.findall(text))) if len(name)>0]
 
         if(len(mentioned_topics)>0):
-            return self.get_node_id(mentioned_topics[0])
+            if(all==False):
+                return mentioned_topics[0]
+
+        query,_ = self.resolve_aliases(text)
+        query_vector = self.embed_text(query)
+
+        scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=20)
+
+        for idx,score in enumerate(scores):
+            #print(f"{examples['text'][idx]} : {score}")
+            if(score>threshold):
+                mentioned_topics.append(examples['node_id'][idx])
+
+        if(all==False):
+            return mentioned_topics[0]
         else:
-            query,_ = self.resolve_aliases(text)
-            query_vector = self.embed_text(query)
-
-            scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=20)
-
-            for idx,score in enumerate(scores):
-                #print(f"{examples['text'][idx]} : {score}")
-                if(score>threshold):
-                    return examples['node_id'][idx]
+            return list(set(mentioned_topics))
 
     def get_nodes_to_add_to_faiss(self):
         # Return a list of nodes that have been updated, but not added to the FAISS dataset
@@ -1571,7 +1603,7 @@ class DatastoreUtilities():
         # 2. Extract the edge-induced subgraph
 
         
-        pos = nx.kamada_kawai_layout(G)
+        pos = nx.spring_layout(G)
         
         # 2. Extract unique edges and aggregate data
         focus_edge_x, focus_edge_y = [], []
@@ -1809,6 +1841,7 @@ class DatastoreUtilities():
         fig.add_trace(edge_hover_trace)
         fig.add_trace(node_trace)
         return fig
+
 
 
 

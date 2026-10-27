@@ -5,28 +5,36 @@ from pydantic.types import conlist
 import json
 from enum import Enum
 
-def create_custom_triplet_schema(topics):
+def create_custom_triplet_schema(topics,exclusive=False):
+
+    DynamicTopic = Literal[*topics]
 
     class Triplet(BaseModel):        
         reasoning: str = Field(description="Identify topics and describe which topic is acting on which topic.")
         simplified_text: str = Field(description="Simple sentences describing the statement being analyzed.")
-        source: Literal[tuple(topics)] = Field(description="The subject of the 'simplified_text'.")
-        target: Literal[tuple(topics)] = Field(description="The object of the 'simplified_text'.")
-        relation: str = Field(description="The relation between the 'source' and 'target'.")
+
+        if(exclusive):
+            sources: List[DynamicTopic] = Field(description="The subjects, or primary entities in 'simplified_text'. MUST NOT BE THE SAME AS THE TARGETS.")
+            targets: List[DynamicTopic] = Field(description="The object, or secondary entities in 'simplified_text'. MUST NOT BE THE SAME AS THE SOURCES.")
+        else:
+            sources: List[DynamicTopic] = Field(description="The subjects, or primary entities in 'simplified_text'.")
+            targets: List[DynamicTopic] = Field(description="The object, or secondary entities in 'simplified_text'.")
+        relation: str = Field(description="The relation between the 'sources' and 'targets'.")
+        temporal_metadata: str = Field(description="A concise narrative string describing when this relationship occurred relative to other events or timeframes. Leave null if there is zero temporal context.")
 
     class TripletList(BaseModel):   
         triplets: list[Triplet]
 
     return TripletList
 
-class RelationCategory(str, Enum):
+class RelationCategories(str, Enum):
     STRUCTURAL = "Structural & Compositional"
     SPATIAL = "Spatial & Topological"
     TEMPORAL = "Temporal & Causal"
     SOCIAL = "Social & Organizational"
     FUNCTIONAL = "Functional & Operational"
 
-class EntityType(str, Enum):
+class EntityCategories(str, Enum):
     AGENT = "Agents & Collectives"
     PLACE = "Places & Spaces"
     OBJECT = "Objects & Artifacts"
@@ -41,11 +49,12 @@ label_map = {'AXIOM' : "Lore", 'INCIDENT': "Plot"}
 
 relation_categories = [defn['definition'] for key,defn in definitions['relation_types'].items()]
 
-# Class for extracting relationship types from a prose
+# Schemas for extracting relationship types from a prose
+
 class EntityDiscovery(BaseModel):
     entity_name: str = Field(description="The name of the entity discovered.")
     reasoning: str = Field(description="A brief, one-sentence analysis of the core nature of the entity and justification of why it belongs to the chosen primary category.")
-    entity_type: EntityType = Field(
+    entity_type: EntityCategories = Field(
         description=(
             "The primary entity category. Must be one of: "
             "1. Agents & Collectives (people, groups, institutions); "
@@ -62,7 +71,7 @@ class EntityDiscoveryList(BaseModel):
 
 class RelationshipType(BaseModel):
     reasoning: str = Field(description="A brief, one-sentence analysis of the core nature of the relationship and justification of why it belongs to the chosen primary category.")
-    relation_type: RelationCategory = Field(
+    relation_type: RelationCategories = Field(
         description=("The primary relation category. Must be one of: "
                     "1. Structural & Compositional (identity, hierarchies, parts); "
                     "2. Spatial & Topological (geography, containment, borders); "
@@ -71,21 +80,47 @@ class RelationshipType(BaseModel):
                     "5. Functional & Operational (actions, tools, dependencies, outputs)."))
     relation_subcategory: str = Field(description="A one-word sub-category of the relation, a type of the primary relation category.")
 
-# 1. Keep Enum values short and clean for database indexing
-# 2. Use Field descriptions for schema-level context in OpenAI Structured Outputs
 class EntityType(BaseModel):
     reasoning: str = Field(description="A brief, one-sentence analysis of the core nature of the entity and justification of why it belongs to the chosen primary category.")
-    entity_type: EntityType = Field(
+    entity_type: EntityCategories = Field(
         description=(
             "The primary entity category. Must be one of: "
-            "1. Agents & Collectives (people, groups, institutions); "
+            "1. Agents & Collectives (people, groups, institutions, factions); "
             "2. Places & Spaces (locations, regions, structures); "
-            "3. Objects & Artifacts (tangible items, equipment, assets); "
+            "3. Objects & Artifacts (tangible items, equipment, assets, resources); "
             "4. Concepts & Information (abstract ideas, data, lore, laws); "
-            "5. Events & Phenomena (time-bound occurrences, battles, processes)."
+            "5. Events & Phenomena (time-bound occurrences, battles, processes, actions, events)."
         )
     )
     entity_subcategory: str = Field(description="A one-word sub-category of the entity, a type of the primary entity category.")
+
+class ReifiedEdge(BaseModel):
+    title: str = Field(description="The title given to the statement, at most three words long.")
+    reasoning: str = Field(description="A brief, one-sentence analysis of the core nature of the statement and justification of why it belongs to the chosen primary category.")
+    entity_type: EntityCategories = Field(
+        description=(
+            "The primary category that the statement belongs to. Must be one of: "
+            "1. Agents & Collectives (people, groups, institutions, factions); "
+            "2. Places & Spaces (locations, regions, structures); "
+            "3. Objects & Artifacts (tangible items, equipment, assets, resources); "
+            "4. Concepts & Information (abstract ideas, data, lore, laws); "
+            "5. Events & Phenomena (time-bound occurrences, battles, processes, actions, events)."
+        )
+    )
+    entity_subcategory: str = Field(description="The sub-category of the statement, a type of the primary statement category.")
+
+# Schemas for graph traversal strategies
+
+class TopicIdentifer(BaseModel):
+    topic: str = Field(description="The name of the selected topic.") 
+    reasoning: str = Field(description="A brief analysis of why the specific information categories are crucial to answer the user query.")
+    selected_information_categories: List[RelationCategories] = Field(
+        description= "Select all information categories required to answer the user query. You may select a single category or multiple categories if the query is too broad for one category.",
+        min_length=1  # Forces the model to select at least one category
+    )
+
+class TopicIdentifierList(BaseModel):
+    topics_identified:List[TopicIdentifer] = Field(description="A list of the primary entities and related information categories.", min_length=1)
 
 class ReasonedResponse(BaseModel):
     scratchpad: str  # The step-by-step chain of thought

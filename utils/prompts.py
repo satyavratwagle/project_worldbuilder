@@ -1,6 +1,7 @@
 import re
 import json
 import copy
+import chainlit as cl
 
 with open('utils/prompts.json', "r", encoding="utf-8") as f:
     prompts = json.load(f)
@@ -32,19 +33,51 @@ def process_prompt(template_dict,args_dict=None):
 	return prompt_dict
 
 # See if we need a class later.
-class PromptParser:
 
-	def __init__(self,required_keys):
+def refresh_history():
 
-		# required_keys : str (Keys that are used by the prompt)
-		self.required_keys = required_keys
+	history = cl.user_session.get("chat_history")
+	history = []
+	cl.user_session.set("chat_history",history)
+	
+def prompt_parser(prompt_name,args_dict,refresh=True):
 
-	def __str__(self):
-		return ",".join(self.required_keys)
+	if(refresh):
+		refresh_history()
 
-	def assert_keys(self,args_dict):
-		assert all([required_key in args_dict.keys() for required_key in self.required_keys])
+	prompt_template = prompts[prompt_name]
+	required_keys = prompt_template['required_keys']
 
+	assert all([required_key in args_dict.keys() for required_key in required_keys])
+
+	history = cl.user_session.get("chat_history")
+
+	if(len(history)==0):
+		history.append(process_prompt(prompts[prompt_name]['system']))
+	else:
+		history[0] = process_prompt(prompts[prompt_name]['system'])
+	history.append(process_prompt(prompts[prompt_name]['user'],args_dict))
+
+	cl.user_session.set("chat_history",history)
+	return history
+
+def add_to_history(role,content):
+
+	history = cl.user_session.get("chat_history")
+	history.append({"role":role,"content":content})
+	cl.user_session.set("chat_history",history)
+
+
+def switch_system_prompt(prompt_name):
+
+	history = cl.user_session.get("chat_history")
+	if(len(history)==0):
+		history.append(process_prompt(prompts[prompt_name]['system']))
+	else:
+		history[0] = process_prompt(prompts[prompt_name]['system'])
+	cl.user_session.set("chat_history",history)
+
+'''
 def get_tool_use_prompt(args_dict, history=[]):
 	# Required args node_name, node_description, existing summary
 
@@ -99,9 +132,20 @@ def get_entity_categorization_prompt(args_dict, history=[]):
 
 	assert 'statements' in args_dict.keys()
 	assert 'topic' in args_dict.keys()
+	assert 'background' in args_dict.keys()
 	
 	history.append(process_prompt(prompts['entity_categorization_prompt']['system']))
 	history.append(process_prompt(prompts['entity_categorization_prompt']['user'],args_dict))
+	return history
+
+def get_edge_reificiation_prompt(args_dict, history=[]):
+	# Required args node_name, node_description, existing summary
+
+	assert 'statement' in args_dict.keys()
+	assert 'background' in args_dict.keys()
+	
+	history.append(process_prompt(prompts['edge_reification_prompt']['system']))
+	history.append(process_prompt(prompts['edge_reification_prompt']['user'],args_dict))
 	return history
 
 def get_text_decomposition_prompt(args_dict,history=[]):
@@ -112,6 +156,16 @@ def get_text_decomposition_prompt(args_dict,history=[]):
 
 	history.append(process_prompt(prompts['text_decomposition_prompt']['system']))
 	history.append(process_prompt(prompts['text_decomposition_prompt']['user'],args_dict))
+
+	return history
+
+def get_pivot_node_strategy_prompt(args_dict,history=[]):
+	# topics, text
+	assert 'query' in args_dict.keys()
+	assert 'topics' in args_dict.keys()
+
+	history.append(process_prompt(prompts['pivot_node_strategy_prompt']['system']))
+	history.append(process_prompt(prompts['pivot_node_strategy_prompt']['user'],args_dict))
 
 	return history
 
@@ -219,3 +273,4 @@ def get_chain_of_thought_regex():
 	)
 
 	return reasoning_structure_regex
+'''

@@ -23,7 +23,8 @@
 					{
 						"query":["<user_query>\n(QUERY)\n</user_query>"]
 					} 
-			}
+			},
+		"required_keys":["query"]
 		},	
 	"node_definition_prompt":
 		{"system":
@@ -47,7 +48,8 @@
 					"information":
 						["\n<information>\n(INFORMATION)\n</information>\n"]
 					} 
-			}
+			},
+		"required_keys":["node_name","information"]
 		},
 	"entity_discovery_prompt":
 		{"system":
@@ -62,9 +64,9 @@
 			        "The type of the entity must belong to EXACTLY ONE of the 5 universal super-categories based on these definitions:\n",
 			        "1. Agents & Collectives: Autonomous entities, individual actors, living beings, and organized collectives or institutions capable of intent, action, and decision-making (e.g., characters, corporations, governments, guilds).",
 			        "2. Places & Spaces: Bounded geographic areas, physical locations, architectural structures, celestial bodies, or spatial containers where things exist (e.g., cities, kingdoms, rooms, planets).",
-					"3. Objects & Artifacts: Tangible physical items, manufactured goods, natural resources, tools, equipment, or digital assets that can be created, owned, consumed, or utilized (e.g., weapons, vehicles, codebases, raw materials).",
-					"4. Concepts & Information: Intangible intellectual property, data, ideologies, laws, magic systems, classifications, or cultural/scientific constructs that do not occupy physical space (e.g., prophecies, spells, algorithms, patents).",
-					"5. Events & Phenomena: Time-bound occurrences, historical milestones, operations, or natural phenomena that happen across a timeline (e.g., wars, coronations, outages, product launches).",
+					"3. Objects & Artifacts: Tangible physical items, manufactured goods, natural resources, tools, equipment, or digital assets that can be created, owned, consumed, or utilized (e.g., weapons, vehicles, tools, raw materials).",
+					"4. Concepts & Information: Intangible intellectual property, data, ideologies, laws, magic systems, classifications, or cultural/scientific constructs that do not occupy physical space (e.g., prophecies, spells).",
+					"5. Events & Phenomena: Time-bound occurrences, historical milestones, operations, actions taken by characters or factions, or natural phenomena that happen across a timeline (e.g., wars, coronations, outages, ).",
 					"Next, specify the sub-category of the entity within the super-category. The sub-type must be at most four (4) words long.",
 					"IMPORTANT : You must NEVER respond with any of the known topics."]
 			},
@@ -79,7 +81,8 @@
 					"topic":
 						["\n[KNOWN TOPICS]\n<known_topics>\n(KNOWN_TOPICS)\n</known_topics>"]
 					} 
-			}
+			},
+		"required_keys":["known_topics","statements"]
 		},
 	"relationship_categorization_prompt":
 		{"system":
@@ -103,10 +106,13 @@
 					"user", 
 				"content": 
 					{
+					"background":
+						["\n[BACKGROUND ABOUT ENTITIES]\n<background>\n(BACKGROUND)\n</background>\n"],
 					"information":
 						["\n<statement>\n(STATEMENT)\n</statement>\n"]
 					} 
-			}
+			},
+		"required_keys":["background","statement"]
 		},
 	"entity_categorization_prompt":
 		{"system":
@@ -130,27 +136,32 @@
 					"user", 
 				"content": 
 					{
-					"information":
-						["\n<statements>\n(STATEMENTS)\n</statements>\n"],
 					"topic":
-						["\n<topic>\n(TOPIC)\n</topic>"]
+						["\n<topic>\n(TOPIC)\n</topic>\n"],
+					"background":
+						["\n[KNOWN BACKGROUND]\n<background>\n(BACKGROUND)\n</background>\n"],
+					"information":
+						["\n<statements>\n(STATEMENTS)\n</statements>\n"]
 					} 
-			}
+			},
+		"required_keys":["topic","background","statements"]
 		},
-	"cluster_theme_prompt":
+	"edge_reification_prompt":
 		{"system":
 			{
 				"role": 
 					"system", 
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
-					"You are a writing assistant for fictional lore. You are given a set of descriptions related to a topic. Your task is to summarize each description and define its theme in relation to the given topic according to the given schema.",
-					"1. Each description is provided between <description> and </description> tags.",
-					"2. In the 'summary' field, you must provide brief summaries for EACH of the descriptions.",
-					"3. In the 'theme' field, you must respond with the themes of EACH of the descriptions.",
-					"4. The theme of each description must convey what part of the topic is being described. (e.g., for '<description>\nBelzegor is an island city. Belzegor has several ports. The inner district of Belzegor is the financial district\n</description>\n\n<topic>Belzegor</topic>\n'; the theme would be 'City Planning of Belzegor'.)",
-					"5. Each theme must be at most five (5) words long.",
-					"6. Do NOT include any conversational preamble or text."]
+					"You are an expert statement classifier for fictional worldbuilding lore.",
+			        "Your task is to analyze the given statement, give it a short title. The title must be at most three (3) words long.", 
+			        "Next, you must classify the statement into EXACTLY ONE of the 5 universal super-categories based on these definitions:\n",
+			        "1. Agents & Collectives: Autonomous entities, individual actors, living beings, and organized collectives or institutions capable of intent, action, and decision-making (e.g., characters, corporations, governments, guilds).",
+			        "2. Places & Spaces: Bounded geographic areas, physical locations, architectural structures, celestial bodies, or spatial containers where things exist (e.g., cities, kingdoms, rooms, planets).",
+					"3. Objects & Artifacts: Tangible physical items, manufactured goods, natural resources, tools, equipment, or digital assets that can be created, owned, consumed, or utilized (e.g., weapons, vehicles, codebases, raw materials).",
+					"4. Concepts & Information: Intangible intellectual property, data, ideologies, laws, magic systems, classifications, or cultural/scientific constructs that do not occupy physical space (e.g., prophecies, spells, algorithms, patents).",
+					"5. Events & Phenomena: Time-bound occurrences, historical milestones, operations, or natural phenomena that happen across a timeline (e.g., wars, coronations, outages, product launches).",
+					"Finally, you must specify the sub-type of the topic within the super-category. The sub-type must be at most four (4) words long."]
 			},
 		"user":
 			{
@@ -158,13 +169,44 @@
 					"user", 
 				"content": 
 					{
-					"node_description":
-						["\n(CLUSTER_DESCRIPTIONS)\n"],
-					"node_name":
-						["\n<topic>\n(TOPIC)\n</topic>"]
-					}
-			}
+					"background":
+						["\n[KNOWN BACKGROUND]\n<background>\n(BACKGROUND)\n</background>\n"],
+					"information":
+						["\n<statement>\n(STATEMENT)\n</statement>\n"]
+					} 
+			},
+		"required_keys":["background","statement"]
 		},
+	"pivot_node_strategy_prompt":
+		{"system":
+			{
+				"role": 
+					"system", 
+				"content": 
+					["[SYSTEM ROLE AND GUARDRAILS]",
+					"You are an information retrieval assistant for fictional lore. Your task is to analyze the user query and identify the categories of information related to the given topics that are required to answer the query.",
+					"Each selected category of information must be one of the following:",
+					"1. Structural & Compositional: Focuses on identity, taxonomy, classification, and static spatial/logical containment where entities form inherent hierarchies or whole-to-part arrangements (e.g., 'is a', 'part of', 'instance of', etc.).",
+			        "2. Spatial & Topological: Focuses on physical, geographic, geometric, or positional arrangements, proximity, and spatial origins within an environment (e.g., 'located in', 'borders with', 'originates from', etc.).",
+			        "3. Temporal & Causal: Focuses on event ordering, chronological progression, state transitions, and cause-and-effect mechanics across a timeline (e.g., 'causes', 'triggered by', 'precedes', etc.).",
+			        "4. Social & Organizational: Focuses on deliberate affiliations, governance structures, power dynamics, active interactions, and competitive or cooperative ties between autonomous agents, collectives, or authorities (e.g., 'member of', 'controls', 'competes with',etc.).",
+			        "5. Functional & Operational: Focuses on dynamic actions, instrumentalities, resource flows, and operational dependencies where one entity generates, alters, utilizes, or relies upon another to achieve a state, output, or purpose (e.g., 'creates', 'uses', 'depends on', 'consumes',etc.).",
+					"Do NOT include any conversational preamble or text."]
+			},
+		"user":
+			{
+				"role": 
+					"user", 
+				"content": 
+					{
+					"query":
+						["\n<query>\n(QUERY)\n</query>\n"],
+					"relevant_topics":
+						["\n<topics>\n(TOPICS)\n</topics>\n"]
+					}
+			},
+		"required_keys":["topics","query"]
+		},		
 	"text_decomposition_prompt":
 		{
 			"system":
@@ -192,7 +234,7 @@
 					"content": 
 						{
 							"known_knowledge":
-								["\n<known_background>\n(BACKGROUND)\n</known_background>\n"],
+								["\n<prior_knowledge>\n(BACKGROUND)\n</prior_knowledge>\n"],
 							"descriptions":
 								["\n<new_information>\n(TEXT)\n</new_information>\n"],
 							"relevant_topics":
@@ -200,7 +242,8 @@
 							"user_query":
 								["\n[MAIN TOPIC]\n<user_topic>\n(TOPICS)\n</user_topic>\n"]
 						}
-				}			
+				},
+			"required_keys":["topics","background","text","other_topics"]			
 		},
 	"query_evaluation_prompt":
 		{
@@ -223,7 +266,8 @@
 							"context": ["<user_context>\n(CONTEXT)\n</user_context>\n"],
 							"query":["\n<user_query>\n(QUERY)\n</user_query>"]
 						}
-				}
+				},
+			"required_keys":["context","query"]
 		},
 	"reasoned_answer_prompt":
 		{
@@ -251,73 +295,8 @@
 							"user_query":
 								["\n[USER QUERY]\n<query>\n(USER_QUERY)\n</query>\n"]
 						}
-				}			
-		},
-	"brainstorming_prompt":
-		{
-			"system":
-				{
-					"role": 
-						"system", 
-					"content": 
-						["[SYSTEM ROLE AND GUARDRAILS]",
-						"You are a brainstorming assistant for fictional worldbuilding. Your task is to answer the user query by building upon or extrapolating the given context and imagining new possibilities.",
-						"- Any invented or extrapolated ideas MUST have a logical or factual basis within the provided context.",
-						"- Always respond with the basis and reasoning of your idea in verbose form in the 'scratchpad' field.",
-						"- Your reasoning must ONLY be based on the given context and the conversation history.",
-						"- You MUST answer the user query with a response that does not appear in the context based on your reasoning in the 'answer' field.",
-						"- You have access to the full conversation history. If a user asks a follow-up question or refers to a previous topic (using words like 'it', 'that', 'the previous list', or 'expand on that'), you must explicitly look back at your prior assistant answers, build upon them, and reference what you stated earlier (e.g., 'As I mentioned earlier regarding...').",
-						"- Do NOT include any conversational preamble or text. "]
 				},
-			"user":
-				{
-					"role": 
-						"user",
-					"content": 
-						{
-							"local_context":
-								["\n[CONTEXT BLOCK]\n<context>\n(LOCAL_CONTEXT)\n</context>\n"],
-							"topic":
-								["\n[TOPIC TO DESCRIBE]\n<topic>\n(TOPIC)\n</topic>\n"]
-						} 
-						
-				}			
-		},
-	"hypothesizing_prompt":
-		{
-			"system":
-				{
-					"role": 
-						"system", 
-					"content": 
-						["[SYSTEM ROLE AND GUARDRAILS]",
-						"You are a logical deduction generator for the rules of a fictional world. Your job is to derive reasonable deductions about the two (2) given topics drawn from the given list of facts.",
-						"- Respond with a list of at least five (5) different deductions that are NOT implied by the given facts.",
-						"- In the 'deductions' field: Respond with the deductions derived from the given facts.",
-						"- You may ONLY interpolate or extrapolate based on the given facts.",
-						"- Each deduction must include BOTH of the given topics.",
-						"- Each deduction must be a simple sentence.",
-						"- You must NOT use words that convey uncertainty, like 'may be','perhaps', or 'could be'. Instead, ALWAYS use words that convey certainty, like 'is','has', or 'does'.",
-						"- In the 'reasoning' field: Respond with the reasoning that supports your deduction. Your reasoning MUST be based on the given facts.",
-						"- Each deduction must be supported by exactly one (1) fact from EACH topic.",
-						"- Each reasoning must be two (2) simple sentences exactly the same as a sentence in the list of facts.",
-						"- Do NOT assume any information that is not in the given list of facts.",
-						"- You have access to the full conversation history. If a user asks a follow-up question or refers to a previous topic (using words like 'it', 'that', 'the previous list', or 'expand on that'), you must explicitly look back at your prior assistant answers, build upon them, and reference what you stated earlier (e.g., 'As I mentioned earlier regarding...').",
-						"- Do NOT include any conversational preamble or text. "]
-				},
-			"user":
-				{
-					"role": 
-						"user",
-					"content": 
-						{
-							"facts":
-								["\n[FACTS]\n<facts>\n(FACTS)\n</facts>\n"],
-							"topic":
-								["\n[TOPICS]\n<topics>\n(TOPIC)\n</topics>\n"]
-						} 
-						
-				}			
+			"required_keys":["local_context","user_query"]			
 		},
 	"triplet_extraction_prompt":
 		{
@@ -337,19 +316,69 @@
 						"STEP 1 : First, you must scan a given statement, identify topics in the statement and check it for passive voice.",
 						"1.1. In the 'reasoning' field, you must respond with the topics in the statement and describe the dynamics between the topics. Dynamics may include relative location, action verbs, immutable properties or transient qualities.",
 						"STEP 2 : Next, you must convert the given statements into simple sentences.",
-						"2.1. In the 'simplified_text' field, you must respond with a simple sentence that reflects information contained in a statement. Each simple sentence MUST describe the relationship between AT MOST TWO (2) of the given topics.",
+						"2.1. In the 'simplified_text' field, you must respond with a simple sentence that reflects information contained in a statement. Each simple sentence MUST describe the relationship between ANY NUMBER of the given topics.",
 						"2.2. ALL of the information in the statement must be covered in this manner.",
 						"STEP 3 : Finally, you must extract a list of (source, relation, target) triplets from the simple sentences according to the given schema",
-						"3.2. In the 'source' field, you must respond with the subject of the 'simplified_text' (i.e., the acting entity). The 'source' MUST STRICTLY be ONLY ONE of the given topics.",
-						"3.3. In the 'target' field, you must respond with the object of the 'simplified_text' (i.e., the entity being acted upon). The 'target' MUST STRICTLY be ONLY ONE of the given topics.",
-						"3.4. In the 'relation' field, you must briefly describe the how the 'source' acts upon the 'target' (e.g., if the statement is 'The dark sorcerer Malakor forged the Blade of Shadows.'; then 'source'='Malakor', 'target'='Blade of Shadows', 'relation':'forged'). Relations must be descriptive, narrative-focused verbs.",
+						"3.1. In the 'sources' field, you must respond with the subjects of the 'simplified_text' (i.e., the acting entities or the primary entities). The 'source' MUST STRICTLY be a subset of given topics.",
+						"3.2. In the 'targets' field, you must respond with the objects of the 'simplified_text' (i.e., the entities being acted upon or the secondary entities). The 'target' MUST STRICTLY be a subset of the given topics.",
+						"3.3. In the 'relation' field, you must briefly describe the how the 'sources' act upon the 'targets' (e.g., if the statement is 'The dark sorcerer Malakor forged the Blade of Shadows.'; then 'source'='Malakor', 'target'='Blade of Shadows', 'relation':'forged'). Relations must be descriptive, narrative-focused verbs.",
+						"3.4. In the 'temporal_metadata' field, you must capture any chronological clues, durations, or references to other events (e.g., 'before the war', '10 years after X', 'during the winter', 'while the city was burning') relative to the sources and targets, and write a clear narrative description. If no temporal data is found, respond with 'null'. Do not invent dates or time periods.",
 						"[CRITICAL DIRECTIONALITY RULES (source -> relation -> target)]",
-						"1. THE SOURCE IS ALWAYS THE INITIATOR OR SUBJECT: The source entity must be the source of the action/relationship (e.g. the active driver, possessor, ruler or creator).",
-						"2. THE TARGET IS ALWAYS THE RECIPIENT OR OBJECT: The target entity must be what the action is directed toward (e.g., what is owned, ruled, created, or where the subject is affected).",
-						"3. USE ACTIVE VERBS PREFERABLY: Whenever possible, frame relations so the source acts upon the target (e.g., use 'ruled' instead of 'ruled by' if the character is the source).",
+						"1. THE SOURCE IS ALWAYS THE INITIATOR OR SUBJECT: The source entities must be the source of the action/relationship (e.g. the active driver, possessor, ruler or creator).",
+						"2. THE TARGET IS ALWAYS THE RECIPIENT OR OBJECT: The target entities must be what the action is directed toward (e.g., what is owned, ruled, created, or where the subject is affected).",
+						"3. USE ACTIVE VERBS PREFERABLY: Whenever possible, frame relations so the sources acts upon the targets (e.g., use 'ruled' instead of 'ruled by' if a character is the source).",
 						"[OVERALL GUIDELINES]",
-						"1. You must ONLY extract facts explicitly stated or directly implied in the given statements. Do not invent facts.",
-						"2. Your response must cover ALL of the information provided in the statements.",
+						"1. You must ONLY extract relationships explicitly stated or directly implied in the given statements. Do not invent facts.",
+						"2. You must use the prior knowledge ONLY as a guide for the extracted facts. Do NOT extract facts from the prior knowledge itself.",
+						"3. Your response must cover ALL of the information provided in the statements.",
+						"4. Your responses must strictly follow the provided schema. Do NOT include any conversational preamble or text."]
+				},
+			"user":
+				{
+					"role": 
+						"user",
+					"content": 
+						{
+							"topics":
+								["\n<topics>\n(TOPICS)\n</topics>\n"],
+							"known_knowledge":
+								["\n<prior_knowledge>\n(BACKGROUND)\n</prior_knowledge>\n"],
+							"statements":
+								["\n(STATEMENTS)\n"]
+						} 
+						
+				},
+			"required_keys":["topics","background","statements"]			
+		},
+	"triplet_extraction_prompt_force_exclusive":
+		{
+			"system":
+				{
+					"role": 
+						"system", 
+					"content": 
+						["[SYSTEM ROLE]",
+						"You are an advanced relationship extraction engine for fictional lore. Your task is to find the ONE (1) SINGLE relationship between a source topic and a target topic based on a statement about them.",
+						"[INPUT FORMAT]",
+						"1. You are given a set of statements and a source topic and a target topic.",
+						"2. Each topic is enclosed between <topic> and </topic> tags.",
+						"3. Each statement is enclosed between <statement> and </statement> tags.",
+						"[STEP-BY-STEP RESPONSE INSTRUCTIONS]",
+						"Your task consists of three steps.",
+						"STEP 1 : First, you must scan a given statement, identify topics in the statement and check it for passive voice.",
+						"1.1. In the 'reasoning' field, you must respond with the topics in the statement and describe the dynamics between the topics. Dynamics may include relative location, action verbs, immutable properties or transient qualities.",
+						"STEP 2 : Next, you must convert the given statements into simple sentences.",
+						"2.1. In the 'simplified_text' field, you must respond with a simple sentence that reflects information contained in a statement. Each simple sentence MUST describe the relationship between the source and target topic.",
+						"2.2. ALL of the information in the statement must be covered in this manner.",
+						"STEP 3 : Finally, you must extract a list of (source, relation, target) triplets from the simple sentences according to the given schema",
+						"3.1. In the 'sources' field, you must respond with the given source topic verbatim.",
+						"3.2. In the 'targets' field, you must respond with the given target topic verbatim.",
+						"3.3. In the 'relation' field, you must briefly describe the how the 'sources' act upon the 'targets' (e.g., if the statement is 'The dark sorcerer Malakor forged the Blade of Shadows.'; then 'source'='Malakor', 'target'='Blade of Shadows', 'relation':'forged'). Relations must be descriptive, narrative-focused verbs.",
+						"3.4. In the 'temporal_metadata' field, you must capture any chronological clues, durations, or references to other events (e.g., 'before the war', '10 years after X', 'during the winter', 'while the city was burning') relative to the sources and targets, and write a clear narrative description. If no temporal data is found, respond with 'null'. Do not invent dates or time periods.",
+						"3.5. USE ACTIVE VERBS PREFERABLY: Whenever possible, frame relations so the sources act upon the targets (e.g., use 'ruled' instead of 'ruled by' if the character is the source).",
+						"[OVERALL GUIDELINES]",
+						"1. You must ONLY extract the relationship explicitly stated or directly implied in the given statements. Do not invent facts.",
+						"2. You must use the prior knowledge ONLY as a guide for the extracted facts. Do NOT extract facts from the prior knowledge itself.",
 						"3. Your responses must strictly follow the provided schema. Do NOT include any conversational preamble or text."]
 				},
 			"user":
@@ -358,45 +387,16 @@
 						"user",
 					"content": 
 						{
+							"topics":
+								["\n<topics>\n(TOPICS)\n</topics>\n"],
+							"known_knowledge":
+								["\n<prior_knowledge>\n(BACKGROUND)\n</prior_knowledge>\n"],
 							"statements":
-								["\n(STATEMENTS)\n"],
-							"topics":
-								["\n(TOPICS)\n"]
+								["\n(STATEMENTS)\n"]
 						} 
 						
-				}			
-		},
-	"plot_reordering_prompt_legacy":
-		{
-			"system":
-				{
-					"role": 
-						"system", 
-					"content": 
-						["[TASK INSTRUCTIONS]",
-						"1. Assign the given unordered_sentences to phases that are in strict chronological order. You must always respond based on the given schema.",
-						"2. The format of each entry in unordered_sentences is {ID : sentence} You must use the given story_outline and existing phases to decide which phase to assign the sentence to.",
-						"3. If multiple sentences describe events happening concurrently or overlapping in time, cluster them together into the same chronological phase. Approximately, each sentence in the story_outline corresponds to the same phase.",
-						"4. You are also given a list of existing phases with their indices in the format {'Phase' Index : Phase events}. If the events described in a given sentence overlap with events in a particular phase, assign that sentence to the phase index.",
-						"5. You MUST include ALL IDs in your response, and each ID must appear EXACTLY ONCE in your response.",
-						"6. In the 'index' field : Output the index of the corresponding phase. You may respond with indices out of order.",
-						"7. In the 'ids' field : Output the sentence IDs for events happening in the same chronological phase. Do NOT output the sentence."]
 				},
-			"user":
-				{
-					"role": 
-						"user",
-					"content": 
-						{
-							"phases":
-								["\n[EXISTING PHASES IN CHRONOLOGICAL ORDER]\n<existing_phases>\n(PHASES)\n</existing_phases>\n"],
-							"chunk":
-								["\n<unordered_sentences>\n(TEXT)\n</unordered_sentences>\n"],
-							"topics":
-								["\n<story>\n(OUTLINE)\n</story>\n"]
-						} 
-						
-				}			
+			"required_keys":["topics","background","statements"]			
 		},
 	"plot_reordering_prompt":
 		{
@@ -423,37 +423,8 @@
 								["\n<story_outline>\n(OUTLINE)\n</story_outline>\nUse the story_outline to determine which event happened first."]
 						} 
 						
-				}			
-		},
-	"context_sufficiency_check_prompt":
-		{
-			"system":
-				{
-					"role": 
-						"system", 
-					"content": 
-						["[TASK INSTRUCTIONS]",
-						"You are given a user query, and some context related to the user query. Your task is to determine whether the provided context is sufficient to provide an answer to the user query.",
-						"1. In the 'relevant_information' field : Respond with the parts of the provided context that are relevant to the user query.",
-						"2. In the 'information_needed' field : Respond with a description of the gaps in the provided context that prevent you from answering the user query correctly.",
-						"3. In the 'is_sufficient' field : Respond with an integer value between 0 and 10 (inclusive) based on how relevant the provided context is to the user query. Respond with 0 if the provided context contains NO information of relevance to the user query. Respond with values between 1 and 10 based on how many assumptions or extrapolations need to be made related to the given context in order to answer the user query. Respond with 10 if the provided context contains ALL information necessary to answer the user query without ANY assumptions or extrapolations.",
-						"4. In the 'additional_questions' field : ONLY IF the provided context is NOT sufficient to answer the query, respond with a list of multiple-choice questions whose answers will provide the additional context needed to answer the user query.",
-						"5. Your multiple choice questions not be too specific and build up on the provided context without making any assumptions or extrapolations."]
 				},
-			"user":
-				{
-					"role": 
-						"user",
-					"content": 
-						{
-							"chunk":
-								["(CONTEXT)\n"],
-							"topics":
-								["\n<user_query>\n(QUERY)\n</user_query>\nIs the provided context sufficient to answer the query?"]
-						} 
-						
-				}			
-		},
-	"edge_classification_prompt":"Classify the text focusing ONLY on [TOPIC] using these specific definitions:\n[SCHEMA]"
+			"required_keys":["phases","outline"]			
+		}
 
 }

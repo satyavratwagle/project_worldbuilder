@@ -1,10 +1,10 @@
 {
-    "get_additional_context":
+    "graph_traversal_strategy":
         {
         "type": "function",
         "function": 
         {
-            "name": "get_additional_context",
+            "name": "graph_traversal_strategy",
             "description": "Call this ONLY if more context is required to answer the user query.",
             "parameters": 
             {

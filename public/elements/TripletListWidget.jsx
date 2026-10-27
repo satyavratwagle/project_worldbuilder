@@ -16,75 +16,134 @@ export default function TripletListWidget() {
     // props = {triplets:[{id:head,relation,tail,base_fact}]}
 
     // Each triplet should have a [0] : head (str), [1] : relation (str), [2] : tail (str), [3] : base_fact(str), 
-    // [4] : select (bool), [5] : editing_fact (bool), [6] : editing_relation (bool)
+    // [4] : select (bool), [5] : editing_fact (bool), [6] : editing_relation (bool), [7] : Head selection (list(bool)), [8] : Tail selection (list(bool))
+    // [9] : temporal_metadata
+
     (props.triplets || []).forEach((triplet) => {
-      widget[triplet.id] = [triplet.head,triplet.relation,triplet.tail,triplet.base_fact,true,false,false];
+      //widget[triplet.id] = [triplet.head,triplet.relation,triplet.tail,triplet.base_fact,true,false,false,Object.fromEntries(triplet.head.map((item, index) => [index, true])),Object.fromEntries(triplet.tail.map((item, index) => [index, true])), triplet.temporal_metadata];
+      const current_triplet = structuredClone(triplet);
+      widget[triplet.id] = current_triplet
+      widget[triplet.id] = {...widget[triplet.id],
+                          "selected":true,
+                          "editing_fact":false,
+                          "editing_relation":false,
+                          "head_selection":Object.fromEntries(triplet.head.map((item, index) => [index, true])),
+                          "tail_selection":Object.fromEntries(triplet.tail.map((item, index) => [index, true]))}
     });
-    console.log(props)
+    console.log(widget)
     return widget;
   });
 
-  // Handle Swap
-  const handleSwap = (id) => {
-    setTriplets((prev) => ({
-      ...prev,
-      [id]: [prev[id][2],prev[id][1],prev[id][0],prev[id][3],prev[id][4],prev[id][5],prev[id][6]],
-    }));
+  // Handle Head Selection
+  const handleHeadSelect = (id,head_id) => {
+    setTriplets((prev) => {
+      const triplet = prev[id];
+      return {
+        ...prev,
+        [id]: {
+          ...triplet,
+          head_selection:{
+            ...triplet.head_selection,
+            [head_id]: !triplet.head_selection[head_id]
+          }
+        }
+      };
+    });
+  };
+
+  const handleTailSelect = (id,tail_id) => {
+    setTriplets((prev) => {
+      const triplet = prev[id];
+      return {
+        ...prev,
+        [id]: {
+          ...triplet,
+          tail_selection:{
+            ...triplet.tail_selection,
+            [tail_id]: !triplet.tail_selection[tail_id]
+          }
+        }
+      };
+    });
   };
 
   // Handle Relation Edit Toggle
   const handleRelationEditToggle = (id, state) => {
-    setTriplets((prev) => ({
-      ...prev,
-      [id]: [prev[id][0],prev[id][1],prev[id][2],prev[id][3],prev[id][4],prev[id][5],state],
-    }));
+    setTriplets((prev) => {
+      const triplet = prev[id];
+      return {
+        ...prev,
+        [id]: {...triplet,editing_relation: state
+        }
+      };
+    });
   };
 
   // Handle Relation Edit
   const handleRelationEdit = (id) => {
     const finalText = editingText;
-    setTriplets((prev) => ({
-      ...prev,
-      [id]: [prev[id][0],finalText,prev[id][2],prev[id][3],prev[id][4],prev[id][5],false],
-    }));
+    setTriplets((prev) => {
+      const triplet = prev[id];
+      return {
+        ...prev,
+        [id]: {...triplet,relation: finalText
+        }
+      };
+    });
     setText("")
   };
 
   // Handle Base Fact Edit Toggle
   const handleFactEditToggle = (id, state) => {
-    setTriplets((prev) => ({
-      ...prev,
-      [id]: [prev[id][0],prev[id][1],prev[id][2],prev[id][3],prev[id][4],state,prev[id][6]],
-    }));
+    setTriplets((prev) => {
+      const triplet = prev[id];
+      return {
+        ...prev,
+        [id]: {...triplet,editing_fact: state
+        }
+      };
+    });
   };
 
   // Handle Base Fact Edit
   const handleFactEdit = (id) => {
 
     const finalText = editingText;
-    setTriplets((prev) => ({
-      ...prev,
-      [id]: [prev[id][0],prev[id][1],prev[id][2],finalText,prev[id][4],false,prev[id][6]],
-    }));
+    setTriplets((prev) => {
+      const triplet = prev[id];
+      return {
+        ...prev,
+        [id]: {...triplet,base_fact: finalText
+        }
+      };
+    });
     setText("")
   };
 
   // Handle Select
   const handleSelect = (id) => {
-    setTriplets((prev) => ({
-      ...prev,
-      [id]: [prev[id][0],prev[id][1],prev[id][2],prev[id][3],!prev[id][4],prev[id][5],prev[id][6]],
-    }));
-  };
-
-  const handleChange = (id, val) => {
-    setTriplets((v) => ({ ...v, [id]: val }));
+    setTriplets((prev) => {
+      const triplet = prev[id];
+      return {
+        ...prev,
+        [id]: {...triplet,selected: !triplet.selected
+        }
+      };
+    });
   };
 
   const handleReset = () => {
     const widget = {};
     (props.triplets || []).forEach((triplet) => {
-      widget[triplet.id] = [triplet.head,triplet.relation,triplet.tail,triplet.base_fact,true,false,false];
+      //widget[triplet.id] = [triplet.head,triplet.relation,triplet.tail,triplet.base_fact,true,false,false,Object.fromEntries(triplet.head.map((item, index) => [index, true])),Object.fromEntries(triplet.tail.map((item, index) => [index, true])), triplet.temporal_metadata];
+      const current_triplet = structuredClone(triplet);
+      widget[triplet.id] = current_triplet
+      widget[triplet.id] = {...widget[triplet.id],
+                          "selected":true,
+                          "editing_fact":false,
+                          "editing_relation":false,
+                          "head_selection":Object.fromEntries(triplet.head.map((item, index) => [index, true])),
+                          "tail_selection":Object.fromEntries(triplet.tail.map((item, index) => [index, true]))}
     });
     setTriplets(widget);
   };
@@ -105,34 +164,37 @@ export default function TripletListWidget() {
               return(
              <React.Fragment key={id}>
               <div key={id} style={{display: 'flex', alignItems: 'center', textAlign:'center'}} className="col-span-1 space-x-3 py-2 border-indigo-500">
-                <Checkbox id={id} checked={!!Triplets[id][4]} onCheckedChange={() => handleSelect(id)} className="mt-1 border-2"/>
+                <Checkbox id={id} checked={!!Triplets[id].selected} onCheckedChange={() => handleSelect(id)} className="mt-1 border-2"/>
               </div>
+              <div className={`col-span-1 flex flex-col items-start space-y-1 py-2 px-2 ${Triplets[id].selected ? 'border-2 rounded-lg' : ''}`}>
 
-              <div className={`col-span-1 flex flex-col items-start space-y-1 py-2 px-2 ${
-                              Triplets[id][4] 
-                                ? 'border-2 rounded-lg' 
-                                : ''
-                            }`}>
+                <div style={{display: 'grid', gridTemplateColumns: '100px 330px 100px', gap: '10px', 'column-gap': '4px', width: '100%'}} className="flex items-center space-x-3 w-full">
+                  <div className="flex flex-col space-y-1 w-full">
+                    {Object.entries(Triplets[id].head).map(([head_id, head]) => {
+                      return(
+                      <React.Fragment key={`head-${head_id}`}>
+                      <span className={`text-left px-2`} style={{textDecoration: Triplets[id].head_selection[head_id] ? 'none' : 'line-through',fontWeight: Triplets[id].head_selection[head_id] ? '600' : 'normal', opacity: Triplets[id].head_selection[head_id] ? 1 : 0.4}} onClick={() => handleHeadSelect(id,head_id)}> {head}</span>
+                      </React.Fragment>
+                    )})}
+                  </div>
 
-                <div className="flex items-center space-x-3 w-full">
-                <span className="text-base text-left px-2 text-foreground font-semibold" onClick={() => handleSwap(id)}> {Triplets[id][0]}</span>
 
                 {/* Arrow Container with Absolute Label Positioning */}
                 <div className="flex-1 relative flex items-center">
                   
                   {/* Relation Label: Floats absolutely above the line, centered */}
-                  {Triplets[id][6] ? (<input 
+                  {Triplets[id].editing_relation ? (<input 
                     type="text" 
                     value={editingText} 
                     onChange={(e) => setText(e.target.value)}
                     onBlur={() => handleRelationEditToggle(id,false)} 
-                    onFocus={(e) => setText(Triplets[id][1])}
+                    onFocus={(e) => setText(Triplets[id].relation)}
                     onKeyDown={(e) => e.key === 'Enter' && handleRelationEdit(id)}
                     placeholder="Update the description!"
                     autoFocus
                     className="border-2 px-1 rounded text-s text-center w-full focus:outline-none focus:ring-gray-50 bg-card text-muted-foreground absolute left-1/2 -translate-x-1/2 -top-3.5"
                   />):
-                    (<span className="absolute left-1/2 -translate-x-1/2 -top-3.5 text-s text-foreground bg-card px-1 whitespace-nowrap" onClick={() => handleRelationEditToggle(id,true)} >{Triplets[id][1]}</span>)}
+                    (<span className="absolute left-1/2 -translate-x-1/2 -top-3.5 text-s text-foreground bg-card px-1 whitespace-nowrap" onClick={() => handleRelationEditToggle(id,true)} >{Triplets[id].relation}</span>)}
                   
                   {/* The Line and Arrowhead (Locked to the vertical center) */}
                   <div className="w-full flex items-center">
@@ -142,23 +204,43 @@ export default function TripletListWidget() {
 
                 </div>
 
-                <span className="text-base text-left px-2 text-foreground font-semibold" onClick={() => handleSwap(id)}> {Triplets[id][2]}</span>
-              </div>
-                
-                
+          
+                <div className="flex flex-col space-y-1 w-full">
+                    {Object.entries(Triplets[id].tail).map(([tail_id, tail]) => {
+                      return(
+                      <React.Fragment key={`tail-${tail_id}`}>
+                      <span className={`text-left px-2`} style={{textDecoration: Triplets[id].tail_selection[tail_id] ? 'none' : 'line-through', fontWeight: Triplets[id].tail_selection[tail_id] ? '600' : 'normal', opacity: Triplets[id].tail_selection[tail_id] ? 1 : 0.6}} onClick={() => handleTailSelect(id,tail_id)}> {tail}</span>
+                      </React.Fragment>
+                    )})}
+                </div>
 
-                {Triplets[id][5] ? (<input 
+              </div>
+
+                {Triplets[id].editing_fact ? (<input 
                     type="text" 
                     value={editingText} 
                     onChange={(e) => setText(e.target.value)}
                     onBlur={() => handleFactEditToggle(id,false)} 
-                    onFocus={(e) => setText(Triplets[id][3])}
+                    onFocus={(e) => setText(Triplets[id].base_fact)}
                     onKeyDown={(e) => e.key === 'Enter' && handleFactEdit(id)}
                     placeholder="Update the description!"
                     autoFocus
                     className="border-2 px-2 rounded text-sm text-center w-full focus:outline-none focus:ring-gray-50 bg-card text-muted-foreground"
                   />):
-                    (<span className="w-full text-center text-sm text-muted-foreground px-2" onClick={() => handleFactEditToggle(id,true)} >{Triplets[id][3]}</span>)}
+                    (<span className="w-full text-center text-sm text-muted-foreground px-2" onClick={() => handleFactEditToggle(id,true)} >{Triplets[id].base_fact}</span>)}
+
+              {Triplets[id].editing_metadata ? (<input 
+                    type="text" 
+                    value={editingText} 
+                    onChange={(e) => setText(e.target.value)}
+                    onBlur={() => handleFactEditToggle(id,false)} 
+                    onFocus={(e) => setText(Triplets[id].temporal_metadata)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleFactEdit(id)}
+                    placeholder="Update the description!"
+                    autoFocus
+                    className="border-2 px-2 rounded text-sm text-center w-full focus:outline-none focus:ring-gray-50 bg-card text-muted-foreground"
+                  />):
+                    (<span className="w-full text-center text-sm text-muted-foreground px-2" onClick={() => handleFactEditToggle(id,true)} >{Triplets[id].temporal_metadata}</span>)}
               </div>
 
               </React.Fragment>

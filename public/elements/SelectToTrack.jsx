@@ -35,7 +35,7 @@ export default function SelectToTrack() {
   const handleAddItem = () => {
     setCheckedItems((prev) => ({
       ...prev,
-      [(Object.keys(checkedItems).length)]: ["New Topic",[],false,false],
+      [(Object.keys(checkedItems).length+1)]: ["New Topic",[],false,false],
     }));
     console.log(checkedItems)
   };

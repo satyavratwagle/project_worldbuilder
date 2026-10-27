@@ -11,6 +11,7 @@ import re
 from collections import defaultdict
 import networkx as nx
 import json
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 _orig_getattr = torch.nn.Module.__getattr__
@@ -195,6 +196,20 @@ class SemanticTools():
         sentences = [sent.text.strip() for sent in doc.sents]
 
         return sentences
+
+    def split_into_chunks(self,text, chunk_size=300):
+
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,          # Ideal sweet spot for LLM extraction context
+            chunk_overlap=0,       # Preserves cross-boundary relationships
+            separators=["\n\n", "\n", ". ", " ", ""] # Respects paragraphs then sentences
+            )
+
+        chunks = text_splitter.create_documents(texts=[text])
+        chunks = [re.sub(r'^[.,;:!?\s]+', '',chunk.page_content.strip()) for chunk in chunks]
+        print(chunks)
+
+        return chunks
 
     def split_pronoun_clusters(self,doc,cluster):
         pronoun_clusters = []

@@ -26,7 +26,6 @@ import copy
 import time
 
 import csv
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # remove later
 import torch
@@ -51,9 +50,9 @@ punctuation_tuple = tuple(string.punctuation)
 
 # Engineering functions (synchronous)
 
-def update_system_prompt(prompt_name):
+def update_system_prompt(system_prompt):
 
-    system_prompt = copy.deepcopy(prompts_lookup[prompt_name]['system'])
+    #system_prompt = copy.deepcopy(prompts_lookup[prompt_name]['system'])
     system_prompt['content'] = '\n'.join(system_prompt['content'])
 
     chat_history = cl.user_session.get("chat_history")
@@ -62,6 +61,14 @@ def update_system_prompt(prompt_name):
     else:
         chat_history = [system_prompt]
     cl.user_session.set("chat_history",chat_history)
+
+def add_tool_output_to_history(tool_output):
+    # tool_output = str
+
+    chat_history = cl.user_session.get("chat_history")
+    chat_history.append({"role":"tool","content":tool_output})
+    cl.user_session.set("chat_history",chat_history)
+
 
 def uppercase(text):
     return text[0].upper()+text[1:]
@@ -270,12 +277,13 @@ async def update_datastore(action: cl.Action):
 
 async def save_to_faiss():
 
-    not_in_graph,not_in_dataset = du.calculate_graph_datastore_diff(write_to_kg2ds=False)
+    not_in_graph,not_in_dataset,nodes_with_unsaved_changes = du.calculate_graph_datastore_diff(write_to_kg2ds=False)
 
     graph_diff = len(not_in_graph)>0
     dataset_diff = len(not_in_dataset)>0
+    saved_diff = len(nodes_with_unsaved_changes)>0
 
-    if(graph_diff or dataset_diff):
+    if(graph_diff or dataset_diff or saved_diff):
         await cl.Message("Would you like to save this session?",actions=[cl.Action(name='update_faiss', payload={"label": "None"}, label="Save")]).send()
     else:
         await cl.Message("No nodes have been updated!").send()
@@ -288,7 +296,7 @@ async def save_to_faiss():
 
 async def show_knowledge_graph(user_message):
 
-    node = du.get_relevant_node(user_message,threshold=0.8)
+    node = du.get_relevant_topics(user_message,threshold=0.8,all=False)
     if(node):
         #nodes,edges = du.get_node_stack(node)
         nodes = [node]
@@ -425,49 +433,46 @@ async def resolve_coreferences(user_text,choose=True):
     resolved_text = sem.resolve_aliases(user_text,entity_dict,True)
 
     print(entity_dict)
-    ner_discovered_entities = [entity_dict[key]['primary_alias'] for key in entity_dict.keys()]
-    if(choose):
-
-        # Use an LLM to find entities that the NER may have missed.
-        props_dict = dict()
-        props_dict['statements']            = user_text
-        props_dict['known_topics']          = "\n".join([entity_dict[key]['primary_alias'] for key in entity_dict.keys()])
-
-        # Clear out chat history to avoid cross-contamination
-        chat_history = cl.user_session.get("chat_history")
-        chat_history = prompts.get_entity_discovery_prompt(props_dict,history=[])
-        cl.user_session.set("chat_history",chat_history)
-        update_system_prompt("entity_discovery_prompt")
-
-        llm_entity_discovery_response = await tokenize_and_generate(temperature=0.3,max_new_tokens=512,template=py_schema.EntityDiscoveryList)
-
-        curr_key = len(entity_dict.keys())+1
-        for info in llm_entity_discovery_response.entities_discovered:
-
-            
-            print(f"{info.entity_name} ({info.entity_type} - {info.entity_subcategory}) : {info.reasoning}")
-
-            # Add the new entities into the entity_dict for adding.
-            if(not(info.entity_name in ner_discovered_entities)):
-                entity_dict[curr_key] = dict()
-                entity_dict[curr_key]['primary_alias'] = info.entity_name
-                entity_dict[curr_key]['existing_aliases'] = [info.entity_name]
-                entity_dict[curr_key]['alias_known'] = False
-                entity_dict[curr_key]['to_add'] = False
-                curr_key += 1
-
-        entity_dict = await show_checklist(entity_dict,message='Please select the topics to add to the story graph!')
 
     return resolved_text, entity_dict    
 
-async def choose_entities_to_track(entity_dict,resolved_text):
+async def extract_topics(og_text):
+
+    resolved_text, entity_dict = await resolve_coreferences(og_text)
+
+    # Use an LLM to find entities that the NER may have missed.
+    props_dict = dict()
+    props_dict['statements']            = resolved_text
+    props_dict['known_topics']          = "\n".join([entity_dict[key]['primary_alias'] for key in entity_dict.keys()])
+
+    # Clear out chat history to avoid cross-contamination
+    chat_history = prompts.prompt_parser("entity_discovery_prompt",props_dict)
+
+    llm_entity_discovery_response = await tokenize_and_generate(temperature=0.3,max_new_tokens=1024,template=py_schema.EntityDiscoveryList)
+
+    curr_key = len(entity_dict.keys())+1
+    for info in llm_entity_discovery_response.entities_discovered:
+        
+        print(f"{info.entity_name} ({info.entity_type} - {info.entity_subcategory}) : {info.reasoning}")
+
+        # Add the new entities into the entity_dict for adding.
+        ner_discovered_entities = [entity_dict[key]['primary_alias'] for key in entity_dict.keys()]
+        if(not(info.entity_name in ner_discovered_entities)):
+            entity_dict[curr_key] = dict()
+            entity_dict[curr_key]['primary_alias'] = info.entity_name
+            entity_dict[curr_key]['existing_aliases'] = [info.entity_name]
+            entity_dict[curr_key]['alias_known'] = False
+            entity_dict[curr_key]['to_add'] = False
+            curr_key += 1
+
+    entity_dict = await show_checklist(entity_dict,message='Please select the topics to add to the story graph!')
 
     nodes_to_add = cl.user_session.get("relevant_nodes")
 
     # Add all the new "topic" nodes to the graph and reload the maps
     for key in entity_dict.keys():
         print(entity_dict[key])
-        if(entity_dict[key]['to_add']):
+        if(entity_dict[key]['to_add'] and not(du.get_node_id(entity_dict[key]['primary_alias']))):
 
             if(not(entity_dict[key]['alias_known']) and len(entity_dict[key]['existing_aliases'])>1):
                 # Prompt user to provide an alias
@@ -487,12 +492,17 @@ async def choose_entities_to_track(entity_dict,resolved_text):
             props_dict['statements']            = resolved_text
             props_dict['topic']                 = entity_dict[key]['primary_alias']
 
-            # Clear out chat history to avoid cross-contamination
-            chat_history = cl.user_session.get("chat_history")
-            chat_history = prompts.get_entity_categorization_prompt(props_dict,history=[])
-            cl.user_session.set("chat_history",chat_history)
-            update_system_prompt("entity_categorization_prompt")
+            props_dict['background']            = ""
+            if(du.get_node_id(entity_dict[key]['primary_alias'])):
+                props_dict['background']            = du.knowledge_graph.nodes[du.get_node_id(entity_dict[key]['primary_alias'])]['metadata']['summary']
 
+            if(len(props_dict['background'].strip())==0):
+                props_dict['background']            = f"No background knowledge about {entity_dict[key]['primary_alias']} available."
+
+
+            # Clear out chat history to avoid cross-contamination
+            chat_history = prompts.prompt_parser("entity_categorization_prompt",props_dict)
+            
             llm_entity_category_response = await tokenize_and_generate(temperature=0.3,max_new_tokens=128,template=py_schema.EntityType)
 
             await cl.Message(content=f"{entity_dict[key]['primary_alias']}\n{llm_entity_category_response.entity_type.value} ({llm_entity_category_response.entity_subcategory}): {llm_entity_category_response.reasoning}").send()
@@ -536,104 +546,171 @@ async def choose_entities_to_track(entity_dict,resolved_text):
 
     cl.user_session.set("relevant_nodes",nodes_to_add) 
 
-    return entity_dict
+    return resolved_text, entity_dict
 
-async def decompose_text_loop(resolved_text,entity_dicts):
+async def extract_relationships(resolved_text,entity_dicts):
+
+    nodes_to_add = cl.user_session.get("relevant_nodes") 
 
     # Combine all names
-    all_aliases = []
-    for idx,entity_dict in entity_dicts.items():
-        print(entity_dict)
-        all_aliases += entity_dict['existing_aliases']
-
-    print(all_aliases)
+    all_aliases = [alias for idx,entity_dict in entity_dicts.items() for alias in entity_dict['existing_aliases']]
 
     topics = [entity_dict['primary_alias'] for entity_dict in entity_dicts.values() if entity_dict['to_add']]+['Other']
 
     # 3. Create a new model that inherits from BaseReport and adds/overrides fields
     triplet_schema = create_custom_triplet_schema(topics)
 
-    nodes_to_add = []
-
     # Split text into chunks here
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=300,          # Ideal sweet spot for LLM extraction context
-        chunk_overlap=0,       # Preserves cross-boundary relationships
-        separators=["\n\n", "\n", ". ", " ", ""] # Respects paragraphs then sentences
-    )
-
-    chunks = text_splitter.create_documents(texts=[resolved_text])
-    chunks = [re.sub(r'^[.,;:!?\s]+', '',chunk.page_content.strip()) for chunk in chunks]
-    print(chunks)
+    chunks = sem.split_into_chunks(resolved_text)
+    
+    new_edges = []
 
     for chunk in chunks:
 
         # Filter Chunk to only consider sentences where the entity is mentioned
-        chunk_words = chunk.split(" ")
-        chunk_starter = " ".join(chunk_words[:min(len(chunk_words),4)])
-
         statements = sem.split_into_sentences(chunk)
         triplet_widget_props = await decompose_text(statements,topics,template=triplet_schema)
 
-        # Check triplet widget
-        triplet_widget_element = cl.CustomElement(
-                        name="TripletListWidget",
-                        display="inline",
-                        props= triplet_widget_props
-                    )
-
+        # Check relationships to save.
+        triplet_widget_element = cl.CustomElement(name="TripletListWidget",display="inline",props= triplet_widget_props)
         print(triplet_widget_element.props)
         response = await cl.AskElementMessage(content="Select Relationships to save!",element=triplet_widget_element).send()
         print('Response : ',response)
+        # response[key] = [heads,relation,tails,text,selected,selected_heads,selected_tails)
+        # Reification of Edges
 
         all_relations = []
-        for key in response.keys():
-            print(response[key])
-            if(not(key=='submitted')):
-                if(response[key][4]):
+        if(response):
+            for key in response.keys():
+                if(not(key=='submitted') and response[key]['selected']):
 
-                    curr_relation = dict()
-                    curr_relation['head']       = response[key][0]
-                    curr_relation['relation']   = response[key][1]
-                    curr_relation['tail']       = response[key][2]
-                    curr_relation['text']       = response[key][3]
-                    all_relations.append(curr_relation)
+                    heads               = [response[key]['head'][idx] for idx in [int(key) for key,value in response[key]['head_selection'].items() if value]]
+                    relation            = response[key]['relation']
+                    tails               = [response[key]['tail'][idx] for idx in [int(key) for key,value in response[key]['tail_selection'].items() if value]]
+                    text                = response[key]['base_fact']
+                    to_add              = response[key]['selected']
+                    temporal_metadata   = response[key]['temporal_metadata']
 
-        new_edges = []
-        for relation_info in all_relations:
-            props_dict = dict()
-            props_dict['statement']            = f"{relation_info['text']} : Relationship between {relation_info['head']} and {relation_info['tail']}"
 
-            # Clear out chat history to avoid cross-contamination
-            chat_history = cl.user_session.get("chat_history")
-            chat_history = prompts.get_relationship_categorization_prompt(props_dict,history=[])
-            cl.user_session.set("chat_history",chat_history)
-            update_system_prompt("relationship_categorization_prompt")
+                    if(len(heads)>1 or len(tails)>1):
 
-            llm_relation_category_response = await tokenize_and_generate(temperature=0.3,max_new_tokens=128,template=py_schema.RelationshipType)
+                        # 1. Convert edge to a node and add it
+                        await cl.Message(content="Reifying Edge!").send()
 
-            await cl.Message(content=f"{relation_info['text']}\n{llm_relation_category_response.relation_type.value} ({llm_relation_category_response.relation_subcategory}): {llm_relation_category_response.reasoning}").send()
-            print()
+                        topics_mentioned = heads+tails
 
-            # Add edge here
+                        # 1.A. Reify edge into a node and get the title, type and tags.
+                        props_dict = dict()
+                        props_dict['statement']            = text
+                        props_dict['background']            = ""
+                        for topic in topics_mentioned:
+                            props_dict['background']            += "* "+du.knowledge_graph.nodes[du.get_node_id(topic)]['metadata']['summary']+'\n'
 
-            if(not(relation_info['tail'].lower()=='other' and relation_info['head'].lower()=='other')):
+                        # Clear out chat history to avoid cross-contamination
+                        chat_history = prompts.prompt_parser("edge_reification_prompt",props_dict)
+                    
+                        llm_reification_response = await tokenize_and_generate(temperature=0.25,max_new_tokens=128,template=py_schema.ReifiedEdge)
 
-                if(relation_info['tail'].lower()=='other'):
-                    relation_info['tail'] = relation_info['head']
-                elif(relation_info['head'].lower()=='other'):
-                    relation_info['head'] = relation_info['tail']
+                        new_node_name = llm_reification_response.title
+                        new_node_type = llm_reification_response.entity_type.value
+                        new_node_tag = llm_reification_response.entity_subcategory
+                        new_aliases = [llm_reification_response.title]
+                        new_node_summary = text
 
-                # Check if edges between nodes are redundant
-                if(not(du.check_edges_for_redundancy(relation_info['head'],relation_info['tail'],relation_info['text']))):
-                    new_edges.append(du.add_edge(relation_info['head'],relation_info['tail'],
-                                                type=llm_relation_category_response.relation_type.value,
-                                                tag=llm_relation_category_response.relation_subcategory,
-                                                text=relation_info['text']))
-                else:
-                    await cl.Message(content=f"{relation_info['text']} is similar to information already known!").send()
+                        nodes_to_add.append(du.add_node(new_node_name,
+                                            type=new_node_type,
+                                            tag=new_node_tag,
+                                            aliases=new_aliases,
+                                            summary=new_node_summary))
+
+                        du.reload_lookups()
+
+                        await cl.Message(content=f"Created a new topic : **{new_node_name}** ({llm_reification_response.entity_type.value})\n{text}").send()
+
+                        # Classify new edges from each node to the new node. 
+
+                        reification_statement = [text]
+
+                        all_new_triplets = []
+                        for topic in heads:
+                            reification_schema = create_custom_triplet_schema([topic,new_node_name],exclusive=True)
+                            reification_triplets = await decompose_text(reification_statement,[topic,new_node_name],template=reification_schema,exclusive=True)
+                            all_new_triplets += reification_triplets['triplets']
+
+                        for topic in tails:
+                            reification_schema = create_custom_triplet_schema([new_node_name,topic],exclusive=True)
+                            reification_triplets = await decompose_text(reification_statement,[new_node_name,topic],template=reification_schema,exclusive=True)
+                            all_new_triplets += reification_triplets['triplets']
+
+                        for triplet in all_new_triplets:
+                            reification_relation = dict()
+                            reification_relation['head']                = triplet['head'][0]
+                            reification_relation['relation']            = triplet['relation']
+                            reification_relation['tail']                = triplet['tail'][0]
+                            reification_relation['text']                = triplet['base_fact']
+                            reification_relation['temporal_metadata']   = triplet['temporal_metadata']
+
+                            await cl.Message(content=f"Connection between **{reification_relation['head']}** and **{reification_relation['tail']}** {reification_relation['text']}").send()
+
+                            all_relations.append(reification_relation)
+
+                    else:
+                        curr_relation = dict()
+                        curr_relation['head']               = heads[0]
+                        curr_relation['relation']           = relation
+                        curr_relation['tail']               = tails[0]
+                        curr_relation['text']               = text
+                        curr_relation['temporal_metadata']  = temporal_metadata
+
+                        all_relations.append(curr_relation)
+
+
+        if(len(all_relations)>0):
+            for relation_info in all_relations:
+
+                props_dict = dict()
+                props_dict['statement']            = f"{relation_info['text']} : Relationship between {relation_info['head']} and {relation_info['tail']}"
+
+                props_dict['background']            = []
+                for node in [relation_info['head'],relation_info['tail']]:
+                    if(du.get_node_id(node)):
+                        props_dict['background'].append(du.knowledge_graph.nodes[du.get_node_id(node)]['metadata']['summary'])
+                    else:
+                        props_dict['background'].append(f"No background knowledge about {node} available.")
+
+                props_dict['background'] = "\n".join(props_dict['background'])
+
+                # Clear out chat history to avoid cross-contamination
+                chat_history = prompts.prompt_parser("relationship_categorization_prompt",props_dict)
+                
+                llm_relation_category_response = await tokenize_and_generate(temperature=0.3,max_new_tokens=128,template=py_schema.RelationshipType)
+
+                await cl.Message(content=f"{relation_info['text']}\n{llm_relation_category_response.relation_type.value} ({llm_relation_category_response.relation_subcategory}): {llm_relation_category_response.reasoning}").send()
+                print()
+
+                # Add edge here
+
+                if(not(relation_info['tail'].lower()=='other' and relation_info['head'].lower()=='other')):
+
+                    if(relation_info['tail'].lower()=='other'):
+                        relation_info['tail'] = relation_info['head']
+                    elif(relation_info['head'].lower()=='other'):
+                        relation_info['head'] = relation_info['tail']
+
+                    # Check if edges between nodes are redundant
+                    if(not(du.check_edges_for_redundancy(relation_info['head'],relation_info['tail'],relation_info['text']))):
+                        new_edges.append(du.add_edge(relation_info['head'],relation_info['tail'],
+                                                    type=llm_relation_category_response.relation_type.value,
+                                                    tag=llm_relation_category_response.relation_subcategory,
+                                                    text=relation_info['text'],
+                                                    temporal_data=relation_info['temporal_metadata']))
+                    else:
+                        await cl.Message(content=f"{relation_info['text']} is similar to information already known!").send()
 
     cl.user_session.set("relevant_edges",new_edges)
+    cl.user_session.set("relevant_nodes",nodes_to_add)
+    #du.save_graph()
+
 
     return nodes_to_add
 
@@ -643,8 +720,9 @@ async def decomposition_post_processing(nodes_to_add, entity_dicts):
 
     # Check against existing nodes for similarity and remove redundant nodes here.
     async with cl.Step(name="Information Redundancy Check",default_open=True) as step:
-        to_compare = [text for text,type in nodes_to_add]
-        comparison_dict = du.compare_against_existing_nodes(to_compare)
+        #to_compare = [text for text,type in nodes_to_add]
+        #comparison_dict = du.compare_against_existing_nodes(to_compare)
+        comparison_dict = dict()
 
         existing_nodes_to_remove = []
         new_nodes_to_not_add = []
@@ -691,7 +769,7 @@ async def decomposition_post_processing(nodes_to_add, entity_dicts):
 
 #############
 
-async def decompose_text(statements,topics,template=None,temperature=0.2):
+async def decompose_text(statements,topics,template=None,temperature=0.2,exclusive=False):
     # statements = list(str)
     # topics = list(str)
 
@@ -700,32 +778,44 @@ async def decompose_text(statements,topics,template=None,temperature=0.2):
             template = TripletList
 
         # Extract statements and topics
-        props_dict = dict()
-        props_dict['topics']                = '\n\n'.join([f"<topic>\n{topic}\n</topic>" for topic in topics])
-        props_dict['statements']            = '\n\n'.join([f"<statement>\n{statement}\n</statement>" for statement in statements])
-        print(props_dict)
+        background_info = []
+        for topic in topics:
+            if(du.get_node_id(topic) and len(du.knowledge_graph.nodes[du.get_node_id(topic)]['metadata']['summary'])>0):
+                background_info.append(f"{topic} : {du.knowledge_graph.nodes[du.get_node_id(topic)]['metadata']['summary']}")
 
         # Clear out chat history to avoid cross-contamination
-        chat_history = cl.user_session.get("chat_history")
-        chat_history = prompts.get_triplet_extraction_prompt(props_dict,history=[])
-        cl.user_session.set("chat_history",chat_history)
-        update_system_prompt("triplet_extraction_prompt")
+        if(exclusive):
+            props_dict = dict()
+            props_dict['background']            = '\n\n'.join(background_info)
+            props_dict['topics']                = f"* source topic : {topics[0]}\n* target topic : {topics[1]}"
+            props_dict['statements']            = '\n\n'.join([f"<statement>\n{statement}\n</statement>" for statement in statements])
+            print(props_dict)
+            chat_history = prompts.prompt_parser("triplet_extraction_prompt_force_exclusive",props_dict)
 
+        else:
+            props_dict = dict()
+            props_dict['background']            = '\n\n'.join(background_info)
+            props_dict['topics']                = '\n'.join([f"* {topic}" for topic in topics])
+            props_dict['statements']            = '\n\n'.join([f"<statement>\n{statement}\n</statement>" for statement in statements])
+            print(props_dict)
+            chat_history = prompts.prompt_parser("triplet_extraction_prompt",props_dict)
+        
         settings = cl.user_session.get('settings')
 
         llm_response = await tokenize_and_generate(temperature=0.3,max_new_tokens=2048,template=template)
 
         triplet_widget_props = {'triplets':[]}
         for idx,triplet in enumerate(llm_response.triplets):
-            print(f"{triplet.simplified_text} : {triplet.source} --> {triplet.relation} --> {triplet.target} ({triplet.reasoning})")
+            print(f"{triplet.simplified_text} : {triplet.sources} --> {triplet.relation} --> {triplet.targets} @ {triplet.temporal_metadata} ({triplet.reasoning})")
 
             triplet_data = dict()
 
             triplet_data['id'] = idx
-            triplet_data['head'] = triplet.source
+            triplet_data['head'] = triplet.sources
             triplet_data['relation'] = triplet.relation
-            triplet_data['tail'] = triplet.target
+            triplet_data['tail'] = triplet.targets
             triplet_data['base_fact'] = triplet.simplified_text
+            triplet_data['temporal_metadata'] = triplet.temporal_metadata
 
             triplet_widget_props['triplets'].append(triplet_data)
 
@@ -736,29 +826,16 @@ async def extract_knowledge_graph(og_text,graph_name='graph',graph_type='story')
     if(graph_type=='idea'):
         graph_name = 'lore_graph'
 
-    current_wiki_text = cl.user_session.get("wiki_text")
-    if(len(current_wiki_text)==0):
-        #await cl.Message(content="No wiki text found!").send()
-        pass
-    else:
-        pass
-
-    #og_text = current_wiki_text
-    # TODO : Check for contradictions here.
-
     async with cl.Step(name="Topic Categorization",default_open=True) as step:
         # Extract (Named Entities from Text + Nodes from Graph + Additional User Specified Entities)
-        resolved_text, entity_dict = await resolve_coreferences(og_text)
-        entity_dict = await choose_entities_to_track(entity_dict,resolved_text)
+        resolved_text, entity_dict = await extract_topics(og_text)
 
     # Summarize the scenes
     #async with cl.Step(name="Extracting Information",default_open=True) as step:
     async with cl.Step(name="Relationship Extraction",default_open=True) as step:
-        nodes_to_add = await decompose_text_loop(resolved_text, entity_dict)
+        nodes_to_add = await extract_relationships(resolved_text, entity_dict)
 
-    # Remove duplicate nodes.
-    async with cl.Step(name="Relationship Categorization",default_open=True) as step:
-        new_nodes, new_edges = await decomposition_post_processing(nodes_to_add, entity_dict)
+    # Postprocessing
 
     relevant_nodes = cl.user_session.get("relevant_nodes")
     fig = du.create_network_figure(relevant_nodes)
@@ -794,14 +871,8 @@ async def summarize_nodes():
             args_dict['node_name'] = node_name
             args_dict['information'] = node_information
 
-            chat_history = cl.user_session.get("chat_history")
-            chat_history = prompts.get_node_definition_prompt(args_dict,[])
-            cl.user_session.set("chat_history",chat_history)
-            update_system_prompt('node_definition_prompt')
-
-            chat_history = cl.user_session.get("chat_history")
-            print(chat_history[-1]['content'])
-
+            chat_history = prompts.prompt_parser("node_definition_prompt",args_dict)
+            
             response = await tokenize_and_generate(max_new_tokens=512,temperature=0.3)
 
             summary_content = f"## {node_name}\n> {response.message.content}"
@@ -815,96 +886,6 @@ async def summarize_nodes():
     #fig = du.create_network_figure(updated_nodes,target_edges=[])
     #element = cl.Plotly(name="network_graph", figure=fig, display="inline")
     #msg = await cl.Message(content="Updated the highlighted nodes!",elements=[element]).send()
-
-async def cluster_lore():
-
-    topics = [node for node in du.get_nodes_in_layer('topic') if du.knowledge_graph.nodes[node[0]]['type']=='unique']
-
-    communities = []
-    for topic in topics:
-        # Intra-node clustering (new `facts` + old `facts`)for all nodes (cluster = list(node_id))
-        community = du.cluster_lore(topic[0])
-        if(len(community)>0):
-            communities.append((du.get_node_name(topic[0]),community))
-
-    # Delete existing lore nodes
-    for topic in topics:
-        lore_nodes = du.collect_lore_nodes(topic[0])
-        for node in lore_nodes:
-            du.remove_node(node)
-
-    du.reload_graph()
-
-    for cluster_topic,community in communities:       
-
-        cluster_text = f"### {cluster_topic}\n"
-        cluster_msg = cl.Message(content=cluster_text)
-        await cluster_msg.send()
-
-        args_dict = dict()
-        args_dict['topic'] = cluster_topic
-        args_dict['cluster_descriptions'] = "\n\n".join([f"<description>\n{" ".join([node for node in cluster])}\n</description>" for cluster in community])
-
-        chat_history = cl.user_session.get("chat_history")
-        chat_history = prompts.get_cluster_description_prompt(args_dict,history=[])
-        cl.user_session.set("chat_history",chat_history)
-
-        update_system_prompt('cluster_theme_prompt')
-
-        llm_response = await tokenize_and_generate(temperature=0.3,max_new_tokens=512,template=ClusterThemes)
-
-        for info in llm_response.description_summaries:
-            print(f"{info.theme} : {info.summary}")
-            cluster_msg.content += f"\n**{info.theme}** : {info.summary}\n"
-
-        await cluster_msg.update()
-
-        for idx,cluster in enumerate(community):
-            # Inter-node merging : Merge clusters based on common node_id's
-            matches = du.find_topic_mentions(" ".join([node for node in cluster]))
-            mentioned_nodes = [du.get_node_id(match) for match in matches]
-
-            print('Cluster : ',cluster)
-            print('Mentioned Nodes : ',mentioned_nodes)
-
-            #/await cl.Message(content=f"### {cluster_topic}\n"+" ".join([node for node in cluster])).send()
-
-            # Create a `lore` node with all of the `fact` nodes as metadata
-            try:
-                lore_node_name = llm_response.description_summaries[idx].theme
-            except:
-                lore_node_name = " ".join([node for node in cluster])
-
-            lore_node_id = du.add_node(lore_node_name,'lore','misc',facts=[node for node in cluster])
-
-            # Add connections to newly created `lore` node from mentioned `topics`
-            for topic in mentioned_nodes:
-                du.add_edge(topic,lore_node_id,"description")
-
-    # Delete all the `fact` nodes
-
-    nodes_to_remove = []
-    for name,community in communities:       
-        for cluster in community:
-            for fact_node in cluster:
-                try:
-                    print(fact_node)
-                    nodes_to_remove.append(fact_node)
-                except Exception as e:
-                    print(e)
-
-    nodes_to_remove = list(set(nodes_to_remove))
-
-    for node in nodes_to_remove:
-        try:
-            du.remove_node(node)
-        except Exception as e:
-            print(e)
-                
-    # Run relationship edges AFTER clustering
-    new_edges = [(head,tail) for head,tail,data in du.extrapolate_relationships()]
-
-    du.save_graph()
         
 async def add_node_alias(node_name):
     if(du.does_node_exist(node_name)):
@@ -1000,17 +981,12 @@ async def reorder_plot(user_query):
         await timeline_message.update()
 
         cl.user_session.set("chat_history", [])
-        update_system_prompt('plot_reordering_prompt')
-        chat_history = cl.user_session.get("chat_history")
-
+        
         args_dict = dict()
         args_dict['phases'] = context
         args_dict['outline'] = resolved_text
-
-        history = prompts.get_reordering_prompt(args_dict,[])
-        chat_history.append(history[-1])
-        cl.user_session.set("chat_history",chat_history)
-
+        history = prompts.prompt_parser("plot_reordering_prompt",args_dict)
+        
         response = await tokenize_and_generate(max_new_tokens=128,temperature=0.0,template=PhaseList)
 
         event_id = response.event_id
@@ -1103,22 +1079,52 @@ async def choose_and_use_tool(user_message):
 
     settings = cl.user_session.get("settings")
 
-    update_system_prompt("tool_use_prompt")
-    chat_history = cl.user_session.get("chat_history")
-    # Check for typos
+    # Extract Topics...
 
-    resolved_text,_ = await resolve_coreferences(user_message.content,choose=False)
+    resolved_text,entity_dict = await resolve_coreferences(user_message.content,choose=False)
 
-    #matches,resolved_text = await cl.make_async(du.check_for_similar_nodes)(user_message.content)
+    relevant_nodes = du.get_relevant_topics(resolved_text,threshold=0.6,all=True)
+    mentioned_topics = [du.get_node_name(node) for node in relevant_nodes]
+    topic_summaries = [du.knowledge_graph.nodes[node]['metadata']['summary'] for node in relevant_nodes]
 
+    print("Mentioned : ",mentioned_topics)
     print("Resolved : ",resolved_text)
 
-    chat_history.append({'role': 'user', 'content': resolved_text})
+    #chat_history.append({'role': 'user', 'content': resolved_text})
 
-    cl.user_session.set("chat_history",chat_history)
+    # Devising Strategy...
+    args_dict = dict()
+    args_dict['query'] = resolved_text+'\n\n'+'\n'.join(topic_summaries)
+    args_dict['topics'] = ", ".join(mentioned_topics)
 
-    response = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,use_tools=True)
+    chat_history = prompts.prompt_parser("pivot_node_strategy_prompt",args_dict,refresh=False)
+    
+    print(chat_history[-1]['content'])
 
+    llm_response = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=py_schema.TopicIdentifierList)
+
+    exploration_strategy = dict()
+    for topic_info in llm_response.topics_identified:
+        print(topic_info)
+        exploration_strategy[topic_info.topic] = [topic.value for topic in topic_info.selected_information_categories]
+
+    print(exploration_strategy)
+
+    gathered_information = await explore_knowledge_graph(exploration_strategy)
+
+    prompts.add_to_history('tool',gathered_information) 
+    prompts.switch_system_prompt('reasoned_answer_prompt')
+
+    print(gathered_information)
+
+    final_response_stream = await tokenize_and_generate(max_new_tokens=512,temperature=settings['temperature'])
+
+    print(final_response_stream)
+
+    await cl.Message(content=final_response_stream.message.content).send()
+
+
+    '''
     if response.message.tool_calls:
         for tool in response.message.tool_calls:
             print(f"Tool called: {tool.function.name}")
@@ -1131,22 +1137,38 @@ async def choose_and_use_tool(user_message):
                 tool_to_call = available_tools[function_name]
                 tool_output = await tool_to_call(**function_args)
                 response_stream = await respond_with_tool_output(user_message.content,tool_output)
-                return response_stream
+                return response_stream'''
+
+async def explore_knowledge_graph(strategy):
+    # Input  : strategy = {node:allowed_edges}
+    # Output : LLM-compatible text for the next step.
+
+    gathered_info_dict = dict()
+    for node,allowed_edges in strategy.items():
+        if(du.get_node_id(node)):
+            for neighbor in du.get_all_neighbors(node)['all']:
+                gathered_info_dict[du.get_node_name(neighbor)] = [du.knowledge_graph.nodes[du.get_node_id(neighbor)]['metadata']['summary']]
+            
+            all_edges = du.get_all_edges_of_type(node,allowed_edges)
+            for neighbor in all_edges.keys():
+                gathered_info_dict[du.get_node_name(neighbor)] += [element[1]['text'] for element in all_edges[neighbor]]
+
+
+    gathered_info_list = []
+    for key in gathered_info_dict.keys():
+        gathered_info_list += [f"* {text}\n" for text in gathered_info_dict[key]]
+        gathered_info_list += ["\n"]
+    gathered_information = "Gathered Information:\n"+" ".join(gathered_info_list)
+    
+    return gathered_information
 
 async def check_context_sufficiency(user_message, context):
-
-    update_system_prompt('context_sufficiency_check_prompt')
-    chat_history = cl.user_session.get("chat_history")
 
     args_dict = dict()
     args_dict['query'] = user_message
     args_dict['context'] = context
 
-    history = prompts.get_context_sufficiency_check_prompt(args_dict,[])
-    chat_history.append(history[-1])
-    cl.user_session.set("chat_history",chat_history)
-
-    print(chat_history[-1]['content'])
+    history = prompts.prompt_parser("context_sufficiency_check_prompt",args_dict)
 
     response = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=SufficiencyCheck)
 
@@ -1203,9 +1225,14 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
     chat_history = cl.user_session.get("chat_history")
     settings = cl.user_session.get("settings")
 
-    #for message in chat_history:
-    #    print()
-    #    print(f"{message['role']} :\n{message['content']}")
+    '''
+    print("-------------------------------------------------")
+    for message in chat_history:
+        print()
+        print(f"{message['role']} :\n{message['content']}")
+    print("-------------------------------------------------")
+    '''
+
 
     if(use_tools):
         tools = tools_list
@@ -1257,7 +1284,6 @@ async def respond_with_tool_output(user_query,tool_output):
     chat_history.append({"role": "tool","content": tool_output})
     chat_history.append({"role": "user","content": user_query})
 
-    update_system_prompt('reasoned_answer_prompt')
     cl.user_session.set("chat_history",chat_history)
                         
     # 5. Second API call: Send history back so the model can read the tool output and reply to user
@@ -1396,8 +1422,8 @@ async def on_chat_start():
 
     print(du.dataset)
 
-    for row in du.dataset:
-        print(row['text'])
+    for node in du.knowledge_graph.nodes():
+        print(f"{du.knowledge_graph.nodes[node]['text']} : {du.knowledge_graph.nodes[node]['updated']}")
         
     await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?").send()
 
@@ -1465,6 +1491,7 @@ async def on_message(user_message: cl.Message):
                                 })
 
             cl.user_session.set("chat_history",chat_history)
+
 
 
 
