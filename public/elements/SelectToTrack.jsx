@@ -6,30 +6,80 @@ import React, { useEffect, useMemo, useState } from 'react';
 
 
 export default function SelectToTrack() {
+  const allowedTypes = ["Unknown","Agents & Collectives","Places & Spaces","Objects & Artifacts","Concepts & Information","Events & Phenomena"]
   const [openDropdownId, setOpenDropdownId] = useState(null);
   const [editingText, setText] = useState("") 
   
   // Initialize checklist state dynamically based on props.items
-  const [checkedItems, setCheckedItems] = useState(() => {
-    const init = {};
-    (props.items || []).forEach((item) => {
-      init[item.id] = [item.label,item.description,item.defaultChecked || false, false];
+  const [Topics, setTopics] = useState(() => {
+    const widget = {};
+    (props.items || []).forEach((topic) => {
+      const current_item = structuredClone(topic);
+      widget[topic.id] = topic
+      widget[topic.id] = {...widget[topic.id],
+                          "selected":true,
+                          "editing_name":false,
+                          "editing_tag":false,
+                          "editing_alias":false,
+                          "topic_idx":0}
     });
-    return init;
+    console.log(widget)
+    return widget;
   });
 
+  // Handle individual checkbox state changes
+  const handleEditToggle = (id, state) => {
+    setTopics((prev) => {
+      const topic = prev[id];
+      return {
+        ...prev,
+        [id]: {...topic,editing_name: state
+        }
+      };
+    });
+  };
   
   const handleEdit = (id) => {
-
     const finalText = editingText;
-    const newKey = Math.max(...Object.keys(checkedItems).map(Number));
-    const uniqueAliases = [...new Set([finalText,...checkedItems[id][1]])];
-    setCheckedItems((prev) => ({
-      ...prev,
-      [id]: [finalText,uniqueAliases,true,false],
-    }));
+    const newKey = Math.max(...Object.keys(Topics).map(Number));
+    const uniqueAliases = [...new Set([finalText,...Topics[id].aliases])];
+    console.log(uniqueAliases)
+    const filteredAliases = uniqueAliases.filter((item) => item !== Topics[id].name);
+    setTopics((prev) => {
+      const topic = prev[id];
+      return {
+        ...prev,
+        [id]: {...topic,name: finalText, aliases:filteredAliases
+        }
+      };
+    });
     setText("")
   };
+
+  const verifyTopicType = (id) =>{
+    if(!allowedTypes.includes(Topics[id].type)){
+      setTopics((prev) => {
+      const topic = prev[id];
+      return {
+        ...prev,
+        [id]: {...topic,type: allowedTypes[0], type_idx: 0
+        }
+      };
+    });
+    }
+  }
+
+  const handleTopicTypeChange = (id) =>{
+    const curr_topic_idx = Topics[id].type_idx;
+    setTopics((prev) => {
+      const topic = prev[id];
+      return {
+        ...prev,
+        [id]: {...topic,type: allowedTypes[curr_topic_idx+1], type_idx: curr_topic_idx+1
+        }
+      };
+    });
+  }
 
   // Add item handler
   const handleAddItem = () => {
@@ -42,28 +92,31 @@ export default function SelectToTrack() {
 
 
   // Handle individual checkbox state changes
-  const handleEditToggle = (id, state) => {
-    setCheckedItems((prev) => ({
-      ...prev,
-      [id]: [prev[id][0],prev[id][1],prev[id][2],state],
-    }));
-  };
-
-  // Handle individual checkbox state changes
   const handleToggle = (id) => {
-    setCheckedItems((prev) => ({
-      ...prev,
-      [id]: [prev[id][0],prev[id][1],!prev[id][2],false],
-    }));
+    setTopics((prev) => {
+      const topic = prev[id];
+      return {
+        ...prev,
+        [id]: {...topic,selected: !topic.selected
+        }
+      };
+    });
+    console.log(Topics)
   };
 
   // Reset all checkboxes to their initial state
   const handleReset = () => {
-    const init = {};
-    (props.items || []).forEach((item) => {
-      init[item.id] = [item.label,item.description,item.defaultChecked || false,false];
+    const widget = {};
+    (props.items || []).forEach((topic) => {
+      const current_item = structuredClone(topic);
+      widget[topic.id] = topic
+      widget[topic.id] = {...widget[topic.id],
+                          "selected":true,
+                          "editing_name":false,
+                          "editing_tag":false,
+                          "editing_alias":false}
     });
-    setCheckedItems(init);
+    setTopics(widget);
   };
 
 
@@ -74,53 +127,60 @@ export default function SelectToTrack() {
         <p className="text-sm font-medium text-muted-foreground">
           {"Please completetete all required items before submission."}
         </p>
-        <CardTitle>{props.Title || "Action Checklist"}</CardTitle>
+        <CardTitle>{"Please select the topics you want to track!"}</CardTitle>
         <CardDescription>Change this later.</CardDescription>
       </CardHeader>
 
       <CardContent className="w-full pt-2">
         {props.items && props.items.length > 0 ? (
-          <div style={{display: 'grid', gridTemplateColumns: '20px 220px 340px', gap: '10px', 'column-gap': '4px', width: '100%'}} className="border-2 border-indigo-500 rounded-lg p-6 bg-card">
-            {Object.entries(checkedItems).map(([id, item]) => {
-              const currentSelection = checkedItems[id][1]|| "Select option";
+          <div style={{display: 'grid', gridTemplateColumns: '20px 260px 300px', gap: '10px', 'column-gap': '4px', width: '100%'}} className="border-2 border-indigo-500 rounded-lg p-6 bg-card">
+            {Object.entries(Topics).map(([id, topic]) => {
+              const currentSelection = Topics[id].type||"Select Option";
+              verifyTopicType(id);
+
 
               return(
-             <React.Fragment key={id}>
-              <div 
-                key={id} 
-                style={{display: 'flex', alignItems: 'center', textAlign:'center'}}
-                className="col-span-1 space-x-3 py-2 border-indigo-500">
-                <Checkbox
-                  id={id}
-                  checked={!!checkedItems[id][2]}
-                  onCheckedChange={() => handleToggle(id)}
-                  className="mt-1"/>
-              </div>
+                     <React.Fragment key={id}>
+                      <div 
+                        key={id} 
+                        style={{display: 'flex', alignItems: 'center', textAlign:'center'}}
+                        className="col-span-1 space-x-3 py-2 border-indigo-500">
+                        <Checkbox
+                          id={id}
+                          checked={!!Topics[id].selected}
+                          onCheckedChange={() => handleToggle(id)}
+                          className="mt-1"/>
+                      </div>
 
 
-              <div style={{display: 'flex', alignItems: 'center', textAlign:'left'}} className="col-span-1 space-x-3 py-1 ">
-                {checkedItems[id][3] ? (<input 
-                    type="text" 
-                    value={editingText} 
-                    onChange={(e) => setText(e.target.value)}
-                    onBlur={() => handleEditToggle(id,false)} 
-                    onFocus={(e) => setText(checkedItems[id][0])}
-                    onKeyDown={(e) => e.key === 'Enter' && handleEdit(id)}
-                    placeholder="Enter new name..."
-                    autoFocus
-                    className="border-2 px-2 rounded text-base focus:outline-none focus:ring-gray-50 bg-card text-muted-foreground"
-                  />):
-                   (<span className="text-base text-left px-2 text-foreground font-semibold" onClick={() => handleEditToggle(id,true)} >{checkedItems[id][0]}</span>)}
-              </div>
+                      <div style={{alignItems: 'center', textAlign:'center'}} className="col-span-1 space-x-3 py-1 ">
+                        <div className="w-full">
+                        {Topics[id].editing_name ? (<input 
+                            type="text" 
+                            value={editingText} 
+                            onChange={(e) => setText(e.target.value)}
+                            onBlur={() => handleEditToggle(id,false)} 
+                            onFocus={(e) => setText(Topics[id].name)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleEdit(id)}
+                            placeholder="Enter new name..."
+                            autoFocus
+                            className="border-2 px-2 rounded text-base focus:outline-none focus:ring-gray-50 bg-card text-muted-foreground"
+                          />):
+                           (<span className="text-base text-left px-2 text-foreground font-semibold" onClick={() => handleEditToggle(id,true)} >{Topics[id].name}</span>)}
+                          </div>
 
+                          <span className="text-xs text-muted-background" style={{opacity:0.7}}>{Topics[id].aliases.join('; ')}</span>
+                      </div>
 
-              <div style={{display: 'flex', alignItems: 'center'}} className="col-span-1 py-1 border-indigo-100 relative">
-                    <div className="w-full">
-                        <span className="text-xs text-muted-background">Aliases : {checkedItems[id][1].join('; ')}</span>
-                    </div>
-              </div>
-              </React.Fragment>
-            )})}
+                      <div style={{alignItems: 'center', textAlign:'center'}} className="col-span-1 space-x-3 py-1 w-full">
+                        <div className="w-full">
+                              <span className="text-base text-muted-background" onClick={() => handleTopicTypeChange(id)}>{Topics[id].type} ({Topics[id].tag})</span>
+                          </div>
+
+                          <span className="text-xs text-muted-background" style={{opacity:0.7}}>{Topics[id].reasoning||"No reasoning available."}</span>
+                      </div>
+                      </React.Fragment>
+                    )})}
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">No checklist items available.</p>
@@ -139,7 +199,7 @@ export default function SelectToTrack() {
         </Button>
         <Button
           id="checklist-submit"
-          onClick={() => submitElement(checkedItems)}
+          onClick={() => submitElement(Topics)}
         >
           Submit
         </Button>

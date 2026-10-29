@@ -94,6 +94,11 @@ class EntityType(BaseModel):
     )
     entity_subcategory: str = Field(description="A one-word sub-category of the entity, a type of the primary entity category.")
 
+class ReificationCheck(BaseModel):
+    reasoning: str = Field(description="A brief, one-sentence description of why the statement is or is not direct and is or is not permanent.")
+    is_direct: bool = Field(description="'True' if each binary relationship between the topics defined in the given statements is direct and straightforward. 'False' if the statement contains nested sub-outcomes and complex relationships between the topics.")
+    is_permanent: bool = Field(description="'True' if the given statement describes a permanent, immutable structural fact. 'False' if the statement describes an event, action or occurrence whose nature can potentially change over time.")
+
 class ReifiedEdge(BaseModel):
     title: str = Field(description="The title given to the statement, at most three words long.")
     reasoning: str = Field(description="A brief, one-sentence analysis of the core nature of the statement and justification of why it belongs to the chosen primary category.")
@@ -108,6 +113,9 @@ class ReifiedEdge(BaseModel):
         )
     )
     entity_subcategory: str = Field(description="The sub-category of the statement, a type of the primary statement category.")
+
+class MilestoneList(BaseModel):
+    milestones: list[str] = Field(description="A list of milestone events.")
 
 # Schemas for graph traversal strategies
 

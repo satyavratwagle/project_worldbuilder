@@ -35,6 +35,7 @@
 					["[SYSTEM ROLE AND GUARDRAILS]",
 					"You are an expert definition-writing assistant for fictional lore.",
 					"- Your job is to analyze the given information and use it to write a 2-sentence core profile defining who or what the given topic is.",
+					"_ You must not describe any other topic within the given information, and only refer them in context of the given topic.",
 					"- Do NOT include any conversational preamble or text."]
 			},
 		"user":
@@ -68,7 +69,7 @@
 					"4. Concepts & Information: Intangible intellectual property, data, ideologies, laws, magic systems, classifications, or cultural/scientific constructs that do not occupy physical space (e.g., prophecies, spells).",
 					"5. Events & Phenomena: Time-bound occurrences, historical milestones, operations, actions taken by characters or factions, or natural phenomena that happen across a timeline (e.g., wars, coronations, outages, ).",
 					"Next, specify the sub-category of the entity within the super-category. The sub-type must be at most four (4) words long.",
-					"IMPORTANT : You must NEVER respond with any of the known topics."]
+					"IMPORTANT : You must NEVER respond with any of the known topics. You must never repeat topics."]
 			},
 		"user":
 			{
@@ -92,7 +93,8 @@
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
 					"You are an expert ontology classifier for a GraphRAG knowledge extraction pipeline. ",
-			        "Analyze the statement and classify it into EXACTLY ONE of the 5 universal super-categories based on these definitions:\n",
+					"You must always begin your response with the reasoning for your classification and answer. Your reasoning must be brief, at most two (2) sentences long. Do not include any conversational preamble or text in your reasoning.",
+			        "Next,analyze the statement and classify it into EXACTLY ONE of the 5 universal super-categories based on these definitions:\n",
 			        "1. Structural & Compositional: Focuses on identity, taxonomy, classification, and static spatial/logical containment where entities form inherent hierarchies or whole-to-part arrangements (e.g., 'is a', 'part of', 'instance of', etc.).",
 			        "2. Spatial & Topological: Focuses on physical, geographic, geometric, or positional arrangements, proximity, and spatial origins within an environment (e.g., 'located in', 'borders with', 'originates from', etc.).",
 			        "3. Temporal & Causal: Focuses on event ordering, chronological progression, state transitions, and cause-and-effect mechanics across a timeline (e.g., 'causes', 'triggered by', 'precedes', etc.).",
@@ -122,6 +124,7 @@
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
 					"You are an expert ontology classifier for a GraphRAG knowledge extraction pipeline. ",
+					"You must always begin your response with the reasoning for your classification and answer. Your reasoning must be brief, at most two (2) sentences long. Do not include any conversational preamble or text in your reasoning.",
 			        "Analyze the statements related to the topic and use them to classify the topic into EXACTLY ONE of the 5 universal super-categories based on these definitions:\n",
 			        "1. Agents & Collectives: Autonomous entities, individual actors, living beings, and organized collectives or institutions capable of intent, action, and decision-making (e.g., characters, corporations, governments, guilds).",
 			        "2. Places & Spaces: Bounded geographic areas, physical locations, architectural structures, celestial bodies, or spatial containers where things exist (e.g., cities, kingdoms, rooms, planets).",
@@ -146,6 +149,33 @@
 			},
 		"required_keys":["topic","background","statements"]
 		},
+	"edge_reification_check":
+		{"system":
+			{
+				"role": 
+					"system", 
+				"content": 
+					["[SYSTEM ROLE AND GUARDRAILS]",
+					"You are an expert statement analyzer for fictional worldbuilding lore.",
+			        "You are given a statement relating to multiple topics. Your task is to analyze the given statement, and determine if it satisfies the following properties\n", 
+			        "1. 'is_direct' : True if each binary relationship between the topics is simple, direct and straightforward (e.g. Water is composed of hydrogen and oxygen : topics= water, hydrogen, oxygen relationship= 'comprised of'), false otherwise.",
+			    	"2. 'is_permanent' : True if the statement describes a permanent, immutable structural fact, and false if the statement describes an event, action or occurrence whose nature can potentially change over time.",
+			    	"You must always begin your response with a brief, one-sentence justification for your analysis in the 'reasoning' field."]
+			},
+		"user":
+			{
+				"role": 
+					"user", 
+				"content": 
+					{
+					"background":
+						["\n[KNOWN BACKGROUND]\n<background>\n(BACKGROUND)\n</background>\n"],
+					"information":
+						["\n<statement>\n(STATEMENT)\n</statement>\n"]
+					} 
+			},
+		"required_keys":["background","statement"]
+		},		
 	"edge_reification_prompt":
 		{"system":
 			{
@@ -326,7 +356,8 @@
 						"[CRITICAL DIRECTIONALITY RULES (source -> relation -> target)]",
 						"1. THE SOURCE IS ALWAYS THE INITIATOR OR SUBJECT: The source entities must be the source of the action/relationship (e.g. the active driver, possessor, ruler or creator).",
 						"2. THE TARGET IS ALWAYS THE RECIPIENT OR OBJECT: The target entities must be what the action is directed toward (e.g., what is owned, ruled, created, or where the subject is affected).",
-						"3. USE ACTIVE VERBS PREFERABLY: Whenever possible, frame relations so the sources acts upon the targets (e.g., use 'ruled' instead of 'ruled by' if a character is the source).",
+						"3. SELF REFERENCE : If the statement only describes a single topic (e.g., appearance, personality, properties, qualities or attributes related to a topic), then both the source and target must be the same topic.",
+						"4. USE ACTIVE VERBS PREFERABLY: Whenever possible, frame relations so the sources acts upon the targets (e.g., use 'ruled' instead of 'ruled by' if a character is the source).",
 						"[OVERALL GUIDELINES]",
 						"1. You must ONLY extract relationships explicitly stated or directly implied in the given statements. Do not invent facts.",
 						"2. You must use the prior knowledge ONLY as a guide for the extracted facts. Do NOT extract facts from the prior knowledge itself.",
@@ -397,6 +428,36 @@
 						
 				},
 			"required_keys":["topics","background","statements"]			
+		},
+	"milestone_extraction_prompt":
+		{
+			"system":
+				{
+					"role": 
+						"system", 
+					"content": 
+						["[TASK INSTRUCTIONS]",
+						"You are a text analyzer for fictional lore. Your task is to analyze the given statements and define the core milestone events that act as reference points for the statements.",
+						"Your task consists of two steps.",
+						"1. First, scan the given statements and identify the central events that act as temporal reference points.",
+						"2. Second, scan the given list of existing milestones. If an identified event is similar to one of the given milestones, respond with that milestone verbatim, else define a new milestone event.",
+						"You must respond only with the names of the core milestone events. Each event name must be a word or short phrase that describes the event. Do not include any additional details or information about the event.",
+						"Do NOT include any conversational preamble or text."]
+				},
+			"user":
+				{
+					"role": 
+						"user",
+					"content": 
+						{
+							"chunk":
+								["\n<statements>\n(STATEMENTS)\n</statements>"],
+							"topics":
+								["\n[EXISTING MILESTONES]\n<existing_milestones>\n(EXISTING_MILESTONES)\n</existing_milestones>\n"]
+						} 
+						
+				},
+			"required_keys":["statements","existing_milestones"]			
 		},
 	"plot_reordering_prompt":
 		{

@@ -436,6 +436,7 @@ class DatastoreUtilities():
                 metadata[key] = edge_metadata[key]
 
         # Check if similar edge already exists.
+
         key = self.knowledge_graph.add_edge(self.get_node_id(head),
                                             self.get_node_id(tail),
                                             type=type,
@@ -447,6 +448,29 @@ class DatastoreUtilities():
         print(f"ADDED NEW EDGE BETWEEN '{self.get_node_name(head)}' and '{self.get_node_name(tail)}' : {self.knowledge_graph.edges[self.get_node_id(head),self.get_node_id(tail),key]}")
 
         return (self.get_node_id(head),self.get_node_id(tail),key)
+
+    def add_edge_metadata(self,head,tail,key,**metadata):
+
+        head = self.get_node_id(head)
+        tail = self.get_node_id(tail)
+
+        if(self.knowledge_graph.has_edge(head,tail,key=key)):
+            for metadata_key in metadata.keys():
+
+                if(metadata_key=='linked_milestones'):
+
+                    assert type(metadata[metadata_key])==str
+
+                    if(not('linked_milestones' in self.knowledge_graph.edges[head,tail,key]['metadata'].keys())):
+                        self.knowledge_graph.edges[head,tail,key]['metadata']['linked_milestones'] = [metadata['linked_milestones']]
+                    else:
+                        self.knowledge_graph.edges[head,tail,key]['metadata']['linked_milestones'] += [metadata['linked_milestones']]
+                        self.knowledge_graph.edges[head,tail,key]['metadata']['linked_milestones'] = list(set(self.knowledge_graph.edges[head,tail,key]['metadata']['linked_milestones']))
+                    print(f"Linked Milestones : {[self.get_node_name(node) for node in self.knowledge_graph.edges[head,tail,key]['metadata']['linked_milestones']]}")
+                else:
+                    self.knowledge_graph.edges[head,tail,key]['metadata'][metadata_key] = metadata[metadata_key]
+
+            print(f"Updated Edge Metadata : {self.get_node_name(head)} --> {self.get_node_name(tail)} : {self.knowledge_graph.edges[head,tail,key]['metadata']}")
 
     def remove_edge(self,head,tail,type=None,tag=None):
         head_id = self.get_node_id(head)
@@ -506,6 +530,24 @@ class DatastoreUtilities():
             return (torch.any(cosine_sims>threshold))
         else:
             return False
+
+    def add_temporal_data(self,edge,node):
+        # edge = (head,tail,key)
+
+        head,tail,key = edge
+        node_id = self.get_node_id(node)
+
+        # ALL of the following must be true for the edge to be added.
+        conditions = []
+        conditions.append(not(node_id==head and node_id==tail)) # Event node is not already connected to the edge
+
+        if(all(conditions)):
+            if('linked_events' in self.knowledge_graph.edges[head,tail,key]['metadata'].keys()):
+                self.knowledge_graph.edges[head,tail,key]['metadata']['linked_events'].append(node)
+            else:
+                self.knowledge_graph.edges[head,tail,key]['metadata']['linked_events'] = [node]
+
+        self.knowledge_graph.edges[head,tail,key]['metadata']['linked_events'] = list(set(self.knowledge_graph.edges[head,tail,key]['metadata']['linked_events']))
 
     # NODE FUNCTIONS
 
@@ -618,11 +660,16 @@ class DatastoreUtilities():
 
                 # If list
                 for key in metadata.keys():
-                    if(key in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
-                        self.knowledge_graph.nodes[node_id]['metadata'][key] += metadata[key]
-                        self.knowledge_graph.nodes[node_id]['metadata'][key] = list(set(self.knowledge_graph.nodes[node_id]['metadata'][key]))
-                    else:
+
+                    if(type(self.knowledge_graph.nodes[node_id]['metadata'][key]==str)):
                         self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
+                    else:
+                        if(key in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
+                            self.knowledge_graph.nodes[node_id]['metadata'][key] += metadata[key]
+                            self.knowledge_graph.nodes[node_id]['metadata'][key] = list(set(self.knowledge_graph.nodes[node_id]['metadata'][key]))
+                        else:
+                            self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
+
                     print(f"Added Metadata : {key} = {self.knowledge_graph.nodes[node_id]['metadata'][key]}")
 
                 self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
@@ -1198,61 +1245,6 @@ class DatastoreUtilities():
 
         return lore
 
-    def cluster_lore(self,node):
-
-        umap_reducer = umap.UMAP(
-                            n_neighbors=4,        # Adjust based on dataset size (smaller = local, larger = global)
-                            n_components=4,       # Target dimensions
-                            metric='cosine',      # Cosine metric is ideal for text embeddings
-                            random_state=42
-                        )
-
-        # Get the closest `topic` node
-        node_id = self.get_node_id(node)
-
-        if(not(self.get_node_layer(node_id)=='topic')):
-            node_id = self.get_related_topics(node_id)[0]
-
-
-        # Expand existing `lore` nodes --> old `facts`
-        lore_nodes = self.collect_lore_nodes(node_id)
-        old_facts = []
-        for lore_node in lore_nodes:
-            old_facts += self.get_node_metadata(lore_node,'facts')
-
-        # Collect new `facts`
-        new_facts = self.collect_fact_nodes(node_id,'lore')
-
-        # Generate `fact` embeddings 
-        all_facts_text = old_facts + [self.get_node_name(fact_node) for fact_node in new_facts]
-
-        output = []
-        if(len(all_facts_text)>5):
-            print(all_facts_text)
-            embeddings = self.embed_text(all_facts_text) # This may not work.
-            #embeddings = torch.stack([torch.tensor(self.dataset['embeddings'][idx]) for idx in rows])
-            print(embeddings.shape)
-
-            reduced_embeddings = umap_reducer.fit_transform(embeddings)
-
-            k = 3  # Number of neighbors per node
-            nn = NearestNeighbors(n_neighbors=k, metric='cosine')
-            nn.fit(reduced_embeddings)
-            adjacency_matrix = nn.kneighbors_graph(reduced_embeddings).toarray()
-
-            # 5. Convert adjacency matrix to a NetworkX Graph
-            graph = nx.from_numpy_array(adjacency_matrix)
-
-            # 6. Apply Graph-Based Community Detection (Louvain Algorithm)
-            # This partitions the graph into tightly knit communities (clusters)
-            communities = nx.community.louvain_communities(graph, seed=42)
-
-            # 7. Map clusters back to the original texts
-            for cluster_id, community in enumerate(communities):
-                output.append([all_facts_text[node_idx] for node_idx in community])
-
-        return output
-
     # Old functions
 
     def find_path(self,source,target,filtered_graph=None):
@@ -1513,6 +1505,40 @@ class DatastoreUtilities():
 
         return context_to_reorder,node_dict
 
+    def cluster_text(self,texts):
+        # texts = list(str)
+
+        umap_reducer = umap.UMAP(
+                            n_neighbors=4,        # Adjust based on dataset size (smaller = local, larger = global)
+                            n_components=4,       # Target dimensions
+                            metric='cosine',      # Cosine metric is ideal for text embeddings
+                            random_state=42
+                        )
+
+        output = []
+        embeddings = self.embed_text(texts) # This may not work.
+        print(embeddings.shape)
+
+        reduced_embeddings = umap_reducer.fit_transform(embeddings)
+
+        k = 3  # Number of neighbors per node
+        nn = NearestNeighbors(n_neighbors=k, metric='cosine')
+        nn.fit(reduced_embeddings)
+        adjacency_matrix = nn.kneighbors_graph(reduced_embeddings).toarray()
+
+        # 5. Convert adjacency matrix to a NetworkX Graph
+        graph = nx.from_numpy_array(adjacency_matrix)
+
+        # 6. Apply Graph-Based Community Detection (Louvain Algorithm)
+        # This partitions the graph into tightly knit communities (clusters)
+        communities = nx.community.louvain_communities(graph, seed=42)
+
+        # 7. Map clusters back to the original texts
+        for cluster_id, community in enumerate(communities):
+            output.append([texts[node_idx] for node_idx in community])
+
+        return output
+
     def embed_text(self,text):
         return self.text_embedding_model.encode(text, normalize_embeddings=True)
 
@@ -1593,8 +1619,9 @@ class DatastoreUtilities():
         focus_on['nodes'] += target_nodes
         all_neighbors = []
         for node in target_nodes:
-            all_neighbors += self.knowledge_graph.predecessors(node)
-            all_neighbors += self.knowledge_graph.successors(node)
+            if(node):
+                all_neighbors += [neighbor for neighbor in self.knowledge_graph.predecessors(node) if neighbor]
+                all_neighbors += [neighbor for neighbor in self.knowledge_graph.successors(node) if neighbor]
             
         all_neighbors = list(set(all_neighbors))
         #all_neighbors = []
@@ -1841,6 +1868,7 @@ class DatastoreUtilities():
         fig.add_trace(edge_hover_trace)
         fig.add_trace(node_trace)
         return fig
+
 
 
 
