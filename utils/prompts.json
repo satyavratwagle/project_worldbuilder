@@ -59,17 +59,17 @@
 					"system", 
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
-					"You are an expert entity discovery agent for a GraphRAG knowledge extraction pipeline. ",
-			        "Analyze the statements and use them to discover new entities. You must respond with the name, type and sub-category of the entity.",
-			        "Do not include any of the known topics in your response. Do not include common or generic objects and nouns in your response.",
-			        "The type of the entity must belong to EXACTLY ONE of the 5 universal super-categories based on these definitions:\n",
+					"You are an expert topic discovery agent for a GraphRAG knowledge extraction pipeline for fictional lore. ",
+			        "Analyze the statements and use them to discover new topics. You must respond with the name, type and sub-category of the topic.",
+			        "Do not include any of the known topics in your response. Do not include common or generic objects and nouns in your response. All topics must be proper nouns or named entities.",
+			        "The type of the topic must belong to EXACTLY ONE of the 5 universal super-categories based on these definitions:\n",
 			        "1. Agents & Collectives: Autonomous entities, individual actors, living beings, and organized collectives or institutions capable of intent, action, and decision-making (e.g., characters, corporations, governments, guilds).",
 			        "2. Places & Spaces: Bounded geographic areas, physical locations, architectural structures, celestial bodies, or spatial containers where things exist (e.g., cities, kingdoms, rooms, planets).",
 					"3. Objects & Artifacts: Tangible physical items, manufactured goods, natural resources, tools, equipment, or digital assets that can be created, owned, consumed, or utilized (e.g., weapons, vehicles, tools, raw materials).",
 					"4. Concepts & Information: Intangible intellectual property, data, ideologies, laws, magic systems, classifications, or cultural/scientific constructs that do not occupy physical space (e.g., prophecies, spells).",
 					"5. Events & Phenomena: Time-bound occurrences, historical milestones, operations, actions taken by characters or factions, or natural phenomena that happen across a timeline (e.g., wars, coronations, outages, ).",
-					"Next, specify the sub-category of the entity within the super-category. The sub-type must be at most four (4) words long.",
-					"IMPORTANT : You must NEVER respond with any of the known topics. You must never repeat topics."]
+					"Next, specify the sub-category of the topic within the super-category. The sub-type must be at most four (4) words long.",
+					"IMPORTANT : If a topic is already known, define its type and sub-category."]
 			},
 		"user":
 			{
@@ -100,7 +100,8 @@
 			        "3. Temporal & Causal: Focuses on event ordering, chronological progression, state transitions, and cause-and-effect mechanics across a timeline (e.g., 'causes', 'triggered by', 'precedes', etc.).",
 			        "4. Social & Organizational: Focuses on deliberate affiliations, governance structures, power dynamics, active interactions, and competitive or cooperative ties between autonomous agents, collectives, or authorities (e.g., 'member of', 'controls', 'competes with',etc.).",
 			        "5. Functional & Operational: Focuses on dynamic actions, instrumentalities, resource flows, and operational dependencies where one entity generates, alters, utilizes, or relies upon another to achieve a state, output, or purpose (e.g., 'creates', 'uses', 'depends on', 'consumes',etc.).",
-			    	"Next, specify the sub-type of the statement within the super-category. The sub-type must be at most four (4) words long."]
+			    	"Next, specify the sub-type of the statement within the super-category. The sub-type must be at most four (4) words long.",
+			    	"Do not include any conversational preamble or text."]
 			},
 		"user":
 			{
@@ -352,7 +353,7 @@
 						"3.1. In the 'sources' field, you must respond with the subjects of the 'simplified_text' (i.e., the acting entities or the primary entities). The 'source' MUST STRICTLY be a subset of given topics.",
 						"3.2. In the 'targets' field, you must respond with the objects of the 'simplified_text' (i.e., the entities being acted upon or the secondary entities). The 'target' MUST STRICTLY be a subset of the given topics.",
 						"3.3. In the 'relation' field, you must briefly describe the how the 'sources' act upon the 'targets' (e.g., if the statement is 'The dark sorcerer Malakor forged the Blade of Shadows.'; then 'source'='Malakor', 'target'='Blade of Shadows', 'relation':'forged'). Relations must be descriptive, narrative-focused verbs.",
-						"3.4. In the 'temporal_metadata' field, you must capture any chronological clues, durations, or references to other events (e.g., 'before the war', '10 years after X', 'during the winter', 'while the city was burning') relative to the sources and targets, and write a clear narrative description. If no temporal data is found, respond with 'null'. Do not invent dates or time periods.",
+						"3.4. In the 'temporal_metadata' field, you must capture ALL chronological clues, durations, or references to other events (e.g., 'before the war', '10 years after X', 'during the winter', 'while the city was burning') that indicate the time period of the statement, and write a clear narrative description. If no temporal data is found, respond with 'null'. Do not invent dates or time periods.",
 						"[CRITICAL DIRECTIONALITY RULES (source -> relation -> target)]",
 						"1. THE SOURCE IS ALWAYS THE INITIATOR OR SUBJECT: The source entities must be the source of the action/relationship (e.g. the active driver, possessor, ruler or creator).",
 						"2. THE TARGET IS ALWAYS THE RECIPIENT OR OBJECT: The target entities must be what the action is directed toward (e.g., what is owned, ruled, created, or where the subject is affected).",
@@ -361,7 +362,7 @@
 						"[OVERALL GUIDELINES]",
 						"1. You must ONLY extract relationships explicitly stated or directly implied in the given statements. Do not invent facts.",
 						"2. You must use the prior knowledge ONLY as a guide for the extracted facts. Do NOT extract facts from the prior knowledge itself.",
-						"3. Your response must cover ALL of the information provided in the statements.",
+						"3. Your response must cover ONLY statements relevant to any of the topics in your response.",
 						"4. Your responses must strictly follow the provided schema. Do NOT include any conversational preamble or text."]
 				},
 			"user":
@@ -450,6 +451,8 @@
 						"user",
 					"content": 
 						{
+							"background":
+								["\n[BACKGROUND KNOWLEDGE\n<background>\n(BACKGROUND)\n</background>"],
 							"chunk":
 								["\n<statements>\n(STATEMENTS)\n</statements>"],
 							"topics":
@@ -457,7 +460,7 @@
 						} 
 						
 				},
-			"required_keys":["statements","existing_milestones"]			
+			"required_keys":["statements","existing_milestones","background"]			
 		},
 	"plot_reordering_prompt":
 		{

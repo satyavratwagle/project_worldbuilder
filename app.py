@@ -350,6 +350,9 @@ async def show_checklist(entities,message='Select topics.',show_description=True
             new_entities[int(key)]['existing_aliases'] = selection_response[key]['aliases']
             new_entities[int(key)]['alias_known'] = False
             new_entities[int(key)]['to_add'] = selection_response[key]['selected']
+            new_entities[int(key)]['type'] = selection_response[key]['type']
+            new_entities[int(key)]['tag'] = selection_response[key]['tag']
+
 
 
     return new_entities
@@ -407,22 +410,55 @@ async def extract_topics(og_text):
     llm_entity_discovery_response = await tokenize_and_generate(temperature=0.2,max_new_tokens=1024,template=py_schema.EntityDiscoveryList)
 
     curr_key = len(entity_dict.keys())+1
+    known_aliases = [v['primary_alias'] for v in entity_dict.values()]
+    print(known_aliases)
     for info in llm_entity_discovery_response.entities_discovered:
+        print(info.entity_name)
+        if(info.entity_name in known_aliases):
+            print("Same!")
+            overwrite_key = True
+            selected_key = next((k for k, v in entity_dict.items() if v['primary_alias'] == info.entity_name), None)
+        else:
+            overwrite_key = False
+            selected_key = curr_key
         
         print(f"{info.entity_name} ({info.entity_type} - {info.entity_subcategory}) : {info.reasoning}")
 
-        # Add the new entities into the entity_dict for adding.
-        ner_discovered_entities = [entity_dict[key]['primary_alias'] for key in entity_dict.keys()]
-        #if(not(info.entity_name in ner_discovered_entities)):
-        entity_dict[curr_key] = dict()
-        entity_dict[curr_key]['primary_alias'] = info.entity_name
-        entity_dict[curr_key]['existing_aliases'] = [info.entity_name]
-        entity_dict[curr_key]['type'] = info.entity_type
-        entity_dict[curr_key]['tag'] = info.entity_subcategory
-        entity_dict[curr_key]['reasoning'] = info.reasoning
-        entity_dict[curr_key]['alias_known'] = False
-        entity_dict[curr_key]['to_add'] = False
-        curr_key += 1
+        entity_dict[selected_key] = dict()
+        entity_dict[selected_key]['primary_alias'] = info.entity_name
+        entity_dict[selected_key]['existing_aliases'] = [info.entity_name]
+        entity_dict[selected_key]['type'] = info.entity_type
+        entity_dict[selected_key]['tag'] = info.entity_subcategory
+        entity_dict[selected_key]['reasoning'] = info.reasoning
+        entity_dict[selected_key]['alias_known'] = False
+        entity_dict[selected_key]['to_add'] = False
+
+        if(not(overwrite_key)):
+            curr_key += 1
+
+    # Find similar nodes
+    keys_to_remove = []
+    for key,entity_info in entity_dict.items():
+        closest_topic = du.fuzzy_topic_finder(entity_info['primary_alias'],threshold=0.85)
+        if(closest_topic and not(closest_topic==entity_info['primary_alias'])):
+            actions = [cl.Action(name=closest_topic,payload={"selection":closest_topic},label = closest_topic),
+                        cl.Action(name=entity_info['primary_alias'],payload={"selection":entity_info['primary_alias']},label = entity_info['primary_alias']),
+                        cl.Action(name='Skip',payload={"selection":'Skip'},label = 'Skip')]
+
+            response = await cl.AskActionMessage(content=f"Found a topic similar to {entity_info['primary_alias']}! Which topic should I keep?",actions=actions).send()
+
+            if(response['payload']['selection']=='Skip'):
+                # Remove the topic from dictionary altogether.
+                keys_to_remove.append(key)
+            elif(response['payload']['selection']==closest_topic):
+                # Update the dictionary with the closest topic info
+                entity_dict[key]['primary_alias'] = closest_topic
+                entity_dict[key]['existing_aliases'] = list(set(du.get_node_aliases(closest_topic)+entity_dict[key]['existing_aliases']))
+                entity_dict[key]['type'] = du.get_node_type(closest_topic)
+                entity_dict[key]['tag'] = entity_dict[key]['tag']
+
+    for key in keys_to_remove:
+        del entity_dict[key]
 
     entity_dict = await show_checklist(entity_dict,message='Please select the topics to add to the story graph!')
 
@@ -451,7 +487,11 @@ async def extract_topics(og_text):
             props_dict['statements']            = resolved_text
             props_dict['topic']                 = entity_dict[key]['primary_alias']
 
-            props_dict['background']            = ""
+            if(('type' in entity_dict[key].keys()) and ('tag' in entity_dict[key].keys())):
+                props_dict['background']            = f"{entity_dict[key]['primary_alias']} Categorization : {entity_dict[key]['type']} ({entity_dict[key]['tag']})"
+            else:
+                props_dict['background']            = ""
+
             if(du.get_node_id(entity_dict[key]['primary_alias'])):
                 props_dict['background']            = du.knowledge_graph.nodes[du.get_node_id(entity_dict[key]['primary_alias'])]['metadata']['summary']
 
@@ -695,6 +735,7 @@ async def extract_relationships(resolved_text,entity_dicts):
                                                     tag=llm_relation_category_response.relation_subcategory,
                                                     text=relation_info['text'],
                                                     temporal_data=relation_info['temporal_metadata']))
+                        print(du.knowledge_graph)
                     else:
                         await cl.Message(content=f"{relation_info['text']} is similar to information already known!").send()
 
@@ -816,6 +857,7 @@ async def find_temporal_connections(threshold=0.7):
 
     # Cluster edge data to find semantic clusters.
     if(len(edge_data)>0):
+        print([du.knowledge_graph.edges[head,tail,key]['metadata']['temporal_data'] for head,tail,key in edge_data])
         clusters = du.cluster_text(list([du.knowledge_graph.edges[head,tail,key]['metadata']['temporal_data'] for head,tail,key in edge_data]))
 
         ui_message_text = "## Finding Milestones...\n"
@@ -827,6 +869,9 @@ async def find_temporal_connections(threshold=0.7):
             print(statements)
 
             llm_content_dict = dict()
+
+            relevant_topics = du.get_relevant_topics(" ".join(statements),fuzzy=True)
+            llm_content_dict['background'] = '\n'.join([f"{du.get_node_name(node)} : {du.knowledge_graph.nodes[node]['metadata']['summary']}" for node in relevant_topics])
             llm_content_dict['statements'] = '\n'.join([f"* {statement}" for statement in statements])
 
             if(len(existing_milestones)>0):
@@ -847,7 +892,7 @@ async def find_temporal_connections(threshold=0.7):
 
 
         # Resolve milestones against old_milestones
-        old_milestones = [node for node in du.knowledge_graph.nodes() if (du.get_node_type(node)=="Events & Phenomena" and du.get_node_tags(node)==['Milestone Event'])]
+        old_milestones = du.get_milestones()
         all_milestones = list(set(existing_milestones+old_milestones))
 
         from sklearn.metrics.pairwise import cosine_similarity
@@ -923,7 +968,7 @@ async def find_temporal_connections(threshold=0.7):
             llm_content_dict['node_name'] = milestone
 
             # Get nodes relevant to the milestone
-            relevant_nodes = du.get_relevant_topics(milestone)
+            relevant_nodes = du.get_relevant_topics(milestone,fuzzy=True)
 
             llm_content_dict['information'] = '\n'.join(f"* {du.knowledge_graph.edges[head,tail,key]['text']}" for head,tail,key in milestone_data[slugify_key(milestone)])
             #llm_content_dict['information'] += '\n'+'\n'.join(f"* {du.knowledge_graph.nodes[node]['metadata']['summary']}" for node in relevant_nodes)
@@ -933,7 +978,7 @@ async def find_temporal_connections(threshold=0.7):
             ui_message.content += f"{milestone} : {llm_response.message.content}\n\n"
             await ui_message.update()
 
-            du.add_node(milestone,type="Events & Phenomena",tag="Milestone Event",summary=llm_response.message.content)
+            du.add_node(milestone,type="Events & Phenomena",tag="Milestone Event",summary=llm_response.message.content,linked_edges=list(milestone_data[slugify_key(milestone)]))
 
         # Add milestone references to the relevant edges.
         for key, edge_data in milestone_data.items():
@@ -943,6 +988,11 @@ async def find_temporal_connections(threshold=0.7):
                 du.add_edge_metadata(head,tail,key,linked_milestones=du.get_node_id(milestone))
 
         # Create connections between milestones
+        subcat_inverse_map = dict()
+        subcat_inverse_map['Precedes'] = "Succeeds"
+        subcat_inverse_map['Succeeds'] = "Precedes"
+        subcat_inverse_map['Concurrent with'] = "Concurrent with"
+
         ui_message =  cl.Message(content="## Finding Connections between Milestones...\n")
         await ui_message.send()
         for i in range(len(resolved_milestones)):
@@ -961,7 +1011,7 @@ async def find_temporal_connections(threshold=0.7):
                         statement = " ".join(text for text in statements)
                         llm_content_dict = dict()
                         llm_content_dict['statement']            = f"{statement} : Relationship between {resolved_milestones[i]} and {resolved_milestones[j]}."
-                        llm_content_dict['statement'] += " In the 'reasoning' field : Briefly describe the temporal relationship between the two topics in 1 or 2 sentences."
+                        llm_content_dict['statement'] += " In the 'relation_subcategory' field : You must only define the temporal order between the two topics as one of the following options : (a) 'Precedes', (b) 'Succeeds' or (c) 'Concurrent With'.\n In the 'reasoning' field : You must define any time related information (e.g., 5 days later, 10 Crossings ago)."
                         llm_content_dict['background']            = []
                         for node in [resolved_milestones[i],resolved_milestones[j]]:
                             if(du.get_node_id(node)):
@@ -977,14 +1027,22 @@ async def find_temporal_connections(threshold=0.7):
                         
                         llm_relation_category_response = await tokenize_and_generate(temperature=0.3,max_new_tokens=128,template=py_schema.RelationshipType)
 
+                        # Resolve subcategory
+                        allowed_subtypes = ["Precedes","Succeeds","Concurrent with"]
+                        subcat_csims = du.get_cosine_similarity([llm_relation_category_response.relation_subcategory],allowed_subtypes).numpy()[0]
+                        print(np.argmax(subcat_csims))
+                        resolved_subcategory = allowed_subtypes[np.argmax(subcat_csims)]
+                        print(llm_relation_category_response.relation_subcategory,resolved_subcategory)
+
+
                         du.add_edge(resolved_milestones[i],resolved_milestones[j],
                                     type=llm_relation_category_response.relation_type.value,
-                                    tag=llm_relation_category_response.relation_subcategory,
+                                    tag=resolved_subcategory,
                                     text=llm_relation_category_response.reasoning)
 
                         du.add_edge(resolved_milestones[j],resolved_milestones[i],
                                     type=llm_relation_category_response.relation_type.value,
-                                    tag=llm_relation_category_response.relation_subcategory,
+                                    tag=subcat_inverse_map[resolved_subcategory],
                                     text=llm_relation_category_response.reasoning)
                         
                         ui_message.content += f"{resolved_milestones[i]} and {resolved_milestones[j]}\n{llm_relation_category_response.relation_type.value} ({llm_relation_category_response.relation_subcategory}): {llm_relation_category_response.reasoning}\n\n"
@@ -1130,7 +1188,7 @@ async def audit_graph():
     # Find New connections between nodes.
 
     # Create temporal relationships between nodes and edges
-    await find_temporal_connections()
+    #await find_temporal_connections()
 
 #############
 
@@ -1146,7 +1204,7 @@ async def choose_and_use_tool(user_message):
 
     resolved_text,entity_dict = await resolve_coreferences(user_message.content,choose=False)
 
-    relevant_nodes = du.get_relevant_topics(resolved_text,threshold=0.6,all=True)
+    relevant_nodes = du.get_relevant_topics(resolved_text,threshold=0.6,all=True,fuzzy=True)
     mentioned_topics = [du.get_node_name(node) for node in relevant_nodes]
     topic_summaries = [du.knowledge_graph.nodes[node]['metadata']['summary'] for node in relevant_nodes]
 
@@ -1288,7 +1346,7 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
     chat_history = cl.user_session.get("chat_history")
     settings = cl.user_session.get("settings")
 
-    if(False):
+    if(1):
         print("-------------------------------------------------")
         for message in chat_history:
             print()
@@ -1488,10 +1546,37 @@ async def on_chat_start():
         
     await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?").send()
 
-    #for node in du.knowledge_graph.nodes():
-    #    print(du.knowledge_graph.nodes[node]['metadata']['summary'])
-    #    print()
+    import networkx as nx
+    #for head,tail in du.knowledge_graph.edges():
+    #    print(du.get_node_name(head),du.get_node_name(tail))
+
+    #du.knowledge_graph.add_edge(du.get_node_id("Marushar"),du.get_node_id("Marushar"),text="Ya")
+
+    #print(list(nx.nodes_with_selfloops(du.knowledge_graph)))
+
+    for node in du.knowledge_graph.nodes():
+        print(du.get_node_name(node))
     #await summarize_nodes()
+
+    '''
+    print([du.get_node_name(node) for node in du.get_milestones()])
+    for node in du.get_milestones():
+        node_id = du.get_node_id(node)
+        du.knowledge_graph.remove_node(node)
+
+    for head,tail in du.knowledge_graph.edges():
+        for key in du.knowledge_graph.get_edge_data(head,tail).keys():
+            if('metadata' in du.knowledge_graph.edges[head,tail,key].keys()): 
+                edge_metadata = du.knowledge_graph.edges[head,tail,key]['metadata']
+                # Ignore edges that already are linked to milestones.
+                if('linked_milestones' in edge_metadata.keys() and ('temporal_data' in edge_metadata.keys()) and not(edge_metadata['temporal_data']=='null')):
+                    del du.knowledge_graph.edges[head,tail,key]['metadata']['linked_milestones']
+                    print(du.knowledge_graph.edges[head,tail,key])
+    '''
+
+    du.reload_lookups()
+
+    print(du.knowledge_graph)
 
     await find_temporal_connections()
 
@@ -1556,6 +1641,7 @@ async def on_message(user_message: cl.Message):
                                 })
 
             cl.user_session.set("chat_history",chat_history)
+
 
 
 

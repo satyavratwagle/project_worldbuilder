@@ -238,6 +238,8 @@ class DatastoreUtilities():
         self.node_lookup = {alias:node[0] for node in topic_nodes for alias in node[1]['metadata']['aliases']}
         self.inverse_lookup = {alias:node[1]['text'] for node in topic_nodes for alias in node[1]['metadata']['aliases']}
 
+        print(f"Total Aliases = {len(self.all_aliases)}")
+
         # Initialize ahocorasic automaton for mention detection
         self.topic_finder = ahocorasick.Automaton()
 
@@ -444,6 +446,9 @@ class DatastoreUtilities():
                                             text=text,
                                             updated=time_now,
                                             metadata=metadata)
+
+        self.update_node(self.get_node_id(head))
+        self.update_node(self.get_node_id(tail))
 
         print(f"ADDED NEW EDGE BETWEEN '{self.get_node_name(head)}' and '{self.get_node_name(tail)}' : {self.knowledge_graph.edges[self.get_node_id(head),self.get_node_id(tail),key]}")
 
@@ -660,19 +665,27 @@ class DatastoreUtilities():
 
                 # If list
                 for key in metadata.keys():
-
-                    if(type(self.knowledge_graph.nodes[node_id]['metadata'][key]==str)):
-                        self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
-                    else:
-                        if(key in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
-                            self.knowledge_graph.nodes[node_id]['metadata'][key] += metadata[key]
-                            self.knowledge_graph.nodes[node_id]['metadata'][key] = list(set(self.knowledge_graph.nodes[node_id]['metadata'][key]))
-                        else:
+                    if(key in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
+                        if(type(self.knowledge_graph.nodes[node_id]['metadata'][key]==str)):
                             self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
+                        else:
+                            if(key in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
+                                self.knowledge_graph.nodes[node_id]['metadata'][key] += metadata[key]
+                                self.knowledge_graph.nodes[node_id]['metadata'][key] = list(set(self.knowledge_graph.nodes[node_id]['metadata'][key]))
+                            else:
+                                self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
+                    else:
+                        self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
 
                     print(f"Added Metadata : {key} = {self.knowledge_graph.nodes[node_id]['metadata'][key]}")
 
                 self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
+
+    def update_node(self,node):
+        node_id = self.get_node_id(node)
+
+        if(node_id):
+            self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
 
     # Read functions
     def get_node_name(self,node_id):
@@ -741,7 +754,12 @@ class DatastoreUtilities():
         all_neighbors = self.get_all_neighbors(node_id)
         # Load predecessors and successors individually
 
+        # Add self edges
         all_edges = []
+        edge_dict = self.knowledge_graph.get_edge_data(node_id,node_id)
+        if(edge_dict):
+            all_edges = [(key,edge_dict[key]) for key in edge_dict.keys()]
+
         for neighbor in all_neighbors['successors']:
             edge_dict = self.knowledge_graph.get_edge_data(node_id,neighbor)
             all_edges += [(key,edge_dict[key]) for key in edge_dict.keys()]
@@ -779,13 +797,19 @@ class DatastoreUtilities():
 
         return self.get_node_id(mentioned_topics[0])
 
+    def get_milestones(self):
+        return [node for node in self.knowledge_graph.nodes() if (self.get_node_type(node)=="Events & Phenomena" and self.get_node_tags(node)==['Milestone Event'])]
+
     # Old functions
 
-    def get_relevant_topics(self,text,threshold=0.8,all=True):
+    def get_relevant_topics(self,text,threshold=0.8,all=True,fuzzy=False):
 
         # Based on text, find the most similar node and return.
 
-        mentioned_topics = [self.get_node_id(name) for name in list(set(self.node_finder.findall(text))) if len(name)>0]
+        if(fuzzy):
+            mentioned_topics = [self.get_node_id(name) for name in self.find_fuzzy_mentions(text) if len(name)>0]
+        else:
+            mentioned_topics = [self.get_node_id(name) for name in list(set(self.node_finder.findall(text))) if len(name)>0]
 
         if(len(mentioned_topics)>0):
             if(all==False):
@@ -822,6 +846,36 @@ class DatastoreUtilities():
         return self.knowledge_graph.successors(node_id)|self.knowledge_graph.predecessors(node_id)
 
     # GRAPH FUNCTIONS
+
+    def fuzzy_topic_finder(self,text,threshold=0.8):
+
+        threshold = threshold*100
+
+        if(len(self.all_aliases)>0):
+            best_match, score, index = process.extractOne(text, self.all_aliases)
+            print(f"Best match: '{best_match}' with a score of {score}")
+
+            if(score>threshold):
+                return best_match
+            else:
+                return None
+        else:
+            return None
+
+    def find_fuzzy_mentions(self,text,threshold=0.85,limit=20):
+
+        threshold = threshold*100
+
+        top_matches = process.extract(text, self.all_aliases, limit=limit)
+
+        selected_matches = []
+        for match, score, idx in top_matches:
+            print(f" - {match} ({score}% match) Threshold : {threshold}")
+            if(score>threshold):
+                selected_matches.append(match)
+
+        return selected_matches
+
 
     def find_topic_mentions(self, text):
         
@@ -1315,7 +1369,8 @@ class DatastoreUtilities():
         print("Saving Graph!")
         # Clean up old graphs
         # 1 day = 86400 seconds
-        self.knowledge_graph.remove_edges_from(nx.selfloop_edges(self.knowledge_graph))
+        #self.knowledge_graph.remove_edges_from(nx.selfloop_edges(self.knowledge_graph))
+
         nx.write_gml(self.knowledge_graph, f"{self.knowledge_graph_path}.gml")
 
         self.reload_graph()
