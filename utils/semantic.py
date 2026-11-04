@@ -192,9 +192,8 @@ class SemanticTools():
 
     def split_into_sentences(self,text):
 
-        doc = self.nlp(text)
-        sentences = [sent.text.strip() for sent in doc.sents]
-
+        #doc = self.nlp(text)
+        sentences = sentences = re.split(r'[.?!\n]\s+', text)
         return sentences
 
     def split_into_chunks(self,text, chunk_size=300):
@@ -206,7 +205,7 @@ class SemanticTools():
             )
 
         chunks = text_splitter.create_documents(texts=[text])
-        chunks = [re.sub(r'^[.,;:!?\s]+', '',chunk.page_content.strip()) for chunk in chunks]
+        chunks = [re.sub(r'^[.,;!?\s]+', '',chunk.page_content.strip()) for chunk in chunks]
         print(chunks)
 
         return chunks

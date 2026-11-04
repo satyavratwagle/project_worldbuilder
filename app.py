@@ -25,6 +25,9 @@ from ollama import AsyncClient
 import copy
 import time
 
+from rapidfuzz import process
+from torch import argsort
+
 import csv
 
 with open('utils/tools.json', "r", encoding="utf-8") as f:
@@ -319,6 +322,7 @@ async def show_checklist(entities,message='Select topics.',show_description=True
                             "id":str(key),
                             "name":entities[key]['primary_alias'],
                             "aliases":entities[key]['existing_aliases'],
+                            "reasoning":entities[key]['reasoning'],
                             "type":entities[key]['type'],
                             "tag":entities[key]['tag']
                         })
@@ -387,42 +391,50 @@ async def resolve_coreferences(user_text,choose=True):
 
     resolved_text = sem.resolve_aliases(user_text,entity_dict,True)
 
-    print(entity_dict)
-
     for curr_key in entity_dict.keys():
         entity_dict[curr_key]['type'] = ""
         entity_dict[curr_key]['tag'] = "No Tags Available"
         entity_dict[curr_key]['reasoning'] = ""
+        entity_dict[curr_key]['alias_known'] = False
+        entity_dict[curr_key]['to_add'] = False
+
     return resolved_text, entity_dict    
 
 async def extract_topics(og_text):
 
+    # Extract Topics from NER
     resolved_text, entity_dict = await resolve_coreferences(og_text)
+    print(entity_dict)
+    known_aliases = [v['primary_alias'] for v in entity_dict.values()]
 
-    # Use an LLM to find entities that the NER may have missed.
+    # Extract Topics from LLM
     props_dict = dict()
     props_dict['statements']            = resolved_text
-    props_dict['known_topics']          = "\n".join([entity_dict[key]['primary_alias'] for key in entity_dict.keys()])
 
-    # Clear out chat history to avoid cross-contamination
+    known_topic_definitions = []
+    for topic in known_aliases:
+        if(du.get_node_id(topic)):
+            known_topic_definitions.append(f"* {topic}\nDefinition : {du.get_node_summary(topic)}\n")
+        else:
+            known_topic_definitions.append(f"* {topic}\nDefinition : No information known.\n")
+
+    print(known_topic_definitions)
+    props_dict['known_topics']          = "\n".join([topic_definition for topic_definition in known_topic_definitions])
+
     chat_history = prompts.prompt_parser("entity_discovery_prompt",props_dict)
 
     llm_entity_discovery_response = await tokenize_and_generate(temperature=0.2,max_new_tokens=1024,template=py_schema.EntityDiscoveryList)
 
     curr_key = len(entity_dict.keys())+1
     known_aliases = [v['primary_alias'] for v in entity_dict.values()]
-    print(known_aliases)
     for info in llm_entity_discovery_response.entities_discovered:
-        print(info.entity_name)
+
         if(info.entity_name in known_aliases):
-            print("Same!")
             overwrite_key = True
             selected_key = next((k for k, v in entity_dict.items() if v['primary_alias'] == info.entity_name), None)
         else:
             overwrite_key = False
             selected_key = curr_key
-        
-        print(f"{info.entity_name} ({info.entity_type} - {info.entity_subcategory}) : {info.reasoning}")
 
         entity_dict[selected_key] = dict()
         entity_dict[selected_key]['primary_alias'] = info.entity_name
@@ -436,9 +448,13 @@ async def extract_topics(og_text):
         if(not(overwrite_key)):
             curr_key += 1
 
-    # Find similar nodes
+    # Extract Similar nodes from Knowledge Graph
+
+    known_aliases = [v['primary_alias'] for v in entity_dict.values()]
     keys_to_remove = []
+
     for key,entity_info in entity_dict.items():
+
         closest_topic = du.fuzzy_topic_finder(entity_info['primary_alias'],threshold=0.85)
         if(closest_topic and not(closest_topic==entity_info['primary_alias'])):
             actions = [cl.Action(name=closest_topic,payload={"selection":closest_topic},label = closest_topic),
@@ -452,19 +468,79 @@ async def extract_topics(og_text):
                 keys_to_remove.append(key)
             elif(response['payload']['selection']==closest_topic):
                 # Update the dictionary with the closest topic info
-                entity_dict[key]['primary_alias'] = closest_topic
-                entity_dict[key]['existing_aliases'] = list(set(du.get_node_aliases(closest_topic)+entity_dict[key]['existing_aliases']))
-                entity_dict[key]['type'] = du.get_node_type(closest_topic)
-                entity_dict[key]['tag'] = entity_dict[key]['tag']
+                if(not(closest_topic in known_aliases)):
+                    entity_dict[key]['primary_alias'] = closest_topic
+                    entity_dict[key]['existing_aliases'] = list(set(du.get_node_aliases(closest_topic)+entity_dict[key]['existing_aliases']))
+                    entity_dict[key]['reasoning'] = du.get_node_summary(closest_topic)
+                    entity_dict[key]['type'] = du.get_node_type(closest_topic)
+                    entity_dict[key]['tag'] = entity_dict[key]['tag']
+                else:
+                    keys_to_remove.append(key)
+
 
     for key in keys_to_remove:
         del entity_dict[key]
+
+    # Combine Similar Nodes
+
+    known_aliases = [v['primary_alias'] for v in entity_dict.values()]
+
+    # Keep the smallest alias as the primary alias.
+
+    alias_clusters = []
+    clustered_aliases = []
+    for alias in known_aliases:
+
+        current_cluster = []
+        if(not(alias in clustered_aliases)):
+
+            current_cluster = [alias]
+            top_matches = process.extract(alias, known_aliases, limit=5)
+
+            selected_matches = []
+            for match, score, idx in top_matches:
+                if(score>90.0 and not(alias==match)):
+                    current_cluster.append(match)
+                    clustered_aliases.append(match)
+
+        if(len(current_cluster)>0):
+            alias_clusters.append(current_cluster)
+
+    keys_to_delete = []
+    for cluster in alias_clusters:
+        # Get the smallest alias
+        primary_alias = min(cluster, key=len)
+
+        key_to_modify = next((k for k, v in entity_dict.items() if v['primary_alias'] == primary_alias), None)
+        for other_alias in cluster:
+            if(not(other_alias==primary_alias)):
+                keys_to_delete.append(next((k for k, v in entity_dict.items() if v['primary_alias'] == other_alias), None))
+
+        entity_dict[key_to_modify]['primary_alias'] = primary_alias
+        entity_dict[key_to_modify]['existing_aliases'] = cluster
+
+    for key in keys_to_delete:
+        del entity_dict[key]
+
+    # Update Summaries if nodes exist in knowledge graph
+    for key in entity_dict.keys():
+        if(du.get_node_id(entity_dict[key]['primary_alias'])):
+            entity_dict[key]['type'] = du.get_node_type(du.get_node_id(entity_dict[key]['primary_alias']))
+
+            summary = du.get_node_summary(entity_dict[key]['primary_alias'])
+
+            if(not(summary==f'No information about {entity_dict[key]['primary_alias']} available')):
+                entity_dict[key]['reasoning'] = du.get_node_summary(entity_dict[key]['primary_alias']).split('.')[0]+'...'
+
+    print(entity_dict)
 
     entity_dict = await show_checklist(entity_dict,message='Please select the topics to add to the story graph!')
 
     nodes_to_add = cl.user_session.get("relevant_nodes")
 
     # Add all the new "topic" nodes to the graph and reload the maps
+    
+    known_background = "\n".join(f"{entity_dict[key]['primary_alias']} : {du.knowledge_graph.nodes[du.get_node_id(entity_dict[key]['primary_alias'])]['metadata']['summary']}" for key in entity_dict.keys() if du.get_node_id(entity_dict[key]['primary_alias']) )
     for key in entity_dict.keys():
         print(entity_dict[key])
         if(entity_dict[key]['to_add'] and not(du.get_node_id(entity_dict[key]['primary_alias']))):
@@ -491,6 +567,8 @@ async def extract_topics(og_text):
                 props_dict['background']            = f"{entity_dict[key]['primary_alias']} Categorization : {entity_dict[key]['type']} ({entity_dict[key]['tag']})"
             else:
                 props_dict['background']            = ""
+                
+            props_dict['background'] += known_background
 
             if(du.get_node_id(entity_dict[key]['primary_alias'])):
                 props_dict['background']            = du.knowledge_graph.nodes[du.get_node_id(entity_dict[key]['primary_alias'])]['metadata']['summary']
@@ -557,6 +635,7 @@ async def extract_relationships(resolved_text,entity_dicts):
     all_aliases = [alias for idx,entity_dict in entity_dicts.items() for alias in entity_dict['existing_aliases']]
 
     topics = [entity_dict['primary_alias'] for entity_dict in entity_dicts.values() if entity_dict['to_add']]+['Other']
+    background_topics = [entity_dict['primary_alias'] for entity_dict in entity_dicts.values() if du.get_node_id(entity_dict['primary_alias'])]
 
     # 3. Create a new model that inherits from BaseReport and adds/overrides fields
     triplet_schema = create_custom_triplet_schema(topics)
@@ -570,7 +649,7 @@ async def extract_relationships(resolved_text,entity_dicts):
 
         # Filter Chunk to only consider sentences where the entity is mentioned
         statements = sem.split_into_sentences(chunk)
-        triplet_widget_props = await decompose_text(statements,topics,template=triplet_schema)
+        triplet_widget_props = await decompose_text(statements,topics,background_topics=background_topics,template=triplet_schema)
 
         # Check relationships to save.
         triplet_widget_element = cl.CustomElement(name="TripletListWidget",display="inline",props= triplet_widget_props)
@@ -585,9 +664,9 @@ async def extract_relationships(resolved_text,entity_dicts):
             for key in response.keys():
                 if(not(key=='submitted') and response[key]['selected']):
 
-                    heads               = [response[key]['head'][idx] for idx in [int(key) for key,value in response[key]['head_selection'].items() if value]]
-                    relation            = response[key]['relation']
-                    tails               = [response[key]['tail'][idx] for idx in [int(key) for key,value in response[key]['tail_selection'].items() if value]]
+                    heads               = list(set([response[key]['head'][idx] for idx in [int(key) for key,value in response[key]['head_selection'].items() if value]]))
+                    #relation            = response[key]['relation']
+                    tails               = list(set([response[key]['tail'][idx] for idx in [int(key) for key,value in response[key]['tail_selection'].items() if value]]))
                     text                = response[key]['base_fact']
                     to_add              = response[key]['selected']
                     temporal_metadata   = response[key]['temporal_metadata']
@@ -605,7 +684,8 @@ async def extract_relationships(resolved_text,entity_dicts):
                         props_dict['statement']            = text
                         props_dict['background']            = chunk+"\n\n"
                         for topic in topics_mentioned:
-                            props_dict['background']            += "* "+du.knowledge_graph.nodes[du.get_node_id(topic)]['metadata']['summary']+'\n'
+                            if(du.get_node_id(topic)):
+                                props_dict['background']            += "* "+du.knowledge_graph.nodes[du.get_node_id(topic)]['metadata']['summary']+'\n'
 
                         # Clear out chat history to avoid cross-contamination
                         chat_history = prompts.prompt_parser("edge_reification_check",props_dict)
@@ -653,7 +733,7 @@ async def extract_relationships(resolved_text,entity_dicts):
                             for triplet in all_new_triplets:
                                 reification_relation = dict()
                                 reification_relation['head']                = [head for head in triplet['head'] if not(head in triplet['tail'])][0]
-                                reification_relation['relation']            = triplet['relation']
+                                #reification_relation['relation']            = triplet['relation']
                                 reification_relation['tail']                = [tail for tail in triplet['tail'] if not(tail in triplet['head'])][0]
                                 reification_relation['text']                = triplet['base_fact']
                                 reification_relation['temporal_metadata']   = triplet['temporal_metadata']
@@ -674,9 +754,10 @@ async def extract_relationships(resolved_text,entity_dicts):
                                     all_new_triplets += reification_triplets['triplets']
 
                             for triplet in all_new_triplets:
+                                print(triplet)
                                 reification_relation = dict()
                                 reification_relation['head']                = [head for head in triplet['head'] if not(head in triplet['tail'])][0]
-                                reification_relation['relation']            = triplet['relation']
+                                #reification_relation['relation']            = triplet['relation']
                                 reification_relation['tail']                = [tail for tail in triplet['tail'] if not(tail in triplet['head'])][0]
                                 reification_relation['text']                = triplet['base_fact']
                                 reification_relation['temporal_metadata']   = triplet['temporal_metadata']
@@ -688,7 +769,7 @@ async def extract_relationships(resolved_text,entity_dicts):
                     else:
                         curr_relation = dict()
                         curr_relation['head']               = heads[0]
-                        curr_relation['relation']           = relation
+                        #curr_relation['relation']           = relation
                         curr_relation['tail']               = tails[0]
                         curr_relation['text']               = text
                         curr_relation['temporal_metadata']  = temporal_metadata
@@ -801,7 +882,7 @@ async def summarize_nodes():
     for node in du.knowledge_graph.nodes():
 
         # Check if the node needs to be updated
-        if(du.knowledge_graph.nodes[node]['metadata']['summary_updated'] > du.kg2ds_map[du.project_name][du.current_graph]['datastore_last_saved']):
+        if(du.knowledge_graph.nodes[node]['metadata']['summary_updated'] < du.knowledge_graph.nodes[node]['updated']):
 
             node_name = du.get_node_name(node)
             summary_content = f"## {node_name}"
@@ -978,7 +1059,8 @@ async def find_temporal_connections(threshold=0.7):
             ui_message.content += f"{milestone} : {llm_response.message.content}\n\n"
             await ui_message.update()
 
-            du.add_node(milestone,type="Events & Phenomena",tag="Milestone Event",summary=llm_response.message.content,linked_edges=list(milestone_data[slugify_key(milestone)]))
+            linked_edges = milestone_data[slugify_key(milestone)]
+            du.add_node(milestone,type="Events & Phenomena",tag="Milestone Event",summary=llm_response.message.content,linked_edges=linked_edges)
 
         # Add milestone references to the relevant edges.
         for key, edge_data in milestone_data.items():
@@ -1050,13 +1132,28 @@ async def find_temporal_connections(threshold=0.7):
 
         du.save_graph()
 
+async def adhoc_llm_query(system_message,user_message,temperature=0.3,max_new_tokens=128):
+
+    messages = [{'role':"system",'content':system_message},{"role":"user","content":user_message}]
+
+    llm_response = await ollama_client.chat(
+                                        model=config['model_id'],
+                                        messages=messages,
+                                        options={
+                                                    'temperature': temperature,      # Controls randomness (0.0 = deterministic, 1.0 = creative)
+                                                    'num_predict': max_new_tokens       # Equivalent to max tokens (maximum tokens to generate)
+                                                }
+                                        )
+
+    return llm_response.message.content
+
 #############
 
 # Learning from Input Text
 
 #############
 
-async def decompose_text(statements,topics,template=None,temperature=0.2,exclusive=False):
+async def decompose_text(statements,topics,background_topics=[],template=None,temperature=0.2,exclusive=False):
     # statements = list(str)
     # topics = list(str)
 
@@ -1066,7 +1163,7 @@ async def decompose_text(statements,topics,template=None,temperature=0.2,exclusi
 
         # Extract statements and topics
         background_info = []
-        for topic in topics:
+        for topic in background_topics:
             if(du.get_node_id(topic) and len(du.knowledge_graph.nodes[du.get_node_id(topic)]['metadata']['summary'])>0):
                 background_info.append(f"{topic} : {du.knowledge_graph.nodes[du.get_node_id(topic)]['metadata']['summary']}")
 
@@ -1093,13 +1190,12 @@ async def decompose_text(statements,topics,template=None,temperature=0.2,exclusi
 
         triplet_widget_props = {'triplets':[]}
         for idx,triplet in enumerate(llm_response.triplets):
-            print(f"{triplet.simplified_text} : {triplet.sources} --> {triplet.relation} --> {triplet.targets} @ {triplet.temporal_metadata} ({triplet.reasoning})")
+            print(f"{triplet.simplified_text} : {triplet.sources} --> {triplet.targets} @ {triplet.temporal_metadata} ({triplet.reasoning})")
 
             triplet_data = dict()
 
             triplet_data['id'] = idx
             triplet_data['head'] = triplet.sources
-            triplet_data['relation'] = triplet.relation
             triplet_data['tail'] = triplet.targets
             triplet_data['base_fact'] = triplet.simplified_text
             triplet_data['temporal_metadata'] = triplet.temporal_metadata
@@ -1208,33 +1304,26 @@ async def choose_and_use_tool(user_message):
     mentioned_topics = [du.get_node_name(node) for node in relevant_nodes]
     topic_summaries = [du.knowledge_graph.nodes[node]['metadata']['summary'] for node in relevant_nodes]
 
-    print("Mentioned : ",mentioned_topics)
-    print("Resolved : ",resolved_text)
-
     #chat_history.append({'role': 'user', 'content': resolved_text})
 
     # Devising Strategy...
-    args_dict = dict()
-    args_dict['query'] = resolved_text+'\n\n'+'\n'.join(topic_summaries)
-    args_dict['topics'] = ", ".join(mentioned_topics)
+    #args_dict = dict()
+    #args_dict['query'] = resolved_text#+'\n\n'+'\n'.join(topic_summaries)
+    #args_dict['topics'] = ", ".join(mentioned_topics)
 
-    chat_history = prompts.prompt_parser("pivot_node_strategy_prompt",args_dict,refresh=False)
-    
-    print(chat_history[-1]['content'])
+    #chat_history = prompts.prompt_parser("pivot_node_strategy_prompt",args_dict,refresh=False)
+    #llm_response = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=py_schema.TopicIdentifierList)
 
-    llm_response = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=py_schema.TopicIdentifierList)
+    #exploration_strategy = dict()
+    #for topic_info in llm_response.topics_identified:
+    #    exploration_strategy[topic_info.topic] = [topic.value for topic in topic_info.selected_information_categories]
 
-    exploration_strategy = dict()
-    for topic_info in llm_response.topics_identified:
-        print(topic_info)
-        exploration_strategy[topic_info.topic] = [topic.value for topic in topic_info.selected_information_categories]
+    gathered_information = await explore_knowledge_graph(resolved_text,mentioned_topics)
 
-    print(exploration_strategy)
-
-    gathered_information = await explore_knowledge_graph(exploration_strategy)
-
+    # Replace the user prompt here with the actual source query
+    llm_content_dict = {"user_query":resolved_text}
+    prompts.prompt_parser('reasoned_answer_prompt',llm_content_dict)
     prompts.add_to_history('tool',gathered_information) 
-    prompts.switch_system_prompt('reasoned_answer_prompt')
 
     print(gathered_information)
 
@@ -1260,26 +1349,214 @@ async def choose_and_use_tool(user_message):
                 response_stream = await respond_with_tool_output(user_message.content,tool_output)
                 return response_stream'''
 
-async def explore_knowledge_graph(strategy):
+async def explore_knowledge_graph(query, topics):
     # Input  : strategy = {node:allowed_edges}
     # Output : LLM-compatible text for the next step.
 
-    gathered_info_dict = dict()
-    for node,allowed_edges in strategy.items():
-        if(du.get_node_id(node)):
-            for neighbor in du.get_all_neighbors(node)['all']:
-                gathered_info_dict[du.get_node_name(neighbor)] = [du.knowledge_graph.nodes[du.get_node_id(neighbor)]['metadata']['summary']]
-            
-            all_edges = du.get_all_edges_of_type(node,allowed_edges)
-            for neighbor in all_edges.keys():
-                gathered_info_dict[du.get_node_name(neighbor)] += [element[1]['text'] for element in all_edges[neighbor]]
+    def format_node(node):
+
+        node_dict = dict()
+        #node_dict['type'] = "Node"
+        node_dict['name'] = node
+        node_dict['category'] = du.get_node_type(node)
+        node_dict['definition'] = du.get_node_summary(node)
+        node_dict['tags'] = ", ".join(du.get_node_tags(node))
+        return node_dict
+
+    def format_edges(edges,head,neighbor):
+
+        edge_data = []
+        for element in edges[neighbor]:
+
+            edge_dict = dict()
+            #edge_dict['type'] = "Edge"
+            #edge_dict['source'] = head
+            #edge_dict['target'] = neighbor
+            edge_dict['relationship'] = element[1]['text']
+            edge_dict['tag'] = element[1]['tags'][0]
+            edge_data.append((element[0],edge_dict))
+
+        return edge_data
+
+    og_query = query
+
+    gathered_information = "No strategy defined yet."
+    context_ledger = {
+                        "query" : og_query,
+                        "context":[],
+                        "evaluation":"Context not evaluated yet."
+                    }
+    #context_ledger['original_query'] = og_query
+
+    parsed_info = dict()
+    added_nodes = []
+    added_edges = []
+    new_neighbors = []
+
+    current_content_is_sufficient = False
+    trial = 1
+
+    ledger_msg = cl.Message(content=gathered_information)
+    await ledger_msg.send()
+
+    while(not(current_content_is_sufficient) and trial<5):
+
+        ledger_msg.content = gathered_information
+        await ledger_msg.update()
+
+        relevant_nodes = du.get_relevant_topics(query,threshold=0.75,all=True,fuzzy=True)
+        topics = [du.get_node_name(node) for node in relevant_nodes]+new_neighbors
+
+        # Define Strategy
+        args_dict = dict()
+        args_dict['query'] = query
+        args_dict['topics'] = []
+        for topic in topics:
+            if(not(topic in parsed_info.keys())):
+                if(len(du.get_edge_types_at_node(topic))>0):
+                    args_dict['topics'].append(f"* Topic : {topic}\n\tDefinition : {du.get_node_summary(topic)}\n\tAvailable edges : {", ".join(du.get_edge_types_at_node(topic))}")
+                else:
+                    args_dict['topics'].append(f"* Topic : {topic}\n\tDefinition : {du.get_node_summary(topic)}\nAvailable edges : No Edges Available!")
+
+        args_dict['topics'] = "\n\n".join(args_dict['topics'])
+        args_dict['strategy'] = gathered_information
+
+        chat_history = prompts.prompt_parser("graph_traversal_strategy_prompt",args_dict)
+        llm_strategy = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=py_schema.TopicIdentifierList)
+
+        strategy = dict()
+        for topic_info in llm_strategy.topics_identified:
+            if(topic_info.topic in strategy.keys()):
+                strategy[topic_info.topic]+=[topic.value for topic in topic_info.selected_information_categories]
+            else:
+                strategy[topic_info.topic] = [topic.value for topic in topic_info.selected_information_categories]
+
+        for key in strategy.keys():
+            strategy[key] = list(set(strategy[key]))
+
+        ledger_strategy = dict()
+        for topic_info in llm_strategy.topics_identified:
+            ledger_strategy[topic_info.topic] = dict()
+            ledger_strategy[topic_info.topic]['reasoning'] = topic_info.reasoning
+            ledger_strategy[topic_info.topic]['selected_categories'] = [topic.value for topic in topic_info.selected_information_categories]
 
 
-    gathered_info_list = []
-    for key in gathered_info_dict.keys():
-        gathered_info_list += [f"* {text}\n" for text in gathered_info_dict[key]]
-        gathered_info_list += ["\n"]
-    gathered_information = "Gathered Information:\n"+" ".join(gathered_info_list)
+        #context_ledger[f"Step {trial}"]['strategy'] = ledger_strategy
+
+        print()
+        print('[STRATEGY]')
+        print(llm_strategy)
+        print()
+
+        # Add Node information
+
+        for node,allowed_edges in strategy.items():
+
+            parsed_node = node in parsed_info.keys()
+            to_parse = not(parsed_node)
+
+            if(du.get_node_id(node) and to_parse):
+
+                node_dict = format_node(node)
+                context_ledger['context'].append(node_dict)
+                all_edges = du.get_all_edges_of_type(node,allowed_edges)
+                added_nodes.append(du.get_node_id(node))
+
+                parsed_info[node] = []
+                
+                all_neighbors = list(all_edges.keys())
+                node_relevance = du.get_cosine_similarity([query],[du.get_node_summary(neighbor) for neighbor in all_neighbors])[0]
+
+                for idx in argsort(node_relevance,descending=True):
+                    print(all_neighbors[idx],node_relevance[idx])
+
+                selected_neighbors = [all_neighbors[idx] for idx in argsort(node_relevance,descending=True)[:3]]
+                print(selected_neighbors)
+
+                for neighbor in selected_neighbors:
+                    if(du.get_node_id(neighbor) and not(du.get_node_id(neighbor) in added_nodes)):
+                        node_dict = format_node(neighbor)
+                        context_ledger['context'].append(node_dict)
+                        parsed_info[neighbor] = []
+                        added_nodes.append(du.get_node_id(neighbor))
+
+
+        # Add Edge information
+        for node,allowed_edges in strategy.items():
+
+            # CHANGE THIS LATER
+            parsed_node = len(parsed_info[node])>0
+            to_parse = not(parsed_node)
+
+            if(du.get_node_id(node) and to_parse):
+
+                parsed_info[node] = allowed_edges
+                all_edges = du.get_all_edges_of_type(node,allowed_edges)
+
+                for neighbor in all_edges.keys():
+                    if(not(du.get_node_name(neighbor) in new_neighbors)):
+                        new_neighbors.append(du.get_node_name(neighbor))
+
+                    # ADD EDGE ONLY IF NODE IS RELEVANT.
+                    edge_data = format_edges(all_edges,du.get_node_name(node),du.get_node_name(neighbor))
+                    for edge,text in edge_data:
+                        if(not(edge in added_edges)):
+                            added_edges.append(edge)
+                            context_ledger['context'].append(text)
+
+            #gathered_info_dict.append("\n")
+
+        if(len(context_ledger['context'])==0):
+            context_ledger['context'] = "No new context found for this strategy!"
+            break
+        
+        gathered_information = json.dumps(context_ledger, indent=2) #"\n".join([element for element in gathered_info_dict])
+        ledger_msg.content = gathered_information
+        await ledger_msg.update()
+
+        '''
+        llm_response = await adhoc_llm_query(
+                                               system_message = "You are an expert summary writer for fictional lore. Your task is to write a short summary of the given fictional lore. Your summary must capture ALL important points relevant to the given user query. You must NEVER invent any new facts or lore. Do not include any conversational preamble or text.",
+                                               user_message   = f"[LORE]{gathered_information}\n\n[QUERY]{og_query}"
+                                           )
+
+        await cl.Message(content=llm_response).send()
+        '''
+
+        llm_content_dict = dict()
+        llm_content_dict['query'] = og_query
+        llm_content_dict['context'] = gathered_information
+
+        chat_history = prompts.prompt_parser('context_evaluation_prompt',llm_content_dict)
+
+        context_evaluation = await tokenize_and_generate(max_new_tokens=256,temperature=0.25,template=py_schema.ContextEvaluationSchema)
+
+        #print()
+        #print("[EVALUATION]")
+        #print(context_evaluation)
+        #print()
+        #print("[PARSED INFO]")
+        #print(parsed_info)
+        #print()
+
+        context_ledger['evaluation'] = dict()
+        context_ledger['evaluation']['implication'] = context_evaluation.implication
+        context_ledger['evaluation']['reasoning'] = context_evaluation.reasoning
+        context_ledger['evaluation']['new_query'] = context_evaluation.unresolved_gaps
+
+        gathered_information = json.dumps(context_ledger, indent=2)
+        ledger_msg.content = gathered_information
+        await ledger_msg.update()
+
+        current_content_is_sufficient = context_evaluation.is_context_sufficient
+        query = context_evaluation.unresolved_gaps
+
+        trial += 1
+
+        #if(not(current_content_is_sufficient) and trial<5):
+        #    await cl.Message(content=query).send()
+
+    # Check if context is sufficient
     
     return gathered_information
 
@@ -1346,7 +1623,7 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
     chat_history = cl.user_session.get("chat_history")
     settings = cl.user_session.get("settings")
 
-    if(1):
+    if(0):
         print("-------------------------------------------------")
         for message in chat_history:
             print()
@@ -1434,9 +1711,6 @@ async def get_rag_context(user_query,categories,strategy,thinking_type):
 #############
 
 tools_list = [tool_desc for tool_desc in tools.values()]
-print(tools_list)
-print()
-
 available_tools = {
     "get_additional_context":get_rag_context
 }
@@ -1539,14 +1813,12 @@ async def on_chat_start():
     counters['lore'] = 0
     counters['plot'] = 0
 
-    print(du.dataset)
-
     #for node in du.knowledge_graph.nodes():
     #    print(f"{du.knowledge_graph.nodes[node]['text']} : {du.knowledge_graph.nodes[node]['type']}")
         
     await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?").send()
 
-    import networkx as nx
+    #import networkx as nx
     #for head,tail in du.knowledge_graph.edges():
     #    print(du.get_node_name(head),du.get_node_name(tail))
 
@@ -1554,8 +1826,8 @@ async def on_chat_start():
 
     #print(list(nx.nodes_with_selfloops(du.knowledge_graph)))
 
-    for node in du.knowledge_graph.nodes():
-        print(du.get_node_name(node))
+    #for node in du.knowledge_graph.nodes():
+    #    print(du.get_node_name(node))
     #await summarize_nodes()
 
     '''
@@ -1574,11 +1846,15 @@ async def on_chat_start():
                     print(du.knowledge_graph.edges[head,tail,key])
     '''
 
-    du.reload_lookups()
+    #du.reload_lookups()
 
     print(du.knowledge_graph)
 
-    await find_temporal_connections()
+    #for row in du.dataset:
+        #print(f"{row['name']} : {du.knowledge_graph.nodes[row['node_id']]['updated']} / {du.knowledge_graph.nodes[row['node_id']]['metadata']['summary_updated']}")
+        #print(f"{row['name']} : {row['text']}")
+
+    #await find_temporal_connections()
 
 @cl.on_message
 async def on_message(user_message: cl.Message):
@@ -1641,6 +1917,7 @@ async def on_message(user_message: cl.Message):
                                 })
 
             cl.user_session.set("chat_history",chat_history)
+
 
 
 

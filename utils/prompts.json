@@ -80,7 +80,7 @@
 					"information":
 						["\n<statements>\n(STATEMENTS)\n</statements>\n"],
 					"topic":
-						["\n[KNOWN TOPICS]\n<known_topics>\n(KNOWN_TOPICS)\n</known_topics>"]
+						["\n[KNOWN TOPICS : DO NOT REPEAT]\n<known_topics>\n(KNOWN_TOPICS)\n</known_topics>"]
 					} 
 			},
 		"required_keys":["known_topics","statements"]
@@ -237,7 +237,46 @@
 					}
 			},
 		"required_keys":["topics","query"]
-		},		
+		},	
+	"graph_traversal_strategy_prompt":
+		{"system":
+			{
+				"role": 
+					"system", 
+				"content": 
+					["[SYSTEM ROLE AND GUARDRAILS]",
+					"You are an information retrieval and graph traversal assistant for a knowledge graph of fictional lore.",
+					"An external system will use the strategy you define to traverse a knowledge graph. Your task is to analyze the previous graph traversal steps and the given set of topics; and define the topics and categories to be selected for the next step of the strategy.",
+					"\n[STRATEGY FORMAT]",
+					"1. The strategy starts with the original user query that is to be answered.",
+					"2. Next, the strategy describes all of the steps of graph traversal that have already been taken, and the output of those steps.",
+					"3. Each strategy step consists of the (i) previously selected topics and the corresponding edge categories, (ii) The information output of graph traversal when querying those topics and edges, and (iii) the evaluation of the relevance of the current information with respect to the user query.",
+					"\n[CATEGORY FORMAT]",
+					"You are given a list of topics. You must choose at most three (3) of the most relevant topics from that list based on their definitions.",
+					"Each topic is given with the available categories for that topic. You must only choose out of the available categories.",
+					"If you choose a topic that has previously been chosen, you must ALWAYS choose a category that has NOT been previously chosen.",
+					"Each selected category of information must be one of the following:",
+					"1. Structural & Compositional: Focuses on identity, taxonomy, classification, and static spatial/logical containment where entities form inherent hierarchies or whole-to-part arrangements (e.g., 'is a', 'part of', 'instance of', etc.).",
+			        "2. Spatial & Topological: Focuses on physical, geographic, geometric, or positional arrangements, proximity, and spatial origins within an environment (e.g., 'located in', 'borders with', 'originates from', etc.).",
+			        "3. Temporal & Causal: Focuses on event ordering, chronological progression, state transitions, and cause-and-effect mechanics across a timeline (e.g., 'causes', 'triggered by', 'precedes', etc.).",
+			        "4. Social & Organizational: Focuses on deliberate affiliations, governance structures, power dynamics, active interactions, and competitive or cooperative ties between autonomous agents, collectives, or authorities (e.g., 'member of', 'controls', 'competes with',etc.).",
+			        "5. Functional & Operational: Focuses on dynamic actions, instrumentalities, resource flows, and operational dependencies where one entity generates, alters, utilizes, or relies upon another to achieve a state, output, or purpose (e.g., 'creates', 'uses', 'depends on', 'consumes',etc.).",
+					"Do NOT include any conversational preamble or text."]
+			},
+		"user":
+			{
+				"role": 
+					"user", 
+				"content": 
+					{
+					"existing_context":
+						["\n<current_strategy>\n(STRATEGY)\n</current_strategy>\n"],
+					"relevant_topics":
+						["\n<topics>\n(TOPICS)\n</topics>\n"]
+					}
+			},
+		"required_keys":["topics","strategy"]
+		},	
 	"text_decomposition_prompt":
 		{
 			"system":
@@ -276,17 +315,20 @@
 				},
 			"required_keys":["topics","background","text","other_topics"]			
 		},
-	"query_evaluation_prompt":
+	"context_evaluation_prompt":
 		{
 			"system":
 				{
 					"role":"system",
 					"content":["[SYSTEM ROLE AND GUARDRAILS]",
-								"Your task is to determine whether the provided user context is sufficient to fully answer the user query and categorize the information needed to answer the user query.",
-								"1. In the 'genre' field, you must respond with the category of information needed to answer the user query.",
-								"2. In the 'is_context_sufficient' field, you must ONLY answer 'True' if the context contains ALL the information necessary to COMPLETELY answer the user query without ANY extrapolation of facts. Answer 'False' if the context is insufficient to answer the user query or sufficient to answer part of the user query.",
-								"3. In the 'new_query' field, you must respond a new data query for the missing context ONLY if the provided context is insufficient to do so, otherwise respond with 'Context is sufficient'.",
-								"4. In the 'answer' field, provide an answer to the user query ONLY if the provided context is sufficient to answer the user query, otherwise respond with 'Context is insufficient to answer the query. Do not include any conversational preamble or text.'"]
+								"You are an information utility evaluator for fictional lore. Your task is to analyze the provided context and determine whether it is sufficient to fully answer the user query and categorize the information needed to answer the user query.",
+								"1. First, in the 'implication' field, you must analyze the context, and perform exactly ONE step of logical extrapolation. Then, you must respond with an immediate first-order implication that follows directly from the given context and is relevant to the user query.",
+								"2. Second, in the 'reasoning' field, attempt to answer the query using the first-order implication and the given context, and respond with a brief analysis (1-2 sentences) of why the provided context either is or is not sufficient to answer the user query. Don't use any conversational preamble or text in the 'reasoning' field. Tone : minimal.",
+								"3. Third, in the 'is_context_sufficient' field, you must ONLY answer 'True' if the provided context contains ALL the information necessary to COMPLETELY answer the user query without inventing new facts. Answer 'False' if the provided context is not sufficient to fully answer the user query.",
+								"4. Finally, in the 'unresolved_gaps' field, if the provided context is not sufficient, you must describe the information relevant to answer the user query that is missing from the given context.",
+								"5. Do not include any conversational preamble or text.",
+								"[CRITERIA TO DETERMINE IF CONTEXT IS SUFFICIENT]",
+								"1. Context is sufficient if the first-order implication of the given facts is sufficient to answer the user query."]
 
 				},
 			"user":
@@ -294,7 +336,7 @@
 					"role":"user",
 					"content":
 						{
-							"context": ["<user_context>\n(CONTEXT)\n</user_context>\n"],
+							"context": ["<context>\n(CONTEXT)\n</context>\n"],
 							"query":["\n<user_query>\n(QUERY)\n</user_query>"]
 						}
 				},
@@ -321,13 +363,11 @@
 						"user", 
 					"content": 
 						{
-							"local_context":
-								["\n[CONTEXT BLOCK]\n<context>\n(LOCAL_CONTEXT)\n</context>\n\n"],
 							"user_query":
 								["\n[USER QUERY]\n<query>\n(USER_QUERY)\n</query>\n"]
 						}
 				},
-			"required_keys":["local_context","user_query"]			
+			"required_keys":["user_query"]			
 		},
 	"triplet_extraction_prompt":
 		{
@@ -337,28 +377,26 @@
 						"system", 
 					"content": 
 						["[SYSTEM ROLE]",
-						"You are an advanced triplet extraction engine for fictional lore. Your task is to find the relationships between topics based on statements about them.",
+						"You are an advanced relationship extraction engine for fictional lore. Your task is to find the relationships between topics based on statements about them.",
 						"[INPUT FORMAT]",
 						"1. You are given a set of statements and a set of topics.",
 						"2. Each topic is enclosed between <topic> and </topic> tags.",
 						"3. Each statement is enclosed between <statement> and </statement> tags.",
 						"[STEP-BY-STEP RESPONSE INSTRUCTIONS]",
 						"Your task consists of three steps.",
-						"STEP 1 : First, you must scan a given statement, identify topics in the statement and check it for passive voice.",
+						"STEP 1 : First, you must choose one of the given statements, and analyze it to identify topics in the statement and check it for passive voice.",
 						"1.1. In the 'reasoning' field, you must respond with the topics in the statement and describe the dynamics between the topics. Dynamics may include relative location, action verbs, immutable properties or transient qualities.",
 						"STEP 2 : Next, you must convert the given statements into simple sentences.",
-						"2.1. In the 'simplified_text' field, you must respond with a simple sentence that reflects information contained in a statement. Each simple sentence MUST describe the relationship between ANY NUMBER of the given topics.",
+						"2.1. In the 'simplified_text' field, you must respond with a simple sentence that reflects the relationship between ANY NUMBER of the given topics that is given in the selected statement.",
 						"2.2. ALL of the information in the statement must be covered in this manner.",
 						"STEP 3 : Finally, you must extract a list of (source, relation, target) triplets from the simple sentences according to the given schema",
-						"3.1. In the 'sources' field, you must respond with the subjects of the 'simplified_text' (i.e., the acting entities or the primary entities). The 'source' MUST STRICTLY be a subset of given topics.",
-						"3.2. In the 'targets' field, you must respond with the objects of the 'simplified_text' (i.e., the entities being acted upon or the secondary entities). The 'target' MUST STRICTLY be a subset of the given topics.",
-						"3.3. In the 'relation' field, you must briefly describe the how the 'sources' act upon the 'targets' (e.g., if the statement is 'The dark sorcerer Malakor forged the Blade of Shadows.'; then 'source'='Malakor', 'target'='Blade of Shadows', 'relation':'forged'). Relations must be descriptive, narrative-focused verbs.",
-						"3.4. In the 'temporal_metadata' field, you must capture ALL chronological clues, durations, or references to other events (e.g., 'before the war', '10 years after X', 'during the winter', 'while the city was burning') that indicate the time period of the statement, and write a clear narrative description. If no temporal data is found, respond with 'null'. Do not invent dates or time periods.",
-						"[CRITICAL DIRECTIONALITY RULES (source -> relation -> target)]",
+						"3.1. In the 'sources' field, you must respond with the subjects of the most recent 'simplified_text' (i.e., the acting entities or the primary entities). The 'source' MUST STRICTLY be a subset of given topics. Do not repeat topic names. You must only use the most recent 'simplified_text' for your analysis.",
+						"3.2. In the 'targets' field, you must respond with the objects of the most recent 'simplified_text' (i.e., the entities being acted upon or the secondary entities). The 'target' MUST STRICTLY be a subset of the given topics. Do not repeat topic names. You must only use the most recent 'simplified_text' for your analysis.",
+						"3.4. In the 'temporal_metadata' field, you must capture ALL chronological clues, durations, or references to other events (e.g., 'before the war', '10 years after X', 'during the winter', 'while the city was burning') that indicate the time period of the statement, and write a clear narrative description. If no temporal data is found, respond with 'Permanent'. Do not invent dates or time periods.",
+						"[CRITICAL DIRECTIONALITY RULES (source -> target)]",
 						"1. THE SOURCE IS ALWAYS THE INITIATOR OR SUBJECT: The source entities must be the source of the action/relationship (e.g. the active driver, possessor, ruler or creator).",
 						"2. THE TARGET IS ALWAYS THE RECIPIENT OR OBJECT: The target entities must be what the action is directed toward (e.g., what is owned, ruled, created, or where the subject is affected).",
 						"3. SELF REFERENCE : If the statement only describes a single topic (e.g., appearance, personality, properties, qualities or attributes related to a topic), then both the source and target must be the same topic.",
-						"4. USE ACTIVE VERBS PREFERABLY: Whenever possible, frame relations so the sources acts upon the targets (e.g., use 'ruled' instead of 'ruled by' if a character is the source).",
 						"[OVERALL GUIDELINES]",
 						"1. You must ONLY extract relationships explicitly stated or directly implied in the given statements. Do not invent facts.",
 						"2. You must use the prior knowledge ONLY as a guide for the extracted facts. Do NOT extract facts from the prior knowledge itself.",
@@ -400,12 +438,11 @@
 						"STEP 1 : First, you must scan a given statement, identify topics in the statement and check it for passive voice.",
 						"1.1. In the 'reasoning' field, you must respond with the topics in the statement and describe the dynamics between the topics. Dynamics may include relative location, action verbs, immutable properties or transient qualities.",
 						"STEP 2 : Next, you must convert the given statements into simple sentences.",
-						"2.1. In the 'simplified_text' field, you must respond with a simple sentence that reflects information contained in a statement. Each simple sentence MUST describe the relationship between the source and target topic.",
+						"2.1. In the 'simplified_text' field, you must respond with a simple sentence that reflects information contained in the statement. The simple sentence MUST describe the relationship between the source and target topic.",
 						"2.2. ALL of the information in the statement must be covered in this manner.",
 						"STEP 3 : Finally, you must extract a list of (source, relation, target) triplets from the simple sentences according to the given schema",
 						"3.1. In the 'sources' field, you must respond with the given source topic verbatim.",
 						"3.2. In the 'targets' field, you must respond with the given target topic verbatim.",
-						"3.3. In the 'relation' field, you must briefly describe the how the 'sources' act upon the 'targets' (e.g., if the statement is 'The dark sorcerer Malakor forged the Blade of Shadows.'; then 'source'='Malakor', 'target'='Blade of Shadows', 'relation':'forged'). Relations must be descriptive, narrative-focused verbs.",
 						"3.4. In the 'temporal_metadata' field, you must capture any chronological clues, durations, or references to other events (e.g., 'before the war', '10 years after X', 'during the winter', 'while the city was burning') relative to the sources and targets, and write a clear narrative description. If no temporal data is found, respond with 'null'. Do not invent dates or time periods.",
 						"3.5. USE ACTIVE VERBS PREFERABLY: Whenever possible, frame relations so the sources act upon the targets (e.g., use 'ruled' instead of 'ruled by' if the character is the source).",
 						"[OVERALL GUIDELINES]",

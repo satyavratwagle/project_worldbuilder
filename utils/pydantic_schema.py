@@ -19,7 +19,6 @@ def create_custom_triplet_schema(topics,exclusive=False):
         else:
             sources: List[DynamicTopic] = Field(description="The subjects, or primary entities in 'simplified_text'.")
             targets: List[DynamicTopic] = Field(description="The object, or secondary entities in 'simplified_text'.")
-        relation: str = Field(description="The relation between the 'sources' and 'targets'.")
         temporal_metadata: str = Field(description="A concise narrative string describing when this relationship occurred relative to other events or timeframes. Leave null if there is zero temporal context.")
 
     class TripletList(BaseModel):   
@@ -128,7 +127,7 @@ class TopicIdentifer(BaseModel):
     )
 
 class TopicIdentifierList(BaseModel):
-    topics_identified:List[TopicIdentifer] = Field(description="A list of the primary entities and related information categories.", min_length=1)
+    topics_identified:List[TopicIdentifer] = Field(description="A list of the primary entities and related information categories.", min_length=1, max_length=3)
 
 class ReasonedResponse(BaseModel):
     scratchpad: str  # The step-by-step chain of thought
@@ -143,6 +142,12 @@ class HypothesisList(BaseModel):
 
 class AssumptionsList(BaseModel):
     assumptions: list[str] = Field(description='All the assumptions made by the proposition based on the context provided.')  # The step-by-step chain of thought
+
+class ContextEvaluationSchema(BaseModel):
+    implication: str = Field(description="The outcome of one step of logical extrapolation relevant to the user query. A relevant first-order implication of the given context.")
+    reasoning: str = Field(description="A brief analysis of why the provided context either is or is not sufficient to answer the user query.")
+    is_context_sufficient: bool = Field(description="'True' if the provided context is sufficient to completely answer the user query. 'False' otherwise.")
+    unresolved_gaps: Optional[str] = Field(description="If provided context is not sufficient, a description of the missing context.")
 
 # Query Evaluation Schema
 class QueryEvaluationSchema(BaseModel):

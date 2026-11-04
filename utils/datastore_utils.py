@@ -24,6 +24,7 @@ from sklearn.neighbors import NearestNeighbors
 import ahocorasick
 import math
 import base64
+import pickle
 
 # Patch to prevent AttributeError with older packages on Transformers 5.x
 '''
@@ -157,11 +158,15 @@ class DatastoreUtilities():
 
         # Load up the current graph
         
-        if(os.path.exists(f"{self.knowledge_graph_path}.gml")):
-            self.knowledge_graph = nx.read_gml(f"{self.knowledge_graph_path}.gml")
+        if(os.path.exists(f"{self.knowledge_graph_path}.gpickle")):
+            #self.knowledge_graph = nx.read_gml(f"{self.knowledge_graph_path}.gml")
+            with open(f"{self.knowledge_graph_path}.gpickle", "rb") as f:
+                self.knowledge_graph = pickle.load(f)
         else:
             self.knowledge_graph = nx.MultiDiGraph()
-            nx.write_gml(self.knowledge_graph, f"{self.knowledge_graph_path}.gml")
+            #nx.write_gml(self.knowledge_graph, f"{self.knowledge_graph_path}.gml")
+            with open(f"{self.knowledge_graph_path}.gpickle", "wb") as f:
+                pickle.dump(self.knowledge_graph, f)
 
         print(f"Loaded Graph Version : {self.knowledge_graph_path} : {self.knowledge_graph}")
         
@@ -506,7 +511,7 @@ class DatastoreUtilities():
         else:
             return dict()
 
-    def get_edges_of_type(self,type,tag=None):
+    def get_edges_of_type(self,types,tag=None):
 
         for edge in self.knowledge_graph.edges(keys=True):
             print(edge)
@@ -514,9 +519,9 @@ class DatastoreUtilities():
 
         if(tag):
             # Check tag similarity later if needed.
-            return [(head, tail, key) for head,tail,key in self.knowledge_graph.edges(keys=True) if (self.knowledge_graph.edges[head,tail,key]['type']==type and tag in self.knowledge_graph.edges[head,tail,key]['tags'])]
+            return [(head, tail, key) for head,tail,key in self.knowledge_graph.edges(keys=True) if (self.knowledge_graph.edges[head,tail,key]['type'] in types and tag in self.knowledge_graph.edges[head,tail,key]['tags'])]
         else:
-            return [(head, tail, key) for head,tail,key in self.knowledge_graph.edges(keys=True) if (self.knowledge_graph.edges[head,tail,key]['type']==type)]
+            return [(head, tail, key) for head,tail,key in self.knowledge_graph.edges(keys=True) if (self.knowledge_graph.edges[head,tail,key]['type'] in types)]
 
     def check_edges_for_redundancy(self,head,tail,new_edge_text,threshold=0.9):
         head = self.get_node_id(head)
@@ -720,6 +725,15 @@ class DatastoreUtilities():
         node_id = self.get_node_id(node_name)
         return self.knowledge_graph.nodes[node_id]['tags']
 
+    def get_node_summary(self,node_name):
+
+        node_id = self.get_node_id(node_name)
+
+        if(len(self.knowledge_graph.nodes[node_id]['metadata']['summary'])>0):
+            return self.knowledge_graph.nodes[node_id]['metadata']['summary']
+        else:
+            return f"No information about {node_name} available"
+
     def get_node_aliases(self,node_name):
 
         node_id = self.get_node_id(node_name)
@@ -770,24 +784,34 @@ class DatastoreUtilities():
 
         return all_edges
 
+    def get_edge_types_at_node(self,node_name):
+
+        all_edges = self.get_all_edges(node_name)
+        edge_types = list(set([edge_dict['type'] for key,edge_dict in all_edges]))
+
+        return edge_types
+
     def get_all_edges_of_type(self,node_name,allowed_edge_types):
         node_id = self.get_node_id(node_name)
 
         all_edges = dict()
         if(node_id):
+            edge_dict = self.knowledge_graph.get_edge_data(node_id,node_id)
+            if(edge_dict):
+                all_edges[self.get_node_name(node_id)] = [((node_id,node_id,key),edge_dict[key]) for key in edge_dict.keys() if edge_dict[key]['type'] in allowed_edge_types]
+
             all_neighbors = self.get_all_neighbors(node_id)
             # Load predecessors and successors individually
-
             for neighbor in all_neighbors['all']:
                 all_edges[self.get_node_name(neighbor)] = []
 
             for neighbor in all_neighbors['successors']:
                 edge_dict = self.knowledge_graph.get_edge_data(node_id,neighbor)
-                all_edges[self.get_node_name(neighbor)] += [(key,edge_dict[key]) for key in edge_dict.keys() if edge_dict[key]['type'] in allowed_edge_types]
+                all_edges[self.get_node_name(neighbor)] += [((node_id,neighbor,key),edge_dict[key]) for key in edge_dict.keys() if edge_dict[key]['type'] in allowed_edge_types]
 
             for neighbor in all_neighbors['predecessors']:
                 edge_dict = self.knowledge_graph.get_edge_data(neighbor,node_id)
-                all_edges[self.get_node_name(neighbor)] += [(key,edge_dict[key]) for key in edge_dict.keys() if edge_dict[key]['type'] in allowed_edge_types]
+                all_edges[self.get_node_name(neighbor)] += [((neighbor,node_id,key),edge_dict[key]) for key in edge_dict.keys() if edge_dict[key]['type'] in allowed_edge_types]
 
         return all_edges
 
@@ -821,7 +845,7 @@ class DatastoreUtilities():
         scores, examples = self.dataset.get_nearest_examples("embeddings", query_vector, k=20)
 
         for idx,score in enumerate(scores):
-            #print(f"{examples['text'][idx]} : {score}")
+            #print(f"Found Relevant topics : {examples['text'][idx]} : {score}")
             if(score>threshold):
                 mentioned_topics.append(examples['node_id'][idx])
 
@@ -870,12 +894,11 @@ class DatastoreUtilities():
 
         selected_matches = []
         for match, score, idx in top_matches:
-            print(f" - {match} ({score}% match) Threshold : {threshold}")
+            #print(f" - {match} ({score}% match) Threshold : {threshold}")
             if(score>threshold):
                 selected_matches.append(match)
 
         return selected_matches
-
 
     def find_topic_mentions(self, text):
         
@@ -1371,7 +1394,11 @@ class DatastoreUtilities():
         # 1 day = 86400 seconds
         #self.knowledge_graph.remove_edges_from(nx.selfloop_edges(self.knowledge_graph))
 
-        nx.write_gml(self.knowledge_graph, f"{self.knowledge_graph_path}.gml")
+        #nx.write_gml(self.knowledge_graph, f"{self.knowledge_graph_path}.gml")
+
+        with open(f"{self.knowledge_graph_path}.gpickle", "wb") as f:
+            pickle.dump(self.knowledge_graph, f)
+
 
         self.reload_graph()
 
@@ -1379,9 +1406,13 @@ class DatastoreUtilities():
 
         # Reload kg_to_ds_map
         
-        if(os.path.exists(f"{self.knowledge_graph_path}.gml")):
+        if(os.path.exists(f"{self.knowledge_graph_path}.gpickle")):
             # load the latest knowledge graph
-            self.knowledge_graph = nx.read_gml(f"{self.knowledge_graph_path}.gml")
+            #self.knowledge_graph = nx.read_gml(f"{self.knowledge_graph_path}.gml")
+
+            with open(f"{self.knowledge_graph_path}.gpickle", "rb") as f:
+                self.knowledge_graph = pickle.load(f)
+
             print(f"Reloaded Graph Version : {self.knowledge_graph_path} : {self.knowledge_graph}")
             self.reload_lookups()
             self.calculate_graph_datastore_diff()
