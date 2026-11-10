@@ -5,6 +5,10 @@ from pydantic.types import conlist
 import json
 from enum import Enum
 
+allowed_edge_types = ["Structural & Compositional","Spatial & Topological","Temporal & Causal","Social & Organizational","Functional & Operational"]
+
+QUERY_TYPES = ["Atomic","Enumerative","Explanatory","Speculative"]
+
 def create_custom_triplet_schema(topics,exclusive=False):
 
     DynamicTopic = Literal[*topics]
@@ -146,10 +150,22 @@ class AssumptionsList(BaseModel):
 class ContextEvaluationSchema(BaseModel):
     implication: str = Field(description="The outcome of one step of logical extrapolation relevant to the user query. A relevant first-order implication of the given context.")
     reasoning: str = Field(description="A brief analysis of why the provided context either is or is not sufficient to answer the user query.")
-    is_context_sufficient: bool = Field(description="'True' if the provided context is sufficient to completely answer the user query. 'False' otherwise.")
+    is_context_sufficient: int = Field(description="Numerical value indicating how sufficient the given context and implication are to answer the query.",ge=0,le=3)
     unresolved_gaps: Optional[str] = Field(description="If provided context is not sufficient, a description of the missing context.")
 
 # Query Evaluation Schema
+
+class QueryTaxonomyCheck(BaseModel):
+    reasoning: str = Field(description="The brief reasoning (1-2 sentences) for your choice of query type.")
+    query_type: Literal[tuple(QUERY_TYPES)] = Field(description=f"The type of query. One of {" / ".join(QUERY_TYPES)}.")
+
+    # descriptive: bool
+    # subjective: bool
+
+class QueryDecompositionSchema(BaseModel):
+    best_answer: str = Field(description="Best possible answer to the user query.")
+    follow_up_queries: list[str] = Field(description=f"A list of unanswered follow-up queries.",min_length=1,max_length=2)
+
 class QueryEvaluationSchema(BaseModel):
     is_context_sufficient: bool = Field(description="'True' if the provided context is sufficient to completely answer the user query. 'False' otherwise.")
     new_query: Optional[str] = Field(description="If provided context is not sufficient, a new data query for the missing context.")

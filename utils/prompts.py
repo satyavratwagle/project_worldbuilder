@@ -3,10 +3,10 @@ import json
 import copy
 import chainlit as cl
 
-with open('utils/prompts.json', "r", encoding="utf-8") as f:
-    prompts = json.load(f)
-
 def process_prompt(template_dict,args_dict=None):
+
+	#with open('utils/prompts.json', "r", encoding="utf-8") as f:
+	#	prompts = json.load(f)
 
 	prompt_dict = copy.deepcopy(template_dict)
 
@@ -42,6 +42,9 @@ def refresh_history():
 	
 def prompt_parser(prompt_name,args_dict,refresh=True):
 
+	with open('utils/prompts.json', "r", encoding="utf-8") as f:
+		prompts = json.load(f)
+
 	if(refresh):
 		refresh_history()
 
@@ -66,7 +69,6 @@ def add_to_history(role,content):
 	history = cl.user_session.get("chat_history")
 	history.append({"role":role,"content":content})
 	cl.user_session.set("chat_history",history)
-
 
 def switch_system_prompt(prompt_name):
 

@@ -35,7 +35,7 @@
 					["[SYSTEM ROLE AND GUARDRAILS]",
 					"You are an expert definition-writing assistant for fictional lore.",
 					"- Your job is to analyze the given information and use it to write a 2-sentence core profile defining who or what the given topic is.",
-					"_ You must not describe any other topic within the given information, and only refer them in context of the given topic.",
+					"- You must not describe any other topic within the given information, and only refer them in context of the given topic.",
 					"- Do NOT include any conversational preamble or text."]
 			},
 		"user":
@@ -51,6 +51,37 @@
 					} 
 			},
 		"required_keys":["node_name","information"]
+		},
+	"edge_definition_prompt":
+		{"system":
+			{
+				"role": 
+					"system", 
+				"content": 
+					["[SYSTEM ROLE AND GUARDRAILS]",
+					"You are an expert definition-writing assistant for fictional lore.",
+					"- Your job is to analyze the given information and use it to write a 2-sentence core profile defining one specific attribute of the given topic.",
+					"- You must not describe any other topic within the given information, and only refer them in context of the given topic.",
+					"- You must only summarize the information relevant to the specific attribute of the given topic.",
+					"- Do NOT include any conversational preamble or text."]
+			},
+		"user":
+			{
+				"role": 
+					"user", 
+				"content": 
+					{
+					"node_name":
+						["\n<topic>\n(NODE_NAME)\n</topic>\n\n:"],
+					"summary":
+						["\nBackground context : (SUMMARY)\n"],
+					"attribute":
+						["\nAttribute to summarize: (CATEGORY)\n"],
+					"information":
+						["\nInformation to summarize:\n<information>\n(INFORMATION)\n</information>\n"]
+					} 
+			},
+		"required_keys":["node_name","summary","category","information"]
 		},
 	"entity_discovery_prompt":
 		{"system":
@@ -246,15 +277,11 @@
 				"content": 
 					["[SYSTEM ROLE AND GUARDRAILS]",
 					"You are an information retrieval and graph traversal assistant for a knowledge graph of fictional lore.",
-					"An external system will use the strategy you define to traverse a knowledge graph. Your task is to analyze the previous graph traversal steps and the given set of topics; and define the topics and categories to be selected for the next step of the strategy.",
-					"\n[STRATEGY FORMAT]",
-					"1. The strategy starts with the original user query that is to be answered.",
-					"2. Next, the strategy describes all of the steps of graph traversal that have already been taken, and the output of those steps.",
-					"3. Each strategy step consists of the (i) previously selected topics and the corresponding edge categories, (ii) The information output of graph traversal when querying those topics and edges, and (iii) the evaluation of the relevance of the current information with respect to the user query.",
+					"An external system will use the strategy you define to traverse a knowledge graph. Your task is to analyze the given query and set of topics; and define the subset of topics and categories to be selected for graph traversal.",
 					"\n[CATEGORY FORMAT]",
-					"You are given a list of topics. You must choose at most three (3) of the most relevant topics from that list based on their definitions.",
+					"You are given a set of topics and the available categories in the following format:\ntopic 1 :\n\tdefinition : [topic 1 definition]\n\tavailable_categories:\n\t\tcategory 1 : [category 1 context]\n\t\tcategory 2 : [category 2 context]\ntopic 2 :\n\tdefinition : [topic 2 definition]\n\t\n\tavailable_categories:\n\t\tcategory 1 : [category 1 context]\n\t\tcategory 2 : [category 2 context]...",
+					"You must choose at most three (3) of the most relevant topics from that list based on the topic definitions and category context.",
 					"Each topic is given with the available categories for that topic. You must only choose out of the available categories.",
-					"If you choose a topic that has previously been chosen, you must ALWAYS choose a category that has NOT been previously chosen.",
 					"Each selected category of information must be one of the following:",
 					"1. Structural & Compositional: Focuses on identity, taxonomy, classification, and static spatial/logical containment where entities form inherent hierarchies or whole-to-part arrangements (e.g., 'is a', 'part of', 'instance of', etc.).",
 			        "2. Spatial & Topological: Focuses on physical, geographic, geometric, or positional arrangements, proximity, and spatial origins within an environment (e.g., 'located in', 'borders with', 'originates from', etc.).",
@@ -269,13 +296,13 @@
 					"user", 
 				"content": 
 					{
-					"existing_context":
-						["\n<current_strategy>\n(STRATEGY)\n</current_strategy>\n"],
 					"relevant_topics":
-						["\n<topics>\n(TOPICS)\n</topics>\n"]
+						["\n<topics>\n(TOPICS)\n</topics>\n"],
+					"query":
+						["\n<query>\n(QUERY)\n</query>\n"]
 					}
 			},
-		"required_keys":["topics","strategy"]
+		"required_keys":["topics","query"]
 		},	
 	"text_decomposition_prompt":
 		{
@@ -315,6 +342,70 @@
 				},
 			"required_keys":["topics","background","text","other_topics"]			
 		},
+	"query_taxonomy_prompt":
+		{
+			"system":
+				{
+					"role":"system",
+					"content":["[SYSTEM ROLE AND GUARDRAILS]",
+								"You are an expert query taxonomy classifier. Your task has two parts: (i) To analyze the given query and given context, and classify the query as one of the given query types.",
+								"\n[QUERY CLASSIFICATION TYPES]",
+								"The classification response must be EXACTLY ONE of the following types : ",
+								"1. Atomic : If the answer to query is a single, isolated fact, scalar value, entity attribute, date, or binary status.",
+								"2. Enumerative : If the answer to query is a collection, list, inventory, or multi-attribute comparison table of independent facts, options, or features.",
+								"3. Explanatory : If the answer to query requires understanding of systemic mechanics, cause-and-effect relationships, step-by-step procedures, or structural trade-offs between variables.",
+								"4. Speculative : If the answer to query is a hypothetical scenario, synthesis of a novel design/strategy under constraints, projection of a counterfactual outcome, or building an original framework.",
+								"\n[CLASSIFICATION GUIDELINES]",
+								"1. IF the query asks for one specific property of a single named entity AND does not ask for reasons, processes, or multiple options, THEN classify as 'Atomic'. Key Markers : 'What is the...', 'When did...', 'Who wrote...', 'Where is...', 'How much...', 'Is X true...'",
+								"2. IF the query asks for multiple discrete items, parallel attributes, or a set of examples AND does not ask for deep underlying causal mechanics ('why' or 'how'), THEN classify as 'Enumerative'. Key markers : 'List the...', 'What are the...', 'Give me 5 examples of...', 'Which items', 'What features...'",
+								"3. IF the query asks how or why components interact, demands a step-by-step procedure where order matters, or requires evaluating trade-offs across options, THEN classify as 'Explanatory'. Key markers : 'How does...', 'Why did...', 'Explain the mechanism of...', 'What is the difference between X and Y...'",
+								"4. IF the query introduces an altered premise ('what if'), requests an original architectural design under specific constraints, or asks to project outcomes beyond existing text, THEN classify as 'Generative'. Key markers : 'What if...', 'How would you...', 'Simulate...', 'Assuming X happens, what would...'",
+								"\n[STEP-BY-STEP RESPONSE ORDER]",
+								"You must follow two steps in your response.",
+								"A. First, in the 'reasoning' field, you must analyze the query and the context, and respond with a brief, 1-2 sentence justification for your choice.",
+								"B. Second, in the 'query_type' field, you must respond with the chosen query type.",
+								"\n[GENERAL GUIDELINES]",
+								"- Do not include any conversational preamble or text."]
+				},
+			"user":
+				{
+					"role":"user",
+					"content":
+						{
+							"context": ["<context>\n(CONTEXT)\n</context>\n"],
+							"query":["\n<query>\n(QUERY)\n</query>"]
+						}
+				},
+			"required_keys":["context","query"]
+		},
+	"query_decomposition_prompt":
+		{
+			"system":
+				{
+					"role":"system",
+					"content":["[SYSTEM ROLE AND GUARDRAILS]",
+								"You are a query decomposition and query answering expert. Your task is to analyze the given user query, attempt to answer it, and respond with a list of atomic follow-up questions whose answers are necessary to answer the broader user query.",
+								"\n[ANSWERING GUIDELINES]",
+								"- In the 'best_answer' field, analyze the user query and given context, and attempt to answer the user query.",
+								"- You must only answer using the given context. Do NOT invent new facts or extrapolate ideas.",
+								"\n[FOLLOW-UP QUERY RESPONSE GUIDELINES]",
+								"- In the 'follow_up_queries' field, analyze the user query, given context and the 'best_answer' field, and invent a list of AT MOST three (3) novel follow-up questions.",
+								"- Do NOT respond with follow-up questions that can be answered by extrapolating the 'best_answer'. Only respond with follow-up questions that CANNOT be answered by extrapolating 'best_answer'.",
+								"- Each follow-up question must be atomic, that is, the expected answer must be a simple sentence without ANY relative pronouns (e.g., 'who','whom','whose','which','that','not only ... but also', etc.) or conjunctions (e.g., 'however', 'because', 'meanwhile', 'nevertheless', etc.). Do NOT respond with follow-up questions that expect descriptive answers.",
+								"\n[GENERAL GUIDELINES]",
+								"- Do not include any conversational preamble or text."]
+				},
+			"user":
+				{
+					"role":"user",
+					"content":
+						{
+							"context": ["<context>\n(CONTEXT)\n</context>\n"],
+							"query":["\n<query>\n(QUERY)\n</query>"]
+						}
+				},
+			"required_keys":["context","query"]
+		},
 	"context_evaluation_prompt":
 		{
 			"system":
@@ -324,7 +415,11 @@
 								"You are an information utility evaluator for fictional lore. Your task is to analyze the provided context and determine whether it is sufficient to fully answer the user query and categorize the information needed to answer the user query.",
 								"1. First, in the 'implication' field, you must analyze the context, and perform exactly ONE step of logical extrapolation. Then, you must respond with an immediate first-order implication that follows directly from the given context and is relevant to the user query.",
 								"2. Second, in the 'reasoning' field, attempt to answer the query using the first-order implication and the given context, and respond with a brief analysis (1-2 sentences) of why the provided context either is or is not sufficient to answer the user query. Don't use any conversational preamble or text in the 'reasoning' field. Tone : minimal.",
-								"3. Third, in the 'is_context_sufficient' field, you must ONLY answer 'True' if the provided context contains ALL the information necessary to COMPLETELY answer the user query without inventing new facts. Answer 'False' if the provided context is not sufficient to fully answer the user query.",
+								"3. Third, in the 'is_context_sufficient' field, you must abide by the following rules.",
+								"\t3.1. Respond with '0' if the context contains absolutely NO relevant information relevant to the query, and it is impossible to answer the given user query.",
+								"\t3.2. Respond with '1' if the context contains some relevant information, but the context combined with the first-order logical extrapolation in the 'implication' field is not sufficient to fully answer the user query.", 
+								"\t3.2. Respond with '2' if the context contains some relevant information, but the context must be combined with the first-order logical extrapolation in the 'implication' field is required to fully answer the user query.", 
+								"\t3.2. Respond with '3' if the context all the relevant information to fully answer the user query.", 
 								"4. Finally, in the 'unresolved_gaps' field, if the provided context is not sufficient, you must describe the information relevant to answer the user query that is missing from the given context.",
 								"5. Do not include any conversational preamble or text.",
 								"[CRITERIA TO DETERMINE IF CONTEXT IS SUFFICIENT]",

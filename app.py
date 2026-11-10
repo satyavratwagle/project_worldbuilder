@@ -14,6 +14,7 @@ from utils.semantic import SemanticTools
 from utils.pydantic_schema import ReasonedResponse, DecomposedText, NodeSummary, TextTuple, PhaseList, Reordering, SufficiencyCheck, ClusterThemes, TripletList, label_map, create_custom_triplet_schema
 from utils.datastore_utils import DatastoreUtilities, slugify_key
 import utils.pydantic_schema as py_schema
+import utils.knowledge_tree as KT
 
 from pydantic import create_model, ValidationError
 from typing import Literal
@@ -27,6 +28,9 @@ import time
 
 from rapidfuzz import process
 from torch import argsort
+from collections import deque
+
+import networkx as nx
 
 import csv
 
@@ -41,8 +45,6 @@ with open('config.json', "r", encoding="utf-8") as f:
 
 with open('utils/wiki_schema.json', "r", encoding="utf-8") as f:
     wiki_schema = json.load(f)
-
-named_entities = ['character','location','artifact','faction','event','definition']
 
 #"Qwen/Qwen2.5-0.5B-Instruct" #
 punctuation_tuple = tuple(string.punctuation)
@@ -908,13 +910,49 @@ async def summarize_nodes():
             
             response = await tokenize_and_generate(max_new_tokens=512,temperature=0.3)
 
-            summary_content = f"## {node_name}\n> {response.message.content}"
+            summary_content = f"## {node_name}\n> {response.message.content}\n\n"
             summary_message.content = summary_content
             await summary_message.update()
+            node_summary = response.message.content
 
             du.add_metadata(node,replace=True,summary=response.message.content)
 
-    du.save_graph()
+            # Summarize edge categories (To help with graph traversal)
+            edge_summaries = dict()
+            available_edge_types = du.get_edge_types_at_node(node_name)
+
+            for category in py_schema.allowed_edge_types:
+                if(category in available_edge_types):
+
+                    allowed_edges = du.get_all_edges_of_type(node,[category])
+                    information_to_summarize = []
+
+                    for neighbor in allowed_edges.keys():
+                        for element in allowed_edges[neighbor]:
+                            information_to_summarize.append(f"* {element[1]['text']} (Tag : {element[1]['tags'][0]})")
+
+                    args_dict = dict()
+                    args_dict['node_name'] = node_name
+                    args_dict['summary'] = node_summary
+                    args_dict['category'] = category
+                    args_dict['information'] = "\n".join(information_to_summarize)
+
+                    chat_history = prompts.prompt_parser("edge_definition_prompt",args_dict)
+
+                    response = await tokenize_and_generate(max_new_tokens=512,temperature=0.3)
+
+                    summary_content += f"**{category}** : {response.message.content}\n\n"
+                    summary_message.content = summary_content
+                    await summary_message.update()
+                    category_key = category.split('&')[0].strip().lower()
+                    edge_summaries[category_key] = response.message.content
+
+            print(node_name)
+            print(edge_summaries)
+            print()
+            du.add_metadata(node,replace=True,edge_summaries=edge_summaries)
+
+        du.save_graph()
 
     #fig = du.create_network_figure(updated_nodes,target_edges=[])
     #element = cl.Plotly(name="network_graph", figure=fig, display="inline")
@@ -1292,6 +1330,19 @@ async def audit_graph():
 
 #############
 
+async def filter_topics(query,existing_topics,threshold=0.5):
+
+    relevant_nodes = du.get_relevant_topics(query,threshold=threshold,all=True,fuzzy=True)
+    topics = [du.get_node_name(node) for node in relevant_nodes]
+
+    # Break if no new topics have been added.
+    topic_list = []
+    for topic in topics:
+        if(not(topic in existing_topics)):
+            topic_list.append(topic)
+
+    return topic_list
+
 async def choose_and_use_tool(user_message):
 
     settings = cl.user_session.get("settings")
@@ -1378,186 +1429,91 @@ async def explore_knowledge_graph(query, topics):
 
         return edge_data
 
+    kt = KT.KnowledgeTree()
+    query_queue = deque()
+
     og_query = query
 
-    gathered_information = "No strategy defined yet."
-    context_ledger = {
-                        "query" : og_query,
-                        "context":[],
-                        "evaluation":"Context not evaluated yet."
-                    }
-    #context_ledger['original_query'] = og_query
+    # Query Graph
+    node_idx = kt.add_node(text=query,type="query",layer=0)
+    query_queue.append(node_idx)
 
-    parsed_info = dict()
-    added_nodes = []
-    added_edges = []
-    new_neighbors = []
+    gathered_information = "No strategy defined yet."
 
     current_content_is_sufficient = False
-    trial = 1
+    layer = 1
+    max_depth = 3
 
-    ledger_msg = cl.Message(content=gathered_information)
-    await ledger_msg.send()
+    topic_dict = dict()
+    taxonomy_query_dict = dict()
 
-    while(not(current_content_is_sufficient) and trial<5):
+    #fig = kt.get_plotly_graph()
+    #element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline")
+    msg = cl.Message(content="Creating knowledge tree!")
+    await msg.send()
 
-        ledger_msg.content = gathered_information
-        await ledger_msg.update()
+    while(not(current_content_is_sufficient>1) and layer<max_depth):
 
-        relevant_nodes = du.get_relevant_topics(query,threshold=0.75,all=True,fuzzy=True)
-        topics = [du.get_node_name(node) for node in relevant_nodes]+new_neighbors
+        new_queries = []
+        while(query_queue):
 
-        # Define Strategy
-        args_dict = dict()
-        args_dict['query'] = query
-        args_dict['topics'] = []
-        for topic in topics:
-            if(not(topic in parsed_info.keys())):
-                if(len(du.get_edge_types_at_node(topic))>0):
-                    args_dict['topics'].append(f"* Topic : {topic}\n\tDefinition : {du.get_node_summary(topic)}\n\tAvailable edges : {", ".join(du.get_edge_types_at_node(topic))}")
-                else:
-                    args_dict['topics'].append(f"* Topic : {topic}\n\tDefinition : {du.get_node_summary(topic)}\nAvailable edges : No Edges Available!")
+            previous_node = query_queue.popleft()
+            query = kt.get_query_by_node(previous_node)
 
-        args_dict['topics'] = "\n\n".join(args_dict['topics'])
-        args_dict['strategy'] = gathered_information
+            fig = kt.get_plotly_graph(focus_node=previous_node)
+            element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline")
+            await msg.remove()
+            msg = cl.Message(content=query,elements=[element])
+            await msg.send()
+            
+            # TODO : Get topics in chain
+            existing_topics, path = kt.get_topics_from_branch(previous_node)
 
-        chat_history = prompts.prompt_parser("graph_traversal_strategy_prompt",args_dict)
-        llm_strategy = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=py_schema.TopicIdentifierList)
+            # TODO : Change this to "filter_topics" later, and return a list.
+            topic_list = await filter_topics(query,existing_topics,threshold=0.5)
 
-        strategy = dict()
-        for topic_info in llm_strategy.topics_identified:
-            if(topic_info.topic in strategy.keys()):
-                strategy[topic_info.topic]+=[topic.value for topic in topic_info.selected_information_categories]
-            else:
-                strategy[topic_info.topic] = [topic.value for topic in topic_info.selected_information_categories]
+            existing_topics += topic_list
+            existing_topics = list(set(existing_topics))
 
-        for key in strategy.keys():
-            strategy[key] = list(set(strategy[key]))
+            # TODO : Format topics into context
+            context = kt.format_branch(path, topic_list, du.get_node_summary)
 
-        ledger_strategy = dict()
-        for topic_info in llm_strategy.topics_identified:
-            ledger_strategy[topic_info.topic] = dict()
-            ledger_strategy[topic_info.topic]['reasoning'] = topic_info.reasoning
-            ledger_strategy[topic_info.topic]['selected_categories'] = [topic.value for topic in topic_info.selected_information_categories]
+            # Query Taxonomy Prompt
 
+            # TODO : Format context
+            taxonomy_query_dict = dict()
+            taxonomy_query_dict['context'] = context
+            taxonomy_query_dict['query']   = query
 
-        #context_ledger[f"Step {trial}"]['strategy'] = ledger_strategy
+            #chat_history = prompts.prompt_parser("query_taxonomy_prompt",taxonomy_query_dict)
+            #llm_query_taxonomy = await tokenize_and_generate(max_new_tokens=128,temperature=0.3,template=py_schema.QueryTaxonomyCheck)
+            #print(llm_query_taxonomy)
 
-        print()
-        print('[STRATEGY]')
-        print(llm_strategy)
-        print()
+            chat_history = prompts.prompt_parser("query_decomposition_prompt",taxonomy_query_dict)
+            llm_decomposition = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=py_schema.QueryDecompositionSchema)
 
-        # Add Node information
+            print(llm_decomposition)
 
-        for node,allowed_edges in strategy.items():
+            for follow_up_query in llm_decomposition.follow_up_queries:
 
-            parsed_node = node in parsed_info.keys()
-            to_parse = not(parsed_node)
-
-            if(du.get_node_id(node) and to_parse):
-
-                node_dict = format_node(node)
-                context_ledger['context'].append(node_dict)
-                all_edges = du.get_all_edges_of_type(node,allowed_edges)
-                added_nodes.append(du.get_node_id(node))
-
-                parsed_info[node] = []
-                
-                all_neighbors = list(all_edges.keys())
-                node_relevance = du.get_cosine_similarity([query],[du.get_node_summary(neighbor) for neighbor in all_neighbors])[0]
-
-                for idx in argsort(node_relevance,descending=True):
-                    print(all_neighbors[idx],node_relevance[idx])
-
-                selected_neighbors = [all_neighbors[idx] for idx in argsort(node_relevance,descending=True)[:3]]
-                print(selected_neighbors)
-
-                for neighbor in selected_neighbors:
-                    if(du.get_node_id(neighbor) and not(du.get_node_id(neighbor) in added_nodes)):
-                        node_dict = format_node(neighbor)
-                        context_ledger['context'].append(node_dict)
-                        parsed_info[neighbor] = []
-                        added_nodes.append(du.get_node_id(neighbor))
+                node_idx = kt.add_node(text=follow_up_query,type="query",layer=layer)
+                kt.add_edge(previous_node,node_idx,text=llm_decomposition.best_answer,topics=existing_topics)
+                new_queries.append(node_idx)
 
 
-        # Add Edge information
-        for node,allowed_edges in strategy.items():
-
-            # CHANGE THIS LATER
-            parsed_node = len(parsed_info[node])>0
-            to_parse = not(parsed_node)
-
-            if(du.get_node_id(node) and to_parse):
-
-                parsed_info[node] = allowed_edges
-                all_edges = du.get_all_edges_of_type(node,allowed_edges)
-
-                for neighbor in all_edges.keys():
-                    if(not(du.get_node_name(neighbor) in new_neighbors)):
-                        new_neighbors.append(du.get_node_name(neighbor))
-
-                    # ADD EDGE ONLY IF NODE IS RELEVANT.
-                    edge_data = format_edges(all_edges,du.get_node_name(node),du.get_node_name(neighbor))
-                    for edge,text in edge_data:
-                        if(not(edge in added_edges)):
-                            added_edges.append(edge)
-                            context_ledger['context'].append(text)
-
-            #gathered_info_dict.append("\n")
-
-        if(len(context_ledger['context'])==0):
-            context_ledger['context'] = "No new context found for this strategy!"
+        if(len(new_queries)==0):
             break
-        
-        gathered_information = json.dumps(context_ledger, indent=2) #"\n".join([element for element in gathered_info_dict])
-        ledger_msg.content = gathered_information
-        await ledger_msg.update()
+        else:
+            for new_query_id in new_queries:
+                query_queue.append(new_query_id)
 
-        '''
-        llm_response = await adhoc_llm_query(
-                                               system_message = "You are an expert summary writer for fictional lore. Your task is to write a short summary of the given fictional lore. Your summary must capture ALL important points relevant to the given user query. You must NEVER invent any new facts or lore. Do not include any conversational preamble or text.",
-                                               user_message   = f"[LORE]{gathered_information}\n\n[QUERY]{og_query}"
-                                           )
+        layer += 1
 
-        await cl.Message(content=llm_response).send()
-        '''
+    # TODO : Format Graph to send back.
+    msg.content = "Answering Query..."
+    await msg.update()
 
-        llm_content_dict = dict()
-        llm_content_dict['query'] = og_query
-        llm_content_dict['context'] = gathered_information
-
-        chat_history = prompts.prompt_parser('context_evaluation_prompt',llm_content_dict)
-
-        context_evaluation = await tokenize_and_generate(max_new_tokens=256,temperature=0.25,template=py_schema.ContextEvaluationSchema)
-
-        #print()
-        #print("[EVALUATION]")
-        #print(context_evaluation)
-        #print()
-        #print("[PARSED INFO]")
-        #print(parsed_info)
-        #print()
-
-        context_ledger['evaluation'] = dict()
-        context_ledger['evaluation']['implication'] = context_evaluation.implication
-        context_ledger['evaluation']['reasoning'] = context_evaluation.reasoning
-        context_ledger['evaluation']['new_query'] = context_evaluation.unresolved_gaps
-
-        gathered_information = json.dumps(context_ledger, indent=2)
-        ledger_msg.content = gathered_information
-        await ledger_msg.update()
-
-        current_content_is_sufficient = context_evaluation.is_context_sufficient
-        query = context_evaluation.unresolved_gaps
-
-        trial += 1
-
-        #if(not(current_content_is_sufficient) and trial<5):
-        #    await cl.Message(content=query).send()
-
-    # Check if context is sufficient
-    
+    gathered_information = kt.format_graph(du.get_cosine_similarity, du.get_node_summary)
     return gathered_information
 
 async def check_context_sufficiency(user_message, context):
@@ -1623,7 +1579,7 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
     chat_history = cl.user_session.get("chat_history")
     settings = cl.user_session.get("settings")
 
-    if(0):
+    if(1):
         print("-------------------------------------------------")
         for message in chat_history:
             print()
@@ -1813,8 +1769,9 @@ async def on_chat_start():
     counters['lore'] = 0
     counters['plot'] = 0
 
-    #for node in du.knowledge_graph.nodes():
-    #    print(f"{du.knowledge_graph.nodes[node]['text']} : {du.knowledge_graph.nodes[node]['type']}")
+    for node in du.knowledge_graph.nodes():
+        print(f"{du.knowledge_graph.nodes[node]}")
+        print()
         
     await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?").send()
 
@@ -1827,6 +1784,9 @@ async def on_chat_start():
     #print(list(nx.nodes_with_selfloops(du.knowledge_graph)))
 
     #for node in du.knowledge_graph.nodes():
+        #du.knowledge_graph.nodes[node]['metadata']['summary_updated'] = int(time.time())
+    #    print(du.get_category_summary(node,"Structural & Compositional"))
+        
     #    print(du.get_node_name(node))
     #await summarize_nodes()
 
@@ -1848,8 +1808,6 @@ async def on_chat_start():
 
     #du.reload_lookups()
 
-    print(du.knowledge_graph)
-
     #for row in du.dataset:
         #print(f"{row['name']} : {du.knowledge_graph.nodes[row['node_id']]['updated']} / {du.knowledge_graph.nodes[row['node_id']]['metadata']['summary_updated']}")
         #print(f"{row['name']} : {row['text']}")
@@ -1863,8 +1821,8 @@ async def on_message(user_message: cl.Message):
 
     if(selected_mode=='Analyze'):
         #await reorder_plot(user_message.content)
-        #await summarize_nodes()
-        await show_information(user_message.content)
+        await summarize_nodes()
+        #await show_information(user_message.content)
         #await cluster_lore()
     elif(selected_mode=='Update'):
         #await summarize_nodes()
@@ -1917,6 +1875,10 @@ async def on_message(user_message: cl.Message):
                                 })
 
             cl.user_session.set("chat_history",chat_history)
+
+
+
+
 
 
 
