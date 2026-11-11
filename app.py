@@ -27,10 +27,11 @@ import copy
 import time
 
 from rapidfuzz import process
-from torch import argsort
+from torch import argsort, argmax
 from collections import deque
 
 import networkx as nx
+import numpy as np
 
 import csv
 
@@ -114,6 +115,30 @@ async def update_graph_element(node_info):
     await graph_element.update()
 
     return graph_element
+
+def get_llm_confidence(llm_output,max_quote_count=999):
+
+    logprobs_data = llm_output.get("logprobs", [])
+
+    # Collect chosen token log probabilities to calculate overall confidence
+    chosen_logprobs = []
+
+    quote_count = 0
+    for entry in logprobs_data:
+        token = entry.get("token", "")
+        logprob = entry.get("logprob", 0.0)
+        chosen_logprobs.append(logprob)
+
+        if('"' in token.strip()):
+            quote_count += 1
+        if(max_quote_count==4):
+            break
+
+    # Calculate overall sequence confidence (geometric mean of probabilities)
+    sequence_confidence = np.exp(np.mean(chosen_logprobs))
+    print(f"\nCalculated Confidence Score: {sequence_confidence:.2%}")
+
+    cl.user_session.set("llm_confidence",f"{sequence_confidence:.2%}")
 
 @cl.cache
 def load_modules():
@@ -1331,7 +1356,31 @@ async def audit_graph():
 #############
 
 async def filter_topics(query,existing_topics,threshold=0.5):
+    # 0. Take focus_nodes as input instead of existing_nodes. Focus_nodes are the nodes that have most recently been traversed to.
 
+    # 1. Get edge summaries from all of the existing topics.
+    for topic in existing_topics:
+        summary_dict = du.get_category_summaries(topic)
+        categories = [category for category in summary_dict.keys()]
+        summaries = [summary for summary in summary_dict.values()]
+
+        # 2. Calculate semantic similarities between query and summary. Select top-k / thresholded.
+        sims = du.get_cosine_similarity([query],summaries)[0]
+
+        edge_information = []
+        for idx in range(len(sims)):
+            if(sims[idx]>threshold):                
+                edge_dict = du.get_all_edges_of_type(topic,[type for type in py_schema.allowed_edge_types if (uppercase(categories[idx]) in type)])
+                neighbors = [neighbor for neighbor in edge_dict.keys() if not(neighbor==topic)]
+                edge_information.append(summaries[idx])
+
+        neighbors = list(set([n for n in neighbors if not(n in existing_topics)]))
+        existing_topics = list(set(neighbors+existing_topics))
+
+
+    # 3. Follow edges and add neighbors to existing nodes.
+
+    '''
     relevant_nodes = du.get_relevant_topics(query,threshold=threshold,all=True,fuzzy=True)
     topics = [du.get_node_name(node) for node in relevant_nodes]
 
@@ -1340,8 +1389,9 @@ async def filter_topics(query,existing_topics,threshold=0.5):
     for topic in topics:
         if(not(topic in existing_topics)):
             topic_list.append(topic)
+    '''
 
-    return topic_list
+    return neighbors, existing_topics, edge_information
 
 async def choose_and_use_tool(user_message):
 
@@ -1372,33 +1422,137 @@ async def choose_and_use_tool(user_message):
     gathered_information = await explore_knowledge_graph(resolved_text,mentioned_topics)
 
     # Replace the user prompt here with the actual source query
-    llm_content_dict = {"user_query":resolved_text}
-    prompts.prompt_parser('reasoned_answer_prompt',llm_content_dict)
-    prompts.add_to_history('tool',gathered_information) 
+    continue_exploring = True
 
-    print(gathered_information)
+    while(continue_exploring):
 
-    final_response_stream = await tokenize_and_generate(max_new_tokens=512,temperature=settings['temperature'])
+        llm_content_dict = {"user_query":resolved_text}
+        prompts.prompt_parser('reasoned_answer_prompt',llm_content_dict)
+        prompts.add_to_history('tool',gathered_information) 
+        print(gathered_information)
 
-    print(final_response_stream)
+        final_response_stream = await tokenize_and_generate(max_new_tokens=512,temperature=settings['temperature'])
 
-    await cl.Message(content=final_response_stream.message.content).send()
+        print(final_response_stream)
+
+        response = await cl.AskActionMessage(content=final_response_stream.message.content,actions=[cl.Action(name='Question Further',payload={"more":True},label='Question Further'),cl.Action(name='Done',payload={"more":False},label='Done')]).send()
+
+        continue_exploring = response['payload']['more']
+
+        if(continue_exploring):
+
+            new_queries = await knowledge_tree_hop()
+
+            query_queue = cl.user_session.get("query_queue")
+            for new_query_id in new_queries:
+                query_queue.append(new_query_id)
+            cl.user_session.set("query_queue",query_queue)
 
 
-    '''
-    if response.message.tool_calls:
-        for tool in response.message.tool_calls:
-            print(f"Tool called: {tool.function.name}")
-            print(f"Arguments: {tool.function.arguments}")
+            kt = cl.user_session.get("knowledge_tree")
+            layer = cl.user_session.get("kt_layer")
+            layer += 1
+            cl.user_session.set("kt_layer",layer)
 
-            function_name = tool.function.name
-            function_args = tool.function.arguments
+            msg = cl.user_session.get("knowledge_tree_message")
+            fig = kt.get_plotly_graph(focus_node=None)
+            element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline")
+            await msg.remove()
+            msg = cl.Message(content="Answering Query",elements=[element])
+            cl.user_session.set("knowledge_tree_message",msg)
+            await msg.send()
+            
+            gathered_information = kt.format_graph(du.get_cosine_similarity, du.get_node_summary)
 
-            if function_name in available_tools:
-                tool_to_call = available_tools[function_name]
-                tool_output = await tool_to_call(**function_args)
-                response_stream = await respond_with_tool_output(user_message.content,tool_output)
-                return response_stream'''
+async def knowledge_tree_hop():
+
+    msg = cl.user_session.get("knowledge_tree_message")
+    kt = cl.user_session.get("knowledge_tree")
+    query_queue = cl.user_session.get("query_queue")
+    layer = cl.user_session.get("kt_layer")
+
+    new_queries = []
+    while(query_queue):
+
+        previous_node = query_queue.popleft()
+        query = kt.get_query_by_node(previous_node)
+
+        if(kt.check_for_new_topics(previous_node)):
+
+            fig = kt.get_plotly_graph(focus_node=previous_node)
+            element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline")
+            await msg.remove()
+            msg = cl.Message(content=query,elements=[element])
+            cl.user_session.set("knowledge_tree_message",msg)
+            await msg.send()
+            
+            # TODO : Extract context from the nodes themselves.
+            context_list, topics_to_ignore = kt.get_context_by_node(previous_node)
+            topics_to_explore = kt.get_topics_to_explore(previous_node)
+
+            # Query Taxonomy Prompt
+
+            # TODO : Format context
+            taxonomy_query_dict = dict()
+            taxonomy_query_dict['context'] = "\n\n".join(context_list)
+            taxonomy_query_dict['query']   = query
+
+            chat_history = prompts.prompt_parser("query_decomposition_prompt",taxonomy_query_dict)
+            llm_decomposition = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=py_schema.QueryDecompositionSchema)
+
+            print(llm_decomposition)
+            print(topics_to_explore)
+
+            for follow_up_query in llm_decomposition.follow_up_queries:
+
+                edge_information = []
+                neighbors = []
+
+                # Find edges here.
+                for topic in topics_to_explore:
+
+                    summary_dict = du.get_category_summaries(topic)
+
+                    if(len(summary_dict.keys())>0):
+                        categories = [category for category in summary_dict.keys()]
+                        summaries = [summary for summary in summary_dict.values()]
+
+                        # 2. Calculate semantic similarities between query and summary. Select top-k / thresholded.
+                        sims = du.get_cosine_similarity([follow_up_query],summaries)[0]
+                        
+                        idx = argmax(sims)
+                        
+                        selected_type = [type for type in py_schema.allowed_edge_types if (uppercase(categories[idx]) in type)]
+                        edge_dict = du.get_all_edges_of_type(topic,selected_type)
+                        neighbors = [du.get_node_id(neighbor) for neighbor in edge_dict.keys() if not(neighbor==topic)]
+
+                        formatted_edge_info = f"[{du.get_node_name(topic)} : {selected_type[0]}]\n\t{summaries[idx]}"
+                        edge_information.append(formatted_edge_info)
+
+                        print(neighbors)
+                        print(topics_to_ignore)
+                        print()
+                        neighbors = list(set([n for n in neighbors if not(n in topics_to_ignore)]))
+
+                context_list = []
+
+                # Add edges first.
+                for summary in edge_information:
+                    context_list.append(summary)
+
+                for topic in neighbors:
+                    # Format the context here.
+                    formatted_node_info = f"[{du.get_node_name(topic)}]\n\t{du.get_node_summary(topic)}"
+                    context_list.append(formatted_node_info)
+
+                kt.add_answer_to_context(previous_node,llm_decomposition.best_answer,cl.user_session.get("llm_confidence"))
+                node_idx = kt.add_node(text=follow_up_query,type="query",layer=layer,context=context_list,topics=neighbors,answer="No answer available.")
+                kt.add_edge(previous_node,node_idx)
+                new_queries.append(node_idx)
+
+    cl.user_session.set("knowledge_tree",kt)
+
+    return new_queries
 
 async def explore_knowledge_graph(query, topics):
     # Input  : strategy = {node:allowed_edges}
@@ -1432,16 +1586,31 @@ async def explore_knowledge_graph(query, topics):
     kt = KT.KnowledgeTree()
     query_queue = deque()
 
+    cl.user_session.set("knowledge_tree",kt)
+    cl.user_session.set("query_queue",query_queue)
+
     og_query = query
 
     # Query Graph
-    node_idx = kt.add_node(text=query,type="query",layer=0)
+
+    relevant_nodes = du.get_relevant_topics(query,threshold=0.5,all=True,fuzzy=True)
+    topics = [node for node in relevant_nodes]
+    
+    context_list = []
+    for topic in topics:
+        # Format the context here.
+        formatted_node_info = f"[{du.get_node_name(topic)}]\n\t{du.get_node_summary(topic)}"
+        context_list.append(formatted_node_info)
+
+    node_idx = kt.add_node(text=query,type="query",layer=0,context=context_list,topics=topics, answer="No Answer available.")
     query_queue.append(node_idx)
 
     gathered_information = "No strategy defined yet."
 
     current_content_is_sufficient = False
     layer = 1
+    cl.user_session.set("kt_layer",layer)
+
     max_depth = 3
 
     topic_dict = dict()
@@ -1450,69 +1619,43 @@ async def explore_knowledge_graph(query, topics):
     #fig = kt.get_plotly_graph()
     #element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline")
     msg = cl.Message(content="Creating knowledge tree!")
+    cl.user_session.set("knowledge_tree_message",msg)
     await msg.send()
 
-    while(not(current_content_is_sufficient>1) and layer<max_depth):
+    answer_quality = 0
+    while(answer_quality<3 and layer<max_depth):
 
-        new_queries = []
-        while(query_queue):
+        new_queries = await knowledge_tree_hop()
 
-            previous_node = query_queue.popleft()
-            query = kt.get_query_by_node(previous_node)
+        gathered_information = kt.format_graph(du.get_cosine_similarity, du.get_node_summary)
 
-            fig = kt.get_plotly_graph(focus_node=previous_node)
-            element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline")
-            await msg.remove()
-            msg = cl.Message(content=query,elements=[element])
-            await msg.send()
-            
-            # TODO : Get topics in chain
-            existing_topics, path = kt.get_topics_from_branch(previous_node)
+        # Check the current answer.
+        llm_content_dict = {"query":og_query, "context":gathered_information}
+        prompts.prompt_parser('context_evaluation_prompt',llm_content_dict)
+        context_evaluation = await tokenize_and_generate(max_new_tokens=128,temperature=0.2,template=py_schema.ContextEvaluationSchema)  
+        print(context_evaluation, cl.user_session.get("llm_confidence"))    
 
-            # TODO : Change this to "filter_topics" later, and return a list.
-            topic_list = await filter_topics(query,existing_topics,threshold=0.5)
-
-            existing_topics += topic_list
-            existing_topics = list(set(existing_topics))
-
-            # TODO : Format topics into context
-            context = kt.format_branch(path, topic_list, du.get_node_summary)
-
-            # Query Taxonomy Prompt
-
-            # TODO : Format context
-            taxonomy_query_dict = dict()
-            taxonomy_query_dict['context'] = context
-            taxonomy_query_dict['query']   = query
-
-            #chat_history = prompts.prompt_parser("query_taxonomy_prompt",taxonomy_query_dict)
-            #llm_query_taxonomy = await tokenize_and_generate(max_new_tokens=128,temperature=0.3,template=py_schema.QueryTaxonomyCheck)
-            #print(llm_query_taxonomy)
-
-            chat_history = prompts.prompt_parser("query_decomposition_prompt",taxonomy_query_dict)
-            llm_decomposition = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=py_schema.QueryDecompositionSchema)
-
-            print(llm_decomposition)
-
-            for follow_up_query in llm_decomposition.follow_up_queries:
-
-                node_idx = kt.add_node(text=follow_up_query,type="query",layer=layer)
-                kt.add_edge(previous_node,node_idx,text=llm_decomposition.best_answer,topics=existing_topics)
-                new_queries.append(node_idx)
-
+        answer_quality = context_evaluation.answer_quality
 
         if(len(new_queries)==0):
             break
         else:
             for new_query_id in new_queries:
                 query_queue.append(new_query_id)
+            cl.user_session.set("query_queue",query_queue)
 
         layer += 1
+        cl.user_session.set("kt_layer",layer)
 
     # TODO : Format Graph to send back.
-    msg.content = "Answering Query..."
-    await msg.update()
-
+    msg = cl.user_session.get("knowledge_tree_message")
+    fig = kt.get_plotly_graph(focus_node=None)
+    element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline")
+    await msg.remove()
+    msg = cl.Message(content="Answering Query",elements=[element])
+    cl.user_session.set("knowledge_tree_message",msg)
+    await msg.send()
+    
     gathered_information = kt.format_graph(du.get_cosine_similarity, du.get_node_summary)
     return gathered_information
 
@@ -1601,10 +1744,17 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
                                                 'num_predict': max_new_tokens       # Equivalent to max tokens (maximum tokens to generate)
                                             },
                                     format=template.model_json_schema(),
-                                    tools = tools
+                                    tools = tools,
+                                    logprobs=True,
+                                    top_logprobs=3,
                                     )
 
         print(llm_output.message.content)
+        print()
+
+        get_llm_confidence(llm_output)
+
+
         try:
             response_stream = template.model_validate_json(llm_output.message.content)
         except:
@@ -1623,10 +1773,14 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
                                                 'num_predict': max_new_tokens       # Equivalent to max tokens (maximum tokens to generate)
                                             },
                                     stream = to_stream,
-                                    tools = tools
+                                    tools = tools,
+                                    logprobs=True,
+                                    top_logprobs=3,
                                     )
+        get_llm_confidence(response_stream)
 
     return response_stream
+
 
 async def respond_with_tool_output(user_query,tool_output):
 
@@ -1769,9 +1923,9 @@ async def on_chat_start():
     counters['lore'] = 0
     counters['plot'] = 0
 
-    for node in du.knowledge_graph.nodes():
-        print(f"{du.knowledge_graph.nodes[node]}")
-        print()
+    #for node in du.knowledge_graph.nodes():
+    #    print(f"{du.knowledge_graph.nodes[node]}")
+    #    print()
         
     await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?").send()
 
@@ -1839,42 +1993,12 @@ async def on_message(user_message: cl.Message):
     elif(selected_mode=='Forget'):
         cl.user_session.set("chat_history", [])
     else:
-        
         if(True):
-
-            #await decompose_text(user_message.content,['Krugrals (location)'])
-
             final_response_stream = await choose_and_use_tool(user_message)
-            content = ""
-
-            actions = [cl.Action(name='show_context_graph',payload={'nodes':cl.user_session.get("relevant_nodes"),'edges':cl.user_session.get("relevant_edges")},label='Show Context')]
-
-            if(cl.user_session.get("additional_context_flag")):
-                actions += [cl.Action(name='save_additional_context',payload={'context':cl.user_session.get("additional_context")},label='Save Additional Context')]
-
-            msg = cl.Message(content="",actions=actions)
-            for chunk in final_response_stream:
-                print(chunk.message.content, end='', flush=True)
-                await msg.stream_token(chunk.message.content)
-                content += chunk.message.content
-
-                if chunk.get('done', False):
-                    prompt_tokens = chunk.get('prompt_eval_count',0)
-                    output_tokens = chunk.get('eval_count',0)
-                    print('Input prompt length is currently',prompt_tokens+output_tokens)
-
-            cl.user_session.set("source_message", msg)
-            response = await msg.update()
+            
 
 
-            chat_history = cl.user_session.get("chat_history")
 
-            chat_history.append({
-                                    "role": "assistant",
-                                    "content": content,
-                                })
-
-            cl.user_session.set("chat_history",chat_history)
 
 
 

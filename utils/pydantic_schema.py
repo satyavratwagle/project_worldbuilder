@@ -148,10 +148,8 @@ class AssumptionsList(BaseModel):
     assumptions: list[str] = Field(description='All the assumptions made by the proposition based on the context provided.')  # The step-by-step chain of thought
 
 class ContextEvaluationSchema(BaseModel):
-    implication: str = Field(description="The outcome of one step of logical extrapolation relevant to the user query. A relevant first-order implication of the given context.")
-    reasoning: str = Field(description="A brief analysis of why the provided context either is or is not sufficient to answer the user query.")
-    is_context_sufficient: int = Field(description="Numerical value indicating how sufficient the given context and implication are to answer the query.",ge=0,le=3)
-    unresolved_gaps: Optional[str] = Field(description="If provided context is not sufficient, a description of the missing context.")
+    best_answer: str = Field(description="Best possible answer to the user query using only the given context.")
+    answer_quality: int = Field(description="Numerical value indicating how thoroughly 'best_answer' answers the user query.",ge=0,le=3)
 
 # Query Evaluation Schema
 
@@ -164,7 +162,7 @@ class QueryTaxonomyCheck(BaseModel):
 
 class QueryDecompositionSchema(BaseModel):
     best_answer: str = Field(description="Best possible answer to the user query.")
-    follow_up_queries: list[str] = Field(description=f"A list of unanswered follow-up queries.",min_length=1,max_length=2)
+    follow_up_queries: list[str] = Field(description=f"A list of unanswered follow-up queries.",min_length=1,max_length=1)
 
 class QueryEvaluationSchema(BaseModel):
     is_context_sufficient: bool = Field(description="'True' if the provided context is sufficient to completely answer the user query. 'False' otherwise.")

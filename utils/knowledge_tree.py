@@ -11,16 +11,44 @@ class KnowledgeTree():
         self.G = nx.DiGraph()
         self.node_idx = -1
 
-    def add_node(self,text,type, layer):
+    def add_node(self,text,type, layer, context,topics, answer):
 
         self.node_idx += 1
-        self.G.add_node(self.node_idx,text=text,type=type, layer=layer)
+        self.G.add_node(self.node_idx,text=text,type=type, layer=layer, context=context, topics=topics, answer = answer)
 
         return self.node_idx
 
-    def add_edge(self,head,tail,text,topics):
-        self.G.add_edge(head,tail,text=text,topics=topics)
+    def add_answer_to_context(self,node_id,answer,confidence):
+        self.G.nodes[node_id]['answer'] = answer
+        if(not(node_id)==0):
+            self.G.nodes[node_id]['context'].append(f"[IMPORTANT QUESTION]\nQuestion : {self.G.nodes[node_id]['text']}\nPredicted Answer : {self.G.nodes[node_id]['answer']} (Confidence={confidence})") 
 
+    def add_edge(self,head,tail):
+        self.G.add_edge(head,tail)
+
+    def check_for_new_topics(self,node_id):
+        print(f"{self.G.nodes[node_id]['text']} : {len(self.G.nodes[node_id]['topics'])}")
+        return (len(self.G.nodes[node_id]['topics'])>0)
+
+
+    def get_context_by_node(self,node_id):
+
+        path = nx.shortest_path(self.G, source=0, target=node_id)
+
+        context_list = []
+        topics_to_ignore = []
+        for node in path:
+            context_list += self.G.nodes[node]['context']
+            topics_to_ignore += self.G.nodes[node]['topics']
+
+        topics_to_ignore = list(set(topics_to_ignore))
+
+        return context_list, topics_to_ignore
+
+    def get_topics_to_explore(self,previous_node):
+        print(self.G.nodes[previous_node])
+        return self.G.nodes[previous_node]['topics']
+        
     def get_query_by_node(self,node_id):
         if(node_id in self.G.nodes()):
             return self.G.nodes[node_id]['text']
@@ -60,17 +88,15 @@ class KnowledgeTree():
 
     def format_graph(self,filter_func, topic_lookup):
 
-        all_topics = []
+        
         all_text = []
-        for head,tail,data in self.G.edges.data():
-            all_topics+=data['topics']
-            if(not(head==0)):
-                all_text.append(f"Question : {self.G.nodes[head]['text']}\nPossible Answer : {data['text']}")
-        all_topics = list(set(all_topics))
-        all_text = list(set(all_text))
-
+        for node,data in self.G.nodes(data=True):
+            for context in data['context']:
+                if(not(context in all_text)):
+                    all_text.append(context)
         #return all_topics,all_text
 
+        '''
         filtered_text = []
         for idx,q1 in enumerate(all_text):
             if(len(filtered_text)>0):
@@ -79,10 +105,15 @@ class KnowledgeTree():
                     filtered_text.append(q1)
             else:
                 filtered_text.append(q1)
+        '''
 
+        '''
         gathered_information = ""
         gathered_information += "[CONTEXT]\n"+"\n\n".join([f"\t[{topic}]\n\tDefinition : {topic_lookup(topic)}" for topic in all_topics])
         gathered_information += "\n\n[FOLLOW-UP Q/A]\n(Do NOT consider the following to be ground truth.)\n\n"+"\n\n".join(filtered_text)
+        '''
+
+        gathered_information = "\n\n".join(all_text)
 
         return gathered_information
 
@@ -90,7 +121,7 @@ class KnowledgeTree():
 
         # Create a subgraph with the target nodes and target edges
 
-        pos = nx.multipartite_layout(self.G, subset_key='layer', align='horizontal')
+        pos = nx.multipartite_layout(self.G, subset_key='layer', align='vertical')
         self.fig_width = 640
         self.fig_height = 640
 
@@ -124,7 +155,7 @@ class KnowledgeTree():
 
             mid_x.append((x0 + x1) / 2)
             mid_y.append((y0 + y1) / 2)
-            edge_text.append("<br>".join(textwrap.wrap(data['text'], width=36)))
+            #edge_text.append("<br>".join(textwrap.wrap(data['text'], width=36)))
 
             # Add arrowhead annotation for secondary/other edges
             annotations.append(
@@ -168,7 +199,8 @@ class KnowledgeTree():
             nodes_x.append(x)
             nodes_y.append(y)
 
-            node_text.append("<br>".join(textwrap.wrap(data['text'], width=20)))
+            formatted_node_text = "<b>Question</b><br>"+"<br>".join(textwrap.wrap(data['text'], width=30))+"<br><b>Answer</b><br>"+"<br>".join(textwrap.wrap(f"{data['answer']}", width=30))
+            node_text.append(formatted_node_text)
             node_ids.append(node)
 
             # You can change this later.
@@ -243,3 +275,4 @@ class KnowledgeTree():
         return fig
         
         
+

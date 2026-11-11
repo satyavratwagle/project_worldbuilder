@@ -734,16 +734,24 @@ class DatastoreUtilities():
         else:
             return f"No information about {node_name} available"
 
-    def get_category_summary(self,node_name,category):
+    def get_category_summaries(self,node_name,category=None):
 
-        category = category.split("&")[0].strip().lower()
+        if(category):
+            category = category.split("&")[0].strip().lower()
 
         node_id = self.get_node_id(node_name)
 
-        if("edge_summaries" in self.knowledge_graph.nodes[node_id]['metadata'].keys() and (category in self.knowledge_graph.nodes[node_id]['metadata']['edge_summaries'].keys())):
-            return self.knowledge_graph.nodes[node_id]['metadata']['edge_summaries'][category]
+        if(category):
+            if("edge_summaries" in self.knowledge_graph.nodes[node_id]['metadata'].keys() and (category in self.knowledge_graph.nodes[node_id]['metadata']['edge_summaries'].keys())):
+                return self.knowledge_graph.nodes[node_id]['metadata']['edge_summaries'][category]
+            else:
+                return f"No information available."
         else:
-            return f"No information available."
+            if("edge_summaries" in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
+                return self.knowledge_graph.nodes[node_id]['metadata']['edge_summaries']
+            else:
+                return f"No information available."
+
 
     def get_node_aliases(self,node_name):
 
