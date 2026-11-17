@@ -83,14 +83,40 @@ def create_node_card_dict(node,expanded=True, stack = []):
     
     node_card_dict['type']  = du.knowledge_graph.nodes[node]['type']
     node_card_dict['desc']  = du.knowledge_graph.nodes[node]['metadata']['summary']
+    node_card_dict['category_summaries'] = du.get_category_summaries(node)
 
     all_neighbors = du.get_all_neighbors(du.get_node_id(node))
     node_card_dict['neighbors']  = [(du.get_node_name(neighbor),du.get_node_type(neighbor),neighbor) for neighbor in all_neighbors['all']]
 
-    print(node_card_dict)
-
     node_card_dict['expanded'] = expanded
     node_card_dict['stack'] = stack
+
+    return node_card_dict
+
+def create_edge_card_dict(node,expanded=True):
+
+    node_card_dict = dict()
+    node_id = du.get_node_id(node)
+
+    node_card_dict['node_id'] = du.get_node_id(node)
+    node_card_dict['type']  = du.knowledge_graph.nodes[node]['type']
+    node_card_dict['name']  = du.get_node_name(node)
+    node_card_dict['desc']  = ""
+    node_card_dict['edges'] = []
+    for head,tail,key,edge_data in du.get_all_edges(node):
+
+        print(du.get_node_name(head),du.get_node_name(tail),key,edge_data['text'])
+        if(node_id==du.get_node_id(head) and node_id==du.get_node_id(tail)):
+            neighbor = du.get_node_name(node)
+        elif(node_id==du.get_node_id(head) and not(node_id==du.get_node_id(tail))):
+            neighbor = du.get_node_name(tail)
+        elif(not(node_id==du.get_node_id(head)) and node_id==du.get_node_id(tail)):
+            neighbor = du.get_node_name(head)
+
+        node_card_dict['edges'].append((head,tail,key,neighbor,edge_data['text'],edge_data['type']))
+    
+    node_card_dict['expanded'] = True
+    node_card_dict['stack'] = []
 
     return node_card_dict
 
@@ -139,6 +165,71 @@ def get_llm_confidence(llm_output,max_quote_count=999):
     print(f"\nCalculated Confidence Score: {sequence_confidence:.2%}")
 
     cl.user_session.set("llm_confidence",f"{sequence_confidence:.2%}")
+
+# Local Context Functions
+def check_context_redundancy(info, type):
+    stored_context = cl.user_session.get("stored_context")
+    return (info,type) in stored_context.keys()
+
+async def save_to_local_context(info, type):
+    # info = str/tuple ; type=str
+    print('Here!')
+
+    stored_context = cl.user_session.get("stored_context")
+    stored_context[(info,type)] = None
+    cl.user_session.set("stored_context",stored_context)
+
+    print()
+    print('[LOCAL CONTEXT]')
+    for context in stored_context.keys():
+        print(context)
+    print()
+
+def flush_local_context():
+    cl.user_session.set("stored_context",dict())
+
+def create_context_dict_from_list(context_list):
+
+    temp_context = dict()
+    for element in context_list:
+        temp_context[element] = None
+
+    return temp_context
+
+def format_local_context(new_context=None):
+    # stored_context = {(info,type):None}
+
+    
+    base_context = cl.user_session.get("stored_context")
+
+    formatted_context = []
+
+    for info,info_type in base_context.keys():
+        if(info_type=='edge'):
+            topic = info[0]
+            category = info[1]
+            formatted_context.append(f"[{du.get_node_name(topic)} : {category}]\n\t{du.get_category_summaries(topic,category)}")
+        if(info_type=='node'):
+            topic = info
+            formatted_context.append(f"[{du.get_node_name(topic)}]\n\t{du.get_node_summary(topic)}")
+        if(info_type=='text'):
+            formatted_context.append(info)
+
+    if(new_context):
+        for info,info_type in new_context.keys():
+            if(info_type=='edge'):
+                topic = info[0]
+                category = info[1]
+                formatted_context.append(f"[{du.get_node_name(topic)} : {category}]\n\t{du.get_category_summaries(topic,category)}")
+            if(info_type=='node'):
+                topic = info
+                formatted_context.append(f"[{du.get_node_name(topic)}]\n\t{du.get_node_summary(topic)}")
+            if(info_type=='text'):
+                formatted_context.append(info)
+
+    formatted_context = "\n\n".join(formatted_context)
+
+    return formatted_context+"\n\n"
 
 @cl.cache
 def load_modules():
@@ -209,15 +300,111 @@ async def find_in_wiki(query):
 
 #############
 
+@cl.action_callback("show_edges")
+async def on_show_edges(action: cl.Action):
+    payload = action.payload
+    node_id = payload.get("node_id")
+
+    edge_card_dict = create_edge_card_dict(node_id)
+    edge_card_element = cl.user_session.get("edge_card_element")
+    edge_card_element.props = edge_card_dict
+    cl.user_session.set("edge_card_element",edge_card_element)
+    #await edge_card_element.update()
+
+    node_card_message = cl.user_session.get("node_card_message")
+
+    await node_card_message.remove()
+    node_card_message = cl.Message(content="Showing Edges!",elements=[edge_card_element])
+    cl.user_session.set("node_card_message",node_card_message)
+    await node_card_message.send()
+        
+    print("Updated element!")
+
+@cl.action_callback("show_node")
+async def on_show_node(action: cl.Action):
+
+    node_card_element = cl.user_session.get("node_card_element")
+    payload = action.payload
+    node_id = du.get_node_id(payload.get("node_id"))
+    node_card_dict = create_node_card_dict(node_id)
+
+    node_card_element = cl.user_session.get("node_card_element")
+    node_card_element.props = node_card_dict
+    
+    node_card_message = cl.user_session.get("node_card_message")
+    await node_card_message.remove()
+    node_card_message = cl.Message(content="Showing Edges!",elements=[node_card_element])
+    cl.user_session.set("node_card_message",node_card_message)
+    await node_card_message.send()
+        
+    print("Updated element!")
+    
+@cl.action_callback("update_node")
+async def on_update_node(action: cl.Action):
+
+    payload = action.payload
+    node_id = payload.get("node_id")
+    key = payload.get("key")
+    content = payload.get("content")
+
+    if(key=="summary"):
+        du.add_metadata(node_id,replace=True,summary=content)
+    if(key=="type"):
+        du.update_node(node_id,key,content)
+        print(du.knowledge_graph.nodes[node_id])
+    if(key=="cat_summary"):
+        print(payload)
+        category_summaries = dict()
+        for category,summary in payload['content']:
+            category_summaries[category] = summary
+        du.add_metadata(node_id,replace=True,edge_summaries=category_summaries)
+        print(du.knowledge_graph.nodes[node_id])
+
+        
+    node_card_dict = create_node_card_dict(node_id)
+    node_card_element = cl.user_session.get("node_card_element")
+    node_card_element.props = node_card_dict
+    cl.user_session.set("node_card_element",node_card_element)
+    await node_card_element.update()
+    print("Updated element!")
+
+@cl.action_callback("update_edge")
+async def on_update_edge(action: cl.Action):
+
+    payload = action.payload
+    node_id = payload.get("node_id")
+    content_key = payload.get("content_key")
+    content = payload.get("content")
+    index = int(payload.get("index"))
+
+    edge_card_element = cl.user_session.get("edge_card_element")
+
+    if(content_key=="text"):
+        head,tail,key,_,_,_ = edge_card_element.props['edges'][index]
+        du.update_edge(head,tail,key,content_key,content)
+        print(du.knowledge_graph.edges[head,tail,key])
+        
+    if(content_key=='type'):
+        head,tail,key,_,_,_ = edge_card_element.props['edges'][index]
+        du.update_edge(head,tail,key,content_key,content)
+
+    if(content_key=='delete'):
+        head,tail,key,_,_,_ = edge_card_element.props['edges'][index]
+        du.remove_edge(head,tail,key=key)
+
+    edge_card_dict = create_edge_card_dict(node_id)
+    edge_card_element.props = edge_card_dict
+    cl.user_session.set("edge_card_element",edge_card_element)
+    await edge_card_element.update()
+
 @cl.action_callback("change_node")
 async def on_change_node(action: cl.Action):
 
     node_card_element = cl.user_session.get("node_card_element")
-    current_stack = node_card_element.props['stack']
     payload = action.payload
     node_id = payload.get("node_id")
 
-    node_card_dict = create_node_card_dict(node_id,stack=current_stack)
+    node_card_dict = create_node_card_dict(node_id)
     node_card_element = cl.user_session.get("node_card_element")
     node_card_element.props = node_card_dict
     cl.user_session.set("node_card_element",node_card_element)
@@ -230,55 +417,17 @@ async def on_exit(action: cl.Action):
     node_card_element = cl.user_session.get("node_card_element")
 
     if(save):
-        new_desc = payload.get("new_desc")
-        new_layer = payload.get("new_layer")
-        node_id = node_card_element.props['node_id']
-        
-        # Add function to update nodes.
-        # Update summary / desc + Extrapolate if needed
-        # Update layer + Update all related edges. Show error if there is a problem.
-        # Add edges between each consecutive pair in stack
+        du.save_graph()
+    
+    du.reload_graph()
+    node_card_element.props['stack'] = []
+    cl.user_session.set("node_card_element",node_card_element)
 
-        await update_node_description(node_id,new_desc)
+    node_card_message = cl.user_session.get("node_card_message")
+    node_card_message.elements = []
+    node_card_message.content = "Closing information panel!"
+    await node_card_message.remove()
 
-        await update_node_layer(node_id,new_layer)
-
-        du.reload_graph()
-    else:
-        du.reload_graph()
-        node_card_element.props['stack'] = []
-        cl.user_session.set("node_card_element",node_card_element)
-
-        node_card_message = cl.user_session.get("node_card_message")
-        node_card_message.elements = []
-        node_card_message.content = "Closing information panel!"
-        await node_card_message.remove()
-
-@cl.action_callback("stack")
-async def on_stack(action: cl.Action):
-
-    node_id = action.payload.get("node_id")
-    idx = action.payload.get("idx")
-    remove = action.payload.get("rem")
-
-    print(node_id,idx,remove)
-
-    if(remove):
-        pass
-    else:
-        node_card_element = cl.user_session.get("node_card_element")
-        node_card_dict = node_card_element.props
-        node_card_dict = add_to_stack(node_id, node_card_dict)
-        node_card_element.props = node_card_dict
-        cl.user_session.set("node_card_element",node_card_element)
-        await node_card_element.update()
-
-    # Add or remove the relevant node
-    #node_card_dict = create_node_card_dict(node_id)
-    #node_card_message = cl.user_session.get("node_card_message")
-    #node_card_message.elements.append(node_card_element_side)
-    #node_card_message.content = "Adding card to the side!"
-    #await node_card_message.update()
 
 #############
 
@@ -393,6 +542,16 @@ async def show_information(user_text):
     node = du.get_mentioned_topic(user_text)
 
     if(node):
+        '''
+        edge_card_dict = create_edge_card_dict(node)
+        edge_card_element = cl.user_session.get("edge_card_element")
+        edge_card_element.props = edge_card_dict
+        cl.user_session.set("edge_card_element",edge_card_element)
+        edge_card_message = cl.Message(content=f"Showing information about {du.get_node_name(node)}!",elements=[edge_card_element])
+        cl.user_session.set("edge_card_message",edge_card_message)
+        await edge_card_message.send()
+        '''
+
         node_card_dict = create_node_card_dict(node)
         node_card_dict['stack'] = [] # This is crucial. Idk why.
         node_card_element = cl.user_session.get("node_card_element")
@@ -919,7 +1078,7 @@ async def summarize_nodes():
             edge_data = du.get_all_edges(node)
 
             node_information = [f"Name : {node_name}\nCategory : ({du.get_node_type(node)})\nTags : {", ".join(du.get_node_tags(node))}\n"]
-            for key,data in edge_data:
+            for head,tail,key,data in edge_data:
                 if('tag' in data.keys()):
                     node_information.append(f"{data['type']} ({data['tag']}) : {data['text']}")
                 else:
@@ -1419,7 +1578,19 @@ async def choose_and_use_tool(user_message):
     #for topic_info in llm_response.topics_identified:
     #    exploration_strategy[topic_info.topic] = [topic.value for topic in topic_info.selected_information_categories]
 
-    gathered_information = await explore_knowledge_graph(resolved_text,mentioned_topics)
+    gathered_information = format_local_context()
+    if(len(gathered_information.strip())>0):
+        await explore_knowledge_graph(resolved_text,mentioned_topics,max_depth=1)
+    else:
+        await explore_knowledge_graph(resolved_text,mentioned_topics,max_depth=3)
+
+    kt = cl.user_session.get("knowledge_tree")
+
+    graph_from_context = kt.get_graph_context()
+    for info,info_type in graph_from_context:
+        await save_to_local_context(info,info_type)
+
+    gathered_information = format_local_context()
 
     # Replace the user prompt here with the actual source query
     continue_exploring = True
@@ -1432,10 +1603,9 @@ async def choose_and_use_tool(user_message):
         print(gathered_information)
 
         final_response_stream = await tokenize_and_generate(max_new_tokens=512,temperature=settings['temperature'])
+        llm_answer = final_response_stream.message.content
 
-        print(final_response_stream)
-
-        response = await cl.AskActionMessage(content=final_response_stream.message.content,actions=[cl.Action(name='Question Further',payload={"more":True},label='Question Further'),cl.Action(name='Done',payload={"more":False},label='Done')]).send()
+        response = await cl.AskActionMessage(content=llm_answer,actions=[cl.Action(name='Question Further',payload={"more":True},label='Question Further'),cl.Action(name='Done',payload={"more":False},label='Done')]).send()
 
         continue_exploring = response['payload']['more']
 
@@ -1462,7 +1632,34 @@ async def choose_and_use_tool(user_message):
             cl.user_session.set("knowledge_tree_message",msg)
             await msg.send()
             
-            gathered_information = kt.format_graph(du.get_cosine_similarity, du.get_node_summary)
+            graph_from_context = kt.get_graph_context()
+            for info,info_type in graph_from_context:
+                await save_to_local_context(info,info_type)
+
+            gathered_information = format_local_context()
+
+        else:
+            answer_to_previous_ques = f"[IMPORTANT QUESTION]\nQuestion : {resolved_text}\nPredicted Answer : {llm_answer}"
+            
+            # Check if the given response is a new idea.
+
+            '''
+            llm_content_dict = dict()
+            llm_content_dict['context'] = format_local_context()
+            llm_content_dict['response'] = llm_answer
+
+            prompts.prompt_parser('check_response_for_new_idea_prompt',llm_content_dict)
+            novel_response_check = await tokenize_and_generate(max_new_tokens=128,temperature=0.15,template=py_schema.NovelResponseCheck)
+            print(novel_response_check)
+
+            if(novel_response_check.is_new_idea):
+                response = await cl.AskActionMessage(content=f"Found a new idea!\n> {novel_response_check.new_information}\n\nWould you like to save this idea?",actions=[cl.Action(name='yes',payload={'save':True},label='True'),cl.Action(name='no',payload={'save':False},label='No')]).send()
+                if(response['payload']['save']):
+                    await extract_knowledge_graph(novel_response_check.new_information)
+
+            '''
+            if(not(check_context_redundancy(answer_to_previous_ques,"text"))):
+                await save_to_local_context(answer_to_previous_ques,"text")
 
 async def knowledge_tree_hop():
 
@@ -1470,6 +1667,7 @@ async def knowledge_tree_hop():
     kt = cl.user_session.get("knowledge_tree")
     query_queue = cl.user_session.get("query_queue")
     layer = cl.user_session.get("kt_layer")
+    og_query = cl.user_session.get("og_query")
 
     new_queries = []
     while(query_queue):
@@ -1480,7 +1678,7 @@ async def knowledge_tree_hop():
         if(kt.check_for_new_topics(previous_node)):
 
             fig = kt.get_plotly_graph(focus_node=previous_node)
-            element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline")
+            element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline",size="large")
             await msg.remove()
             msg = cl.Message(content=query,elements=[element])
             cl.user_session.set("knowledge_tree_message",msg)
@@ -1491,17 +1689,17 @@ async def knowledge_tree_hop():
             topics_to_explore = kt.get_topics_to_explore(previous_node)
 
             # Query Taxonomy Prompt
-
+            context_dict = create_context_dict_from_list(context_list)
+            formatted_context = format_local_context(context_dict)
+            
             # TODO : Format context
             taxonomy_query_dict = dict()
-            taxonomy_query_dict['context'] = "\n\n".join(context_list)
+            taxonomy_query_dict['context'] = formatted_context
             taxonomy_query_dict['query']   = query
+            taxonomy_query_dict['root_query']   = og_query
 
             chat_history = prompts.prompt_parser("query_decomposition_prompt",taxonomy_query_dict)
             llm_decomposition = await tokenize_and_generate(max_new_tokens=512,temperature=0.3,template=py_schema.QueryDecompositionSchema)
-
-            print(llm_decomposition)
-            print(topics_to_explore)
 
             for follow_up_query in llm_decomposition.follow_up_queries:
 
@@ -1527,26 +1725,40 @@ async def knowledge_tree_hop():
                         neighbors = [du.get_node_id(neighbor) for neighbor in edge_dict.keys() if not(neighbor==topic)]
 
                         formatted_edge_info = f"[{du.get_node_name(topic)} : {selected_type[0]}]\n\t{summaries[idx]}"
-                        edge_information.append(formatted_edge_info)
 
-                        print(neighbors)
-                        print(topics_to_ignore)
-                        print()
+                        if(not(check_context_redundancy((topic,selected_type[0]),"edge"))):
+                            edge_information.append(((topic,selected_type[0]),"edge"))
+                            #save_to_local_context((topic,selected_type[0]),"edge")
+
                         neighbors = list(set([n for n in neighbors if not(n in topics_to_ignore)]))
 
                 context_list = []
 
                 # Add edges first.
-                for summary in edge_information:
-                    context_list.append(summary)
+                for context_key in edge_information:
+                    context_list.append(context_key)
 
+                filtered_neighbors = []
                 for topic in neighbors:
                     # Format the context here.
-                    formatted_node_info = f"[{du.get_node_name(topic)}]\n\t{du.get_node_summary(topic)}"
-                    context_list.append(formatted_node_info)
+                    if(not(check_context_redundancy(topic,"node"))):
+                        #formatted_node_info = f"[{du.get_node_name(topic)}]\n\t{du.get_node_summary(topic)}"
+                        context_list.append((topic,"node"))
+                        #save_to_local_context(topic,"node")
+                        filtered_neighbors.append(topic)
 
-                kt.add_answer_to_context(previous_node,llm_decomposition.best_answer,cl.user_session.get("llm_confidence"))
-                node_idx = kt.add_node(text=follow_up_query,type="query",layer=layer,context=context_list,topics=neighbors,answer="No answer available.")
+                print()
+                print('[FORMATTED LOCAL CONTEXT]')
+                format_local_context()
+                print("---------")
+
+                formatted_qa = f"[IMPORTANT QUESTION]\nQuestion : {kt.G.nodes[previous_node]['text']}\nPredicted Answer : {llm_decomposition.best_answer} (Confidence={cl.user_session.get("llm_confidence")})"
+
+                #if(not(check_context_redundancy(formatted_qa,"text"))):
+                #save_to_local_context(formatted_qa,"text")
+
+                kt.add_answer_to_context(previous_node,llm_decomposition.best_answer,formatted_qa)
+                node_idx = kt.add_node(text=follow_up_query,type="query",layer=layer,context=context_list,topics=filtered_neighbors,answer="No answer available.")
                 kt.add_edge(previous_node,node_idx)
                 new_queries.append(node_idx)
 
@@ -1554,34 +1766,9 @@ async def knowledge_tree_hop():
 
     return new_queries
 
-async def explore_knowledge_graph(query, topics):
+async def explore_knowledge_graph(query, topics, max_depth=3):
     # Input  : strategy = {node:allowed_edges}
     # Output : LLM-compatible text for the next step.
-
-    def format_node(node):
-
-        node_dict = dict()
-        #node_dict['type'] = "Node"
-        node_dict['name'] = node
-        node_dict['category'] = du.get_node_type(node)
-        node_dict['definition'] = du.get_node_summary(node)
-        node_dict['tags'] = ", ".join(du.get_node_tags(node))
-        return node_dict
-
-    def format_edges(edges,head,neighbor):
-
-        edge_data = []
-        for element in edges[neighbor]:
-
-            edge_dict = dict()
-            #edge_dict['type'] = "Edge"
-            #edge_dict['source'] = head
-            #edge_dict['target'] = neighbor
-            edge_dict['relationship'] = element[1]['text']
-            edge_dict['tag'] = element[1]['tags'][0]
-            edge_data.append((element[0],edge_dict))
-
-        return edge_data
 
     kt = KT.KnowledgeTree()
     query_queue = deque()
@@ -1590,19 +1777,25 @@ async def explore_knowledge_graph(query, topics):
     cl.user_session.set("query_queue",query_queue)
 
     og_query = query
+    cl.user_session.set("og_query",og_query)
 
     # Query Graph
 
     relevant_nodes = du.get_relevant_topics(query,threshold=0.5,all=True,fuzzy=True)
     topics = [node for node in relevant_nodes]
-    
+
     context_list = []
+    new_topics = []
     for topic in topics:
         # Format the context here.
-        formatted_node_info = f"[{du.get_node_name(topic)}]\n\t{du.get_node_summary(topic)}"
-        context_list.append(formatted_node_info)
+        if(not(check_context_redundancy(topic,"node"))):
+            #formatted_node_info = f"[{du.get_node_name(topic)}]\n\t{du.get_node_summary(topic)}"
+            context_list.append((topic,"node"))
+            #save_to_local_context(topic,"node")
+            new_topics.append(topic)
 
-    node_idx = kt.add_node(text=query,type="query",layer=0,context=context_list,topics=topics, answer="No Answer available.")
+    node_idx = kt.add_node(text=query,type="query",layer=0,context=context_list,topics=new_topics, answer="No Answer available.")
+
     query_queue.append(node_idx)
 
     gathered_information = "No strategy defined yet."
@@ -1611,7 +1804,7 @@ async def explore_knowledge_graph(query, topics):
     layer = 1
     cl.user_session.set("kt_layer",layer)
 
-    max_depth = 3
+    max_depth = max_depth
 
     topic_dict = dict()
     taxonomy_query_dict = dict()
@@ -1627,7 +1820,8 @@ async def explore_knowledge_graph(query, topics):
 
         new_queries = await knowledge_tree_hop()
 
-        gathered_information = kt.format_graph(du.get_cosine_similarity, du.get_node_summary)
+        graph_from_context = kt.get_graph_context()
+        gathered_information = format_local_context(create_context_dict_from_list(graph_from_context))
 
         # Check the current answer.
         llm_content_dict = {"query":og_query, "context":gathered_information}
@@ -1650,13 +1844,14 @@ async def explore_knowledge_graph(query, topics):
     # TODO : Format Graph to send back.
     msg = cl.user_session.get("knowledge_tree_message")
     fig = kt.get_plotly_graph(focus_node=None)
-    element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline")
+    element = cl.Plotly(name="knowledge_tree", figure=fig, display="inline",size="large")
     await msg.remove()
     msg = cl.Message(content="Answering Query",elements=[element])
     cl.user_session.set("knowledge_tree_message",msg)
     await msg.send()
     
-    gathered_information = kt.format_graph(du.get_cosine_similarity, du.get_node_summary)
+    graph_from_context = kt.get_graph_context()
+    gathered_information = format_local_context(create_context_dict_from_list(graph_from_context))
     return gathered_information
 
 async def check_context_sufficiency(user_message, context):
@@ -1781,7 +1976,6 @@ async def tokenize_and_generate(max_new_tokens=256,temperature=0.6,template=None
 
     return response_stream
 
-
 async def respond_with_tool_output(user_query,tool_output):
 
     chat_history = cl.user_session.get("chat_history")
@@ -1866,12 +2060,24 @@ async def on_chat_start():
                     props= props
                 )
 
+    edge_card_props = dict()
+    edge_card_props['name'] = ""
+    edge_card_props['edges'] = ""
+
+    edge_card_element = cl.CustomElement(
+                    name="EdgeCard",
+                    display="inline",
+                    props= edge_card_props
+                )
+
     info_props = {"text":""}
 
     cl.user_session.set("graph_element", graph_element)
     cl.user_session.set("node_card_elements_side", [])
     cl.user_session.set("node_card_element", node_card_element)
+    cl.user_session.set("edge_card_element", edge_card_element)
     cl.user_session.set("chat_history", [])
+    cl.user_session.set("stored_context", dict())
 
     cl.user_session.set("relevant_nodes", [])
     cl.user_session.set("relevant_edges", None)
@@ -1923,9 +2129,15 @@ async def on_chat_start():
     counters['lore'] = 0
     counters['plot'] = 0
 
-    #for node in du.knowledge_graph.nodes():
-    #    print(f"{du.knowledge_graph.nodes[node]}")
-    #    print()
+
+    '''
+    for node in du.knowledge_graph.nodes():
+        #print(f"{du.knowledge_graph.nodes[node]}")
+        #print()
+        for head,tail,key,edge_data in du.get_all_edges(node):
+            #print(du.get_node_name(node))
+            print(du.get_node_name(node),' : ',edge_data['text'])
+    '''
         
     await cl.Message(content="Hello! I'm Quill, your novel-writing assistant! How can I help you today?").send()
 
@@ -1973,6 +2185,9 @@ async def on_message(user_message: cl.Message):
 
     selected_mode = user_message.command
 
+    if(selected_mode):
+        flush_local_context()
+
     if(selected_mode=='Analyze'):
         #await reorder_plot(user_message.content)
         await summarize_nodes()
@@ -1996,6 +2211,9 @@ async def on_message(user_message: cl.Message):
         if(True):
             final_response_stream = await choose_and_use_tool(user_message)
             
+
+
+
 
 
 

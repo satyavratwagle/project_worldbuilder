@@ -156,13 +156,17 @@ class ContextEvaluationSchema(BaseModel):
 class QueryTaxonomyCheck(BaseModel):
     reasoning: str = Field(description="The brief reasoning (1-2 sentences) for your choice of query type.")
     query_type: Literal[tuple(QUERY_TYPES)] = Field(description=f"The type of query. One of {" / ".join(QUERY_TYPES)}.")
-
     # descriptive: bool
     # subjective: bool
 
 class QueryDecompositionSchema(BaseModel):
     best_answer: str = Field(description="Best possible answer to the user query.")
     follow_up_queries: list[str] = Field(description=f"A list of unanswered follow-up queries.",min_length=1,max_length=1)
+
+class NovelResponseCheck(BaseModel):
+    new_information: str = Field(description="Any new information contained within <response>.")
+    is_new_idea: bool = Field(description=f"'True' if response contains novel information not implied by the context.")
+
 
 class QueryEvaluationSchema(BaseModel):
     is_context_sufficient: bool = Field(description="'True' if the provided context is sufficient to completely answer the user query. 'False' otherwise.")

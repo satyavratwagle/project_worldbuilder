@@ -452,12 +452,23 @@ class DatastoreUtilities():
                                             updated=time_now,
                                             metadata=metadata)
 
-        self.update_node(self.get_node_id(head))
-        self.update_node(self.get_node_id(tail))
+        self.log_node_update(self.get_node_id(head))
+        self.log_node_update(self.get_node_id(tail))
 
         print(f"ADDED NEW EDGE BETWEEN '{self.get_node_name(head)}' and '{self.get_node_name(tail)}' : {self.knowledge_graph.edges[self.get_node_id(head),self.get_node_id(tail),key]}")
 
         return (self.get_node_id(head),self.get_node_id(tail),key)
+
+    def update_edge(self,head,tail,key,content_key,content):
+
+        head = self.get_node_id(head)
+        tail = self.get_node_id(tail)
+
+        if(head and tail):
+            self.knowledge_graph.edges[head,tail,key][content_key] = content
+            self.knowledge_graph.edges[head,tail,key]['updated'] = int(time.time())
+            self.log_node_update(self.get_node_id(head))
+            self.log_node_update(self.get_node_id(tail))
 
     def add_edge_metadata(self,head,tail,key,**metadata):
 
@@ -482,32 +493,38 @@ class DatastoreUtilities():
 
             print(f"Updated Edge Metadata : {self.get_node_name(head)} --> {self.get_node_name(tail)} : {self.knowledge_graph.edges[head,tail,key]['metadata']}")
 
-    def remove_edge(self,head,tail,type=None,tag=None):
+    def remove_edge(self,head,tail,key=None,type=None,tag=None):
         head_id = self.get_node_id(head)
         tail_id = self.get_node_id(tail)
 
 
         if(self.knowledge_graph.has_edge(head_id,tail_id)):
-            edge_data = self.knowledge_graph.get_edge_data(head_id,tail_id)
-            removed_edges = dict()
-
-            if(type):
-                if(tag):
-                    # Remove all edges with type and tag
-                    keys_to_remove = [key for key in edge_data.keys() if edge_data[key]['type']==type and edge_data[key]['tag']==tag]
-                else:
-                    # Remove all edges with type
-                    keys_to_remove = [key for key in edge_data.keys() if edge_data[key]['type']==type]
-            else:
-                # Remove all edges
-                keys_to_remove = [key for key in edge_data.keys()]
-
-            print(f"Removing edges between {self.get_node_name(head_id)} and {self.get_node_name(tail_id)} with keys {keys_to_remove}")
-            for key in keys_to_remove:
-                removed_edges[key] = (head_id,tail_id,self.knowledge_graph.edges[head_id,tail_id,key]['text'])
+            if(key):
                 self.knowledge_graph.remove_edge(head_id,tail_id,key)
+                self.log_node_update(self.get_node_id(head_id))
+                self.log_node_update(self.get_node_id(tail_id))
+                return True
+            else:
+                edge_data = self.knowledge_graph.get_edge_data(head_id,tail_id)
+                removed_edges = dict()
 
-            return removed_edges
+                if(type):
+                    if(tag):
+                        # Remove all edges with type and tag
+                        keys_to_remove = [key for key in edge_data.keys() if edge_data[key]['type']==type and edge_data[key]['tag']==tag]
+                    else:
+                        # Remove all edges with type
+                        keys_to_remove = [key for key in edge_data.keys() if edge_data[key]['type']==type]
+                else:
+                    # Remove all edges
+                    keys_to_remove = [key for key in edge_data.keys()]
+
+                print(f"Removing edges between {self.get_node_name(head_id)} and {self.get_node_name(tail_id)} with keys {keys_to_remove}")
+                for key in keys_to_remove:
+                    removed_edges[key] = (head_id,tail_id,self.knowledge_graph.edges[head_id,tail_id,key]['text'])
+                    self.knowledge_graph.remove_edge(head_id,tail_id,key)
+
+                return removed_edges
         else:
             return dict()
 
@@ -605,7 +622,7 @@ class DatastoreUtilities():
             print(f"Added node [{node_id}] {self.get_node_name(node_id)} --> {type} : {tag}!")
         else:
             node_id = self.get_node_id(node_name)
-            self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
+            self.log_node_update(self.get_node_id(node_id))
             self.knowledge_graph.nodes[node_id]['type'] = type
             self.knowledge_graph.nodes[node_id]['tags'].append(tag)
             self.knowledge_graph.nodes[node_id]['tags'] = list(set(self.knowledge_graph.nodes[node_id]['tags']))
@@ -661,7 +678,7 @@ class DatastoreUtilities():
                     self.knowledge_graph.nodes[node_id]['metadata'][key] = metadata[key]
                     print(f"Replaced Metadata : {key} = {self.knowledge_graph.nodes[node_id]['metadata'][key]}")
 
-                self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
+                self.log_node_update(self.get_node_id(node_id))
 
                 if('summary' in metadata.keys() or 'edge_summaries' in metadata.keys()):
                     self.knowledge_graph.nodes[node_id]['metadata']['summary_updated'] = int(time.time())
@@ -684,13 +701,21 @@ class DatastoreUtilities():
 
                     print(f"Added Metadata : {key} = {self.knowledge_graph.nodes[node_id]['metadata'][key]}")
 
-                self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
+                self.log_node_update(self.get_node_id(node_id))
 
-    def update_node(self,node):
+    def update_node(self,node,content_key,content):
+        node_id = self.get_node_id(node)
+
+        if(node_id):
+            self.knowledge_graph.nodes[node_id][content_key] = content
+            self.log_node_update(self.get_node_id(node_id))
+
+    def log_node_update(self,node):
         node_id = self.get_node_id(node)
 
         if(node_id):
             self.knowledge_graph.nodes[node_id]['updated'] = int(time.time())
+            print(f"{self.get_node_name(node_id)} updated!")
 
     # Read functions
     def get_node_name(self,node_id):
@@ -732,7 +757,7 @@ class DatastoreUtilities():
         if(len(self.knowledge_graph.nodes[node_id]['metadata']['summary'])>0):
             return self.knowledge_graph.nodes[node_id]['metadata']['summary']
         else:
-            return f"No information about {node_name} available"
+            return f"No information about {self.get_node_name(node_name)} available"
 
     def get_category_summaries(self,node_name,category=None):
 
@@ -750,8 +775,7 @@ class DatastoreUtilities():
             if("edge_summaries" in self.knowledge_graph.nodes[node_id]['metadata'].keys()):
                 return self.knowledge_graph.nodes[node_id]['metadata']['edge_summaries']
             else:
-                return f"No information available."
-
+                return {}
 
     def get_node_aliases(self,node_name):
 
@@ -791,22 +815,25 @@ class DatastoreUtilities():
         all_edges = []
         edge_dict = self.knowledge_graph.get_edge_data(node_id,node_id)
         if(edge_dict):
-            all_edges = [(key,edge_dict[key]) for key in edge_dict.keys()]
+            all_edges = [(node_id,node_id,key,edge_dict[key]) for key in edge_dict.keys()]
 
         for neighbor in all_neighbors['successors']:
-            edge_dict = self.knowledge_graph.get_edge_data(node_id,neighbor)
-            all_edges += [(key,edge_dict[key]) for key in edge_dict.keys()]
+            if(not(neighbor==node_id)):
+                edge_dict = self.knowledge_graph.get_edge_data(node_id,neighbor)
+                all_edges += [(node_id,neighbor,key,edge_dict[key]) for key in edge_dict.keys()]
 
         for neighbor in all_neighbors['predecessors']:
-            edge_dict = self.knowledge_graph.get_edge_data(neighbor,node_id)
-            all_edges += [(key,edge_dict[key]) for key in edge_dict.keys()]
+            if(not(neighbor==node_id)):
+                edge_dict = self.knowledge_graph.get_edge_data(neighbor,node_id)
+                all_edges += [(neighbor,node_id,key,edge_dict[key]) for key in edge_dict.keys()]
 
+        # List((key,{}))
         return all_edges
 
     def get_edge_types_at_node(self,node_name):
 
         all_edges = self.get_all_edges(node_name)
-        edge_types = list(set([edge_dict['type'] for key,edge_dict in all_edges]))
+        edge_types = list(set([edge_dict['type'] for head,tail,key,edge_dict in all_edges]))
 
         return edge_types
 

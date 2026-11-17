@@ -10,18 +10,22 @@ class KnowledgeTree():
 
         self.G = nx.DiGraph()
         self.node_idx = -1
+        self.max_layers = 0
 
     def add_node(self,text,type, layer, context,topics, answer):
 
         self.node_idx += 1
         self.G.add_node(self.node_idx,text=text,type=type, layer=layer, context=context, topics=topics, answer = answer)
+        if(layer>self.max_layers):
+            self.max_layers = layer
 
         return self.node_idx
 
-    def add_answer_to_context(self,node_id,answer,confidence):
+    def add_answer_to_context(self,node_id,answer,formatted_qa):
         self.G.nodes[node_id]['answer'] = answer
         if(not(node_id)==0):
-            self.G.nodes[node_id]['context'].append(f"[IMPORTANT QUESTION]\nQuestion : {self.G.nodes[node_id]['text']}\nPredicted Answer : {self.G.nodes[node_id]['answer']} (Confidence={confidence})") 
+            #self.G.nodes[node_id]['context'].append(f"[IMPORTANT QUESTION]\nQuestion : {self.G.nodes[node_id]['text']}\nPredicted Answer : {self.G.nodes[node_id]['answer']} (Confidence={confidence})") 
+            self.G.nodes[node_id]['context'].append((formatted_qa,"text")) 
 
     def add_edge(self,head,tail):
         self.G.add_edge(head,tail)
@@ -29,7 +33,6 @@ class KnowledgeTree():
     def check_for_new_topics(self,node_id):
         print(f"{self.G.nodes[node_id]['text']} : {len(self.G.nodes[node_id]['topics'])}")
         return (len(self.G.nodes[node_id]['topics'])>0)
-
 
     def get_context_by_node(self,node_id):
 
@@ -86,44 +89,27 @@ class KnowledgeTree():
 
         return context
 
-    def format_graph(self,filter_func, topic_lookup):
+    def get_graph_context(self):
 
-        
-        all_text = []
+        all_context = []
         for node,data in self.G.nodes(data=True):
             for context in data['context']:
-                if(not(context in all_text)):
-                    all_text.append(context)
-        #return all_topics,all_text
+                if(not(context in all_context)):
+                    all_context.append(context)
 
-        '''
-        filtered_text = []
-        for idx,q1 in enumerate(all_text):
-            if(len(filtered_text)>0):
-                cosine_sims = filter_func([q1],filtered_text)[0]
-                if(max(cosine_sims)<0.8):
-                    filtered_text.append(q1)
-            else:
-                filtered_text.append(q1)
-        '''
+        print(all_context)
 
-        '''
-        gathered_information = ""
-        gathered_information += "[CONTEXT]\n"+"\n\n".join([f"\t[{topic}]\n\tDefinition : {topic_lookup(topic)}" for topic in all_topics])
-        gathered_information += "\n\n[FOLLOW-UP Q/A]\n(Do NOT consider the following to be ground truth.)\n\n"+"\n\n".join(filtered_text)
-        '''
-
-        gathered_information = "\n\n".join(all_text)
-
-        return gathered_information
+        return all_context
 
     def get_plotly_graph(self,focus_node=None):
 
         # Create a subgraph with the target nodes and target edges
 
-        pos = nx.multipartite_layout(self.G, subset_key='layer', align='vertical')
+        pos = nx.multipartite_layout(self.G, subset_key='layer', align='horizontal', scale=-self.max_layers)
         self.fig_width = 640
         self.fig_height = 640
+
+        print(pos)
 
         annotations = []
         endpoints = []
@@ -199,33 +185,43 @@ class KnowledgeTree():
             nodes_x.append(x)
             nodes_y.append(y)
 
-            formatted_node_text = "<b>Question</b><br>"+"<br>".join(textwrap.wrap(data['text'], width=30))+"<br><b>Answer</b><br>"+"<br>".join(textwrap.wrap(f"{data['answer']}", width=30))
+            formatted_node_text = "<b>Question</b><br>"+"<br>".join(textwrap.wrap(data['text'], width=30))+"<br><br><b>Answer</b><br>"+"<br>".join(textwrap.wrap(f"{data['answer']}", width=30))
             node_text.append(formatted_node_text)
             node_ids.append(node)
 
             # You can change this later.
 
-            if(focus_node and node==focus_node):
+            if((focus_node or focus_node==0) and node==focus_node):
                 border_widths.append(5)
                 border_colors.append('red')
             else:
                 border_widths.append(0)
                 border_colors.append("#444444")
             node_colors.append("#EEE")
-            node_labels.append("")
 
+            if(len(data['text'])>110):
+                trim_ques = data['text'][:110]+'...'
+            else:
+                trim_ques = data['text']
+
+            if(len(data['answer'])>110):
+                trim_ans = data['answer'][:110]+'...'
+            else:
+                trim_ans = data['answer']
+
+            node_labels.append("<br>  ".join(textwrap.wrap(f"  {trim_ques}", width=80))+"<br>"+"<br>  ".join(textwrap.wrap(f"<i>  {trim_ans}</i>", width=80)))
 
         node_trace = go.Scatter(
           x=nodes_x,
           y=nodes_y,
           mode="markers+text",
-          textposition="bottom center",
+          textposition="middle right",
           hoverinfo="text",
           hovertext=node_text,
           text=node_labels,
           textfont=dict(
                 color="#EEE",  
-                size=marker_size,  
+                size=14,  
                 family=('system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif')
             ),
           marker=dict(
@@ -272,7 +268,27 @@ class KnowledgeTree():
         fig.add_trace(hover_trace)
         fig.add_trace(node_trace)
 
+        fig.update_layout(
+                width=640,  # Width in pixels
+                height=540,
+                xaxis=dict(range=[-0.4, 10.0]),  
+                yaxis=dict(range=[-9.4+pos[0][1], 1.0+pos[0][1]]),  
+                )
+
+        fig.update_layout(
+                margin=dict(
+                    l=10,  # Left margin
+                    r=10,  # Right margin
+                    t=10,  # Top margin (leave room if you have a title)
+                    b=10   # Bottom margin (leave room for x-axis ticks/labels)
+                )
+            )
+
+    
+
         return fig
         
         
+
+
 

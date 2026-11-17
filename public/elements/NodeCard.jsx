@@ -20,6 +20,8 @@ export default function NodeCard() {
   const [EditMode, setEditMode] = useState(false);
   const [node_layer, setLayer] = useState(props.type);
   const [node_text, setText] = useState(props.desc);
+  const [catsums_text, setCatSumText] = useState(() => Object.entries(props.category_summaries || {}));
+  const [EditCatMode, setEditCatMode] = useState(Object.entries(props.category_summaries).map((item) => false));
   const isExpanded = props.expanded
   const nextLayer = {
     "Agents & Collectives": "Places & Spaces",
@@ -36,7 +38,6 @@ export default function NodeCard() {
     });
   };
 
-
   const handleNodeChange = async (node_id) => {
     await callAction({
       name: "change_node",
@@ -44,30 +45,71 @@ export default function NodeCard() {
     });
   };
 
-  const handleStackChange = async (node_id,idx,rem) => {
+  const handleShowEdges = async (node_id) => {
     await callAction({
-      name: "stack",
-      payload: {node_id,idx,rem}
+      name: "show_edges",
+      payload: {node_id}
     });
   };
 
-  const handleLayerChange = () => {
-    setLayer(prevLayer => nextLayer[prevLayer] || "Agents & Collectives");    
+  const handleLayerChange = async () => {
+    setLayer(prevLayer => nextLayer[prevLayer] || "Agents & Collectives"); 
+    await callAction({
+      name: "update_node",
+      payload: {"node_id":props.node_id,
+                "key" : "type",
+                "content":nextLayer[node_layer]}
+    });   
   };
 
   const handleEditToggle = (state) => {
     setEditMode(state)
   };
 
+  const setCatText = (target_index, text) => {
+    setCatSumText((prev) =>
+      prev.map((og_Cat, idx) => {
+        if (idx !== target_index) return og_Cat;
+
+      // Return a new copy of the target tuple with the updated element
+      return og_Cat.map((item, colIndex) =>
+        colIndex === 1 ? text : item
+      );
+     })
+    );
+  }
+
+  const handleEditCatToggle = (state,target_index) => {
+    console.log(state,target_index)
+    console.log(EditCatMode)
+    setEditCatMode((prev) => prev.map((isEditing, index) => (index === target_index ? state : isEditing)));
+  };
+
+  const handleCatEditComplete = async (key,index) => {
+    await callAction({
+      name: "update_node",
+      payload: {"node_id":props.node_id,
+                "key" : "cat_summary",
+                "category":key,
+                "content":catsums_text}
+    });
+  };
+
   const handlePageTurn = (dir) => {
     changePage(dir>0?neighbor_idx+5:neighbor_idx-5)
   };
 
-  const handleEdit = () => {
+  const handleEdit = async (node_id) => {
     const finalText = node_text;
-    console.log(finalText)
     setText(finalText)
+    await callAction({
+      name: "update_node",
+      payload: {"node_id":props.node_id,
+                "key" : "summary",
+                "content":node_text}
+    });
   };
+
 
   const handleExit = async (save) => {
     console.log(node_layer)
@@ -82,7 +124,7 @@ export default function NodeCard() {
     console.log(node_layer)
     await callAction({
       name: "exit",
-      payload: {save:save, new_desc:node_text, new_layer:node_layer}
+      payload: {save:save}
     });
   };
 
@@ -110,13 +152,20 @@ export default function NodeCard() {
   return (
     <Card id="jira-ticket" className="mt-4 w-[340px] max-w-[340px]">
       <CardHeader className="space-y-1">
-        <CardTitle className="col-span-1">{props.name}</CardTitle>
-        <div>
+        <div style={{display: 'grid', gridTemplateColumns: '400px 240px', gap: '10px', 'column-gap': '4px', width: '100%'}}>
+          <div>
+            <CardTitle className="col-span-1">{props.name}</CardTitle>
           <span onClick={() => handleLayerChange()} className="cursor-pointer flex">
             <p className="text-sm font-medium text-muted-foreground">
               {node_layer}
             </p>
           </span>
+          </div>
+            <div style={{alignItems: 'right', textAlign:'right'}}>
+              <Button id="ticket-cancel" variant="outline" onClick={() => handleShowEdges(props.node_id)}>
+                Show Edges
+              </Button>
+            </div>
         </div>
         <div style={{padding:'4px'}}></div>
         <div style={{border: "2px solid #666666", 'border-radius':'8px', padding:'10px'}} className="col-span-2 flex-col space-y-2">
@@ -147,46 +196,38 @@ export default function NodeCard() {
       </CardHeader>
 
       <CardContent className="space-y-1">
-        <div className="flex-col space-y-2">
-          <div className="text-lg font-bold">Related Topics</div>
-          {Object.entries(props.neighbors).slice(neighbor_idx,neighbor_idx+5).map(([idx]) =>(
-              <div>
-                <span onClick={() => handleNodeChange(props.neighbors[idx][2])} className="cursor-pointer flex">
-                  <p className="text-sm font-medium text-muted-foreground"> • <u><b>{props.neighbors[idx][0]}</b> ({props.neighbors[idx][1]})</u></p>
-                </span>
-              </div>
-            ))
-          }
-        </div>
-        <div style={{padding:'6px'}}></div>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <Button variant="ghost" disabled={neighbor_idx==0} onClick={() => handlePageTurn(-1)}>
-              Prev
-            </Button>
-            <Button variant="ghost" disabled={neighbor_idx+5>=props.neighbors.length} onClick={() => handlePageTurn(+1)}>
-              Next
-            </Button>
-          </div>
-          <div></div>
-        </div>
-
-        {props.stack.length>0 && (
-        <div>
-          <div className="text-lg font-bold">Stack</div>
-          {Object.entries(props.stack).map(([idx]) =>(
-          <div>
-            <p className="text-sm font-medium text-muted-foreground"> {parseInt(idx,10)+1}. (<b>{props.stack[idx][0]}</b>) {props.stack[idx][1]}</p>
+        <div className="text-lg font-bold">Detailed Information</div>
+        <div className="space-y-4">
+          {catsums_text.map(([key,value],idx) =>(
+          <div >
+            {EditCatMode[idx] ? 
+            (<textarea 
+                    rows={4}
+                    type="text" 
+                    value={catsums_text[idx][1]} 
+                    onChange={(e) => setCatText(idx, e.target.value)}
+                    onBlur={() => handleEditCatToggle(false,idx)} 
+                    onKeyDown={(e) => {
+                        // Optional: If you want 'Enter' to submit without adding a newline
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleCatEditComplete(key,idx);
+                            handleEditCatToggle(false,idx);
+                        }
+                    }}
+                    placeholder="Enter new name..."
+                    autoFocus
+                    className="border-2 rounded text-base focus:outline-none focus:ring-gray-50 bg-card text-muted-foreground leading-normal"
+                    style={{width:'100%', fontSize:'14px', wordBreak: 'break-word'}}
+                  />)
+            : <p className="text-sm font-medium text-muted-foreground" onClick={() => handleEditCatToggle(true,idx)}> {value}</p>}
           </div>
           ))}
         </div>
-        )}
+
         </CardContent>
         
       <CardFooter className="flex justify-end gap-2">
-        <Button id="ticket-cancel" variant="outline" onClick={() => handleStackChange(props.node_id,props.stack.length,false)}>
-          Stack
-        </Button>
         <Button id="ticket-cancel" variant="outline" onClick={() => handleSave(true)}>
           Save
         </Button>

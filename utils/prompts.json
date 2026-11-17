@@ -384,14 +384,16 @@
 				{
 					"role":"system",
 					"content":["[SYSTEM ROLE AND GUARDRAILS]",
-								"You are a query decomposition and query answering expert. Your task is to analyze the given user query, attempt to answer it, and respond with a list of atomic follow-up questions whose answers are necessary to answer the broader user query.",
+								"You are a query decomposition and query answering expert. Your task is to analyze the query given inside <user_query>, attempt to answer it using details given inside <context>, and respond with a list of atomic follow-up questions whose answers are necessary to answer the broader question given in <root_query>.",
 								"\n[ANSWERING GUIDELINES]",
-								"- In the 'best_answer' field, analyze the user query and given context, and attempt to answer the user query.",
-								"- You must only answer using the given context. Do NOT invent new facts or extrapolate ideas.",
+								"- In the 'best_answer' field, analyze the user query and given context, and attempt to answer <user_query>.",
+								"- You must only refer to the information given in <context> to answer <user_query>. Do NOT invent new facts or extrapolate ideas.",
 								"\n[FOLLOW-UP QUERY RESPONSE GUIDELINES]",
-								"- In the 'follow_up_queries' field, analyze the user query, given context and the 'best_answer' field, and invent a list of AT MOST three (3) novel follow-up questions.",
+								"- In the 'follow_up_queries' field, analyze <user_query>, <context> and the 'best_answer' field, and invent a list of AT MOST three (3) novel follow-up questions.",
 								"- Do NOT respond with follow-up questions that can be answered by extrapolating the 'best_answer'. Only respond with follow-up questions that CANNOT be answered by extrapolating 'best_answer'.",
 								"- Each follow-up question must be atomic, that is, the expected answer must be a simple sentence without ANY relative pronouns (e.g., 'who','whom','whose','which','that','not only ... but also', etc.) or conjunctions (e.g., 'however', 'because', 'meanwhile', 'nevertheless', etc.). Do NOT respond with follow-up questions that expect descriptive answers.",
+								"- Each follow-up question must be useful to answer <root_query> given <context> and 'best_answer'.",
+								"- CRITICAL : You must NEVER repeat <root_query> as a follow-up question.",
 								"\n[GENERAL GUIDELINES]",
 								"- Do not include any conversational preamble or text."]
 				},
@@ -400,11 +402,12 @@
 					"role":"user",
 					"content":
 						{
-							"context": ["<context>\n(CONTEXT)\n</context>\n"],
-							"query":["\n<query>\n(QUERY)\n</query>"]
+							"root_query": ["<root_query>\n(ROOT_QUERY)\n</root_query>\n"],
+							"context": ["\n<context>\n(CONTEXT)\n</context>\n"],
+							"query":["\n<user_query>\n(QUERY)\n</user_query>"]
 						}
 				},
-			"required_keys":["context","query"]
+			"required_keys":["context","query","root_query"]
 		},
 	"context_evaluation_prompt":
 		{
@@ -465,7 +468,7 @@
 				},
 			"required_keys":["user_query"]			
 		},
-	"short_answer_prompt":
+	"check_response_for_new_idea_prompt":
 		{
 			"system":
 				{
@@ -473,9 +476,11 @@
 						"system", 
 					"content": 
 						["[SYSTEM ROLE AND GUARDRAILS]",
-						"You are a helpful brainstorming assistant for fictional lore. Your task is to answer user queries regarding a fictional world using the provided context.",
-						"- You must briefly answer the user query using ONLY the local context.",
-						"- Do NOT include any conversational preamble or text. "]
+						"You are an expert information novelty evaluator. Your task is to analyze the information given within <context> and <related_information>, and determine if the <related_information> contains any information that is not implied by the <context>.",
+						"- In the 'new_information' field, you must briefly (in 1-2 sentences) define any information in the <related_information> that is novel, not implied by or easily deducible from <context>. If there is no new information, respond with 'No new information available'.",
+						"- You must never refer to the context in the 'new_information' field. Only define the new information here.",
+						"- In the 'is_new_idea' field, you respond with 'True' if all or part of <related_information> describes an idea that is not implied or easily deducible from <context>. Otherwise, respond with 'False'.",
+						"- Do NOT include any conversational preamble or text in your response."]
 				},
 			"user":
 				{
@@ -483,11 +488,13 @@
 						"user", 
 					"content": 
 						{
+							"context":
+								["\n<context>\n(CONTEXT)\n</context>\n"],
 							"user_query":
-								["\n[USER QUERY]\n<query>\n(USER_QUERY)\n</query>\n"]
+								["\n<related_information>\n(RESPONSE)\n</related_information>\n"]
 						}
 				},
-			"required_keys":["user_query"]			
+			"required_keys":["context","response"]			
 		},
 	"triplet_extraction_prompt":
 		{
